@@ -1,0 +1,257 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+import type { Locale } from '@mayak/shared';
+
+const ru = {
+  brand: 'Маяк',
+  tagline: 'локальный ассистент',
+  newChat: 'Новый чат',
+  settings: 'Настройки',
+  chats: 'Чаты',
+  noChats: 'Пока нет чатов',
+  language: 'Язык',
+  chatPlaceholder:
+    'Напишите сообщение. Enter — отправить, Shift+Enter — новая строка',
+  send: 'Отправить',
+  stop: 'Стоп',
+  thinking: 'Маяк думает',
+  emptyTitle: 'Свет включён',
+  emptyBody:
+    'Демо-модель уже отвечает без ключа. Подключите свой API, MCP-сервер или навык — в этом же окне.',
+  hintSkill: 'Загрузить навык summary',
+  hintEcho: 'Вызвать MCP echo',
+  hintAdd: 'Сложить 2 и 3',
+  modelLabel: 'Модель',
+  toolRunning: 'выполняется',
+  toolDone: 'результат',
+  toolArgs: 'аргументы',
+  you: 'Вы',
+  assistant: 'Маяк',
+  error: 'Ошибка',
+  serverDown:
+    'Сервер Маяка недоступен. Запустите pnpm dev и обновите страницу.',
+  retry: 'Повторить',
+  delete: 'Удалить',
+  confirmDelete: 'Точно удалить',
+  close: 'Закрыть',
+  settingsTitle: 'Настройки',
+  tabProviders: 'Модели',
+  tabMcp: 'MCP',
+  tabSkills: 'Навыки',
+  tabGeneral: 'Общие',
+  addProvider: 'Добавить провайдера',
+  providerName: 'Название',
+  providerKind: 'Тип',
+  baseUrl: 'Базовый URL',
+  apiKey: 'API-ключ',
+  apiKeySaved:
+    'Ключ сохранён на сервере. Введите новый, только если хотите заменить.',
+  apiKeyHint: 'После сохранения ключ не возвращается в браузер.',
+  models: 'Модели',
+  modelsHint:
+    'По одному идентификатору на строку. Для демо-модели оставьте mock.',
+  enabled: 'Включён',
+  save: 'Сохранить',
+  cancel: 'Отмена',
+  test: 'Проверить',
+  testing: 'Проверка…',
+  testOk: 'Ответ получен',
+  kindOpenAI: 'OpenAI-совместимый',
+  kindAnthropic: 'Anthropic',
+  kindGemini: 'Google Gemini',
+  kindMock: 'Демо, без сети',
+  openaiHint: 'OpenAI, OpenRouter, Ollama, LM Studio, Groq — любой /v1',
+  addMcp: 'Добавить сервер',
+  mcpName: 'Имя',
+  transport: 'Транспорт',
+  command: 'Команда',
+  args: 'Аргументы',
+  argsHint: 'По одному аргументу на строку',
+  url: 'URL',
+  env: 'Переменные окружения',
+  headers: 'Заголовки',
+  envHint:
+    'KEY=value, по одной паре на строку. Пустое поле не затирает уже сохранённые секреты.',
+  importJson: 'Импорт mcpServers',
+  importHint:
+    'Формат как у Claude Desktop и Cursor. Секреты в ответе замаскированы: •••••• не перезаписывает сохранённое значение.',
+  importAction: 'Импортировать',
+  tools: 'Инструменты',
+  noTools: 'Нет инструментов — сервер выключен или ещё не подключён',
+  statusConnected: 'подключён',
+  statusError: 'ошибка',
+  statusDisconnected: 'выключен',
+  statusConnecting: 'подключение',
+  addSkill: 'Новый навык',
+  skillName: 'Имя папки',
+  skillDescription: 'Описание для системного промпта',
+  skillBody: 'Инструкции',
+  skillEnabled: 'Включён — имя и описание попадают в промпт',
+  skillDir: 'Каталог навыков',
+  skillEmpty: 'Выберите навык или создайте новый. Это папка с файлом SKILL.md.',
+  theme: 'Тема',
+  themeDark: 'Ночь',
+  themeLight: 'День',
+  generalLead:
+    'Интерфейс по умолчанию на русском. Английские строки уже лежат рядом и переключаются здесь.',
+  saved: 'Сохранено',
+  noProviders: 'Нет провайдеров. Демо-модель создаётся при первом запуске.',
+  edit: 'Изменить',
+  back: 'К чатам',
+  menu: 'Меню',
+};
+
+type Dictionary = { [K in keyof typeof ru]: string };
+
+const en: Dictionary = {
+  brand: 'Mayak',
+  tagline: 'local assistant',
+  newChat: 'New chat',
+  settings: 'Settings',
+  chats: 'Chats',
+  noChats: 'No chats yet',
+  language: 'Language',
+  chatPlaceholder: 'Write a message. Enter to send, Shift+Enter for a new line',
+  send: 'Send',
+  stop: 'Stop',
+  thinking: 'Mayak is thinking',
+  emptyTitle: 'The light is on',
+  emptyBody:
+    'The demo model replies without an API key. Add your own provider, an MCP server, or a skill from the same window.',
+  hintSkill: 'Load the summary skill',
+  hintEcho: 'Call the MCP echo tool',
+  hintAdd: 'Add 2 and 3',
+  modelLabel: 'Model',
+  toolRunning: 'running',
+  toolDone: 'result',
+  toolArgs: 'arguments',
+  you: 'You',
+  assistant: 'Mayak',
+  error: 'Error',
+  serverDown: 'The Mayak server is offline. Start pnpm dev and refresh.',
+  retry: 'Retry',
+  delete: 'Delete',
+  confirmDelete: 'Confirm delete',
+  close: 'Close',
+  settingsTitle: 'Settings',
+  tabProviders: 'Models',
+  tabMcp: 'MCP',
+  tabSkills: 'Skills',
+  tabGeneral: 'General',
+  addProvider: 'Add provider',
+  providerName: 'Name',
+  providerKind: 'Type',
+  baseUrl: 'Base URL',
+  apiKey: 'API key',
+  apiKeySaved:
+    'A key is stored on the server. Type a new one only to replace it.',
+  apiKeyHint: 'After saving, the key is never sent back to the browser.',
+  models: 'Models',
+  modelsHint: 'One model id per line. Keep mock for the demo model.',
+  enabled: 'Enabled',
+  save: 'Save',
+  cancel: 'Cancel',
+  test: 'Test',
+  testing: 'Testing…',
+  testOk: 'Got a reply',
+  kindOpenAI: 'OpenAI-compatible',
+  kindAnthropic: 'Anthropic',
+  kindGemini: 'Google Gemini',
+  kindMock: 'Demo, offline',
+  openaiHint: 'OpenAI, OpenRouter, Ollama, LM Studio, Groq — any /v1 endpoint',
+  addMcp: 'Add server',
+  mcpName: 'Name',
+  transport: 'Transport',
+  command: 'Command',
+  args: 'Arguments',
+  argsHint: 'One argument per line',
+  url: 'URL',
+  env: 'Environment',
+  headers: 'Headers',
+  envHint:
+    'KEY=value, one pair per line. An empty field does not erase saved secrets.',
+  importJson: 'Import mcpServers',
+  importHint:
+    'Same shape as Claude Desktop and Cursor. Secrets come back masked: •••••• keeps the stored value.',
+  importAction: 'Import',
+  tools: 'Tools',
+  noTools: 'No tools yet — the server is off or still connecting',
+  statusConnected: 'connected',
+  statusError: 'error',
+  statusDisconnected: 'off',
+  statusConnecting: 'connecting',
+  addSkill: 'New skill',
+  skillName: 'Folder name',
+  skillDescription: 'Description for the system prompt',
+  skillBody: 'Instructions',
+  skillEnabled: 'Enabled — name and description go into the prompt',
+  skillDir: 'Skills directory',
+  skillEmpty: 'Pick a skill or create one. A skill is a folder with SKILL.md.',
+  theme: 'Theme',
+  themeDark: 'Night',
+  themeLight: 'Day',
+  generalLead:
+    'The interface defaults to Russian. English strings are already here and switch from this page.',
+  saved: 'Saved',
+  noProviders: 'No providers. The demo model is created on first launch.',
+  edit: 'Edit',
+  back: 'Back to chats',
+  menu: 'Menu',
+};
+
+const dictionaries: Record<Locale, Dictionary> = { ru, en };
+
+interface I18nValue {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: keyof Dictionary) => string;
+}
+
+const I18nContext = createContext<I18nValue | null>(null);
+
+export function I18nProvider({ children }: { children: ReactNode }) {
+  const [locale, setLocaleState] = useState<Locale>(() =>
+    localStorage.getItem('mayak.locale') === 'en' ? 'en' : 'ru',
+  );
+  const setLocale = useCallback((next: Locale) => {
+    localStorage.setItem('mayak.locale', next);
+    setLocaleState(next);
+  }, []);
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+  const value = useMemo<I18nValue>(
+    () => ({ locale, setLocale, t: (key) => dictionaries[locale][key] }),
+    [locale, setLocale],
+  );
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+}
+
+export function useI18n(): I18nValue {
+  const value = useContext(I18nContext);
+  if (!value) throw new Error('i18n missing');
+  return value;
+}
+
+export type Theme = 'dark' | 'light';
+
+export function useTheme(): [Theme, (theme: Theme) => void] {
+  const [theme, setThemeState] = useState<Theme>(() =>
+    localStorage.getItem('mayak.theme') === 'light' ? 'light' : 'dark',
+  );
+  const setTheme = (next: Theme) => {
+    localStorage.setItem('mayak.theme', next);
+    setThemeState(next);
+  };
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+  return [theme, setTheme];
+}

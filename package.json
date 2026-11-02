@@ -1,0 +1,22 @@
+{
+  "name": "mayak",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @mayak/server --filter @mayak/web dev",
+    "dev:desktop": "pnpm --parallel --filter @mayak/server --filter @mayak/web --filter @mayak/desktop dev",
+    "build": "pnpm --filter @mayak/web build && pnpm --filter @mayak/server build && pnpm --filter @mayak/desktop build",
+    "test": "pnpm --filter @mayak/server test",
+    "lint": "biome check .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "format": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.4"
+  }
+}
