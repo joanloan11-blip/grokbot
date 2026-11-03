@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Agent, PublicUser, UsageRow } from '@mayak/shared';
+import type {
+  Agent,
+  ProviderPublic,
+  PublicUser,
+  UsageRow,
+} from '@mayak/shared';
 import { api } from '../api';
 import { useI18n } from '../i18n';
 import { IconMenu } from './icons';
@@ -8,6 +13,7 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
   const { t } = useI18n();
   const [users, setUsers] = useState<PublicUser[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [providers, setProviders] = useState<ProviderPublic[]>([]);
   const [usage, setUsage] = useState<UsageRow[]>([]);
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
@@ -16,14 +22,13 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    const [nextUsers, nextAgents, nextUsage] = await Promise.all([
-      api.team(),
-      api.agents(),
-      api.usage(),
-    ]);
+    const [nextUsers, nextAgents, nextUsage, nextProviders] = await Promise.all(
+      [api.team(), api.agents(), api.usage(), api.providers()],
+    );
     setUsers(nextUsers);
     setAgents(nextAgents);
     setUsage(nextUsage);
+    setProviders(nextProviders);
   }, []);
 
   useEffect(() => {
@@ -34,6 +39,17 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
 
   const callsFor = (id: string) =>
     usage.find((row) => row.userId === id)?.calls ?? 0;
+  const modelsFor = (id: string) =>
+    (usage.find((row) => row.userId === id)?.models ?? [])
+      .map((item) => `${item.model} × ${item.calls}`)
+      .join(', ');
+  const sharedModels = providers.flatMap((provider) =>
+    provider.managerModels.map((model) => ({
+      providerId: provider.id,
+      model,
+      label: `${provider.name}: ${model}`,
+    })),
+  );
 
   const invite = async () => {
     setError('');
@@ -141,6 +157,7 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                   {user.dailyRequestLimit === null
                     ? ''
                     : ` / ${user.dailyRequestLimit}`}
+                  {modelsFor(user.id) ? ` · ${modelsFor(user.id)}` : ''}
                 </span>
               </header>
               <div className="row-actions">
@@ -176,6 +193,64 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                   />
                 </label>
               </div>
+              {user.role !== 'admin' && sharedModels.length > 0 && (
+                <div className="row-actions">
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={user.modelsRestricted}
+                      onChange={() =>
+                        void save(user, {
+                          modelsRestricted: !user.modelsRestricted,
+                          models: user.models,
+                        })
+                      }
+                    />
+                    {t('restrictModels')}
+                  </label>
+                  {user.modelsRestricted &&
+                    sharedModels.map((item) => {
+                      const on = user.models.some(
+                        (grant) =>
+                          grant.providerId === item.providerId &&
+                          grant.model === item.model,
+                      );
+                      return (
+                        <label
+                          key={`${item.providerId}:${item.model}`}
+                          className="check"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() => {
+                              const models = on
+                                ? user.models.filter(
+                                    (grant) =>
+                                      !(
+                                        grant.providerId === item.providerId &&
+                                        grant.model === item.model
+                                      ),
+                                  )
+                                : [
+                                    ...user.models,
+                                    {
+                                      providerId: item.providerId,
+                                      model: item.model,
+                                    },
+                                  ];
+                              void save(user, {
+                                modelsRestricted: true,
+                                models,
+                              });
+                            }}
+                          />
+                          {item.label}
+                        </label>
+                      );
+                    })}
+                </div>
+              )}
               {user.role !== 'admin' && (
                 <div className="row-actions">
                   {agents.map((agent) => {

@@ -18,8 +18,15 @@ export interface ProviderPublic {
   kind: ProviderKind;
   baseUrl: string;
   models: string[];
+  /** Модели этого провайдера, которые админ открыл менеджерам. */
+  managerModels: string[];
   enabled: boolean;
   hasApiKey: boolean;
+}
+
+export interface ModelRef {
+  providerId: string;
+  model: string;
 }
 
 export interface ProviderInput {
@@ -53,7 +60,15 @@ export interface PublicUser {
   status: UserStatus;
   dailyRequestLimit: number | null;
   agentIds: string[];
+  /** false — все модели из общего списка. true — только `models`. */
+  modelsRestricted: boolean;
+  models: ModelRef[];
   createdAt: string;
+}
+
+export interface UsageModelCount {
+  model: string;
+  calls: number;
 }
 
 export interface UsageRow {
@@ -62,6 +77,7 @@ export interface UsageRow {
   name: string;
   calls: number;
   limit: number | null;
+  models: UsageModelCount[];
 }
 
 export interface Agent {

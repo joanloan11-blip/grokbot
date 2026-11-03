@@ -147,6 +147,20 @@ describe('auth and isolation', () => {
     );
     expect(forbidden.status).toBe(403);
 
+    const catalog = await json<{ id: string; models: string[] }[]>(
+      await get('/api/providers', adminCookie),
+    );
+    const demo = catalog.find((item) => item.models.includes('mock'));
+    if (!demo) throw new Error('нет демо-модели');
+    const shared = await handle.app.request('/api/admin/models/shared', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        models: [{ providerId: demo.id, model: 'mock' }],
+      }),
+    });
+    expect(shared.status).toBe(200);
+
     const adminChat = await json<Conversation>(
       await send('/api/conversations', { agentId, locale: 'ru' }, adminCookie),
     );

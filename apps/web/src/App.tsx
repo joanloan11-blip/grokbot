@@ -313,6 +313,7 @@ function Shell({
             defaultProviderId={agent.providerId}
             defaultModel={agent.model}
             providers={providers}
+            barPicker={user?.role === 'manager'}
             onMenu={() => setNavOpen(true)}
             onConversation={(conversation) => {
               setActiveId(conversation.id);
@@ -337,6 +338,7 @@ function Shell({
             tab={view.tab}
             onTab={(tab) => setView({ name: 'settings', tab })}
             onMenu={() => setNavOpen(true)}
+            shareModels={user?.role === 'admin'}
             onProvidersChanged={() => void refresh()}
           />
         ) : (

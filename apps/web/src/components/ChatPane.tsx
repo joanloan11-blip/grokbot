@@ -16,6 +16,7 @@ interface Props {
   defaultProviderId: string | null;
   defaultModel: string | null;
   providers: ProviderPublic[];
+  barPicker?: boolean;
   onMenu: () => void;
   onConversation: (conversation: Conversation) => void;
   onDeleted: (id: string) => void;
@@ -33,6 +34,7 @@ export function ChatPane({
   defaultProviderId,
   defaultModel,
   providers,
+  barPicker = false,
   onMenu,
   onConversation,
   onDeleted,
@@ -270,32 +272,17 @@ export function ChatPane({
             </button>
           )}
         </div>
-        <label className="model-pick">
-          <span>{t('modelLabel')}</span>
-          <select
-            value={choice}
-            onChange={(event) =>
-              void persistChoice(event.target.value, conversationId)
-            }
-          >
-            {providers
-              .filter(
-                (provider) => provider.enabled && provider.models.length > 0,
-              )
-              .map((provider) => (
-                <optgroup key={provider.id} label={provider.name}>
-                  {provider.models.map((model) => (
-                    <option
-                      key={`${provider.id}:${model}`}
-                      value={`${provider.id}:${model}`}
-                    >
-                      {model}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-          </select>
-        </label>
+        {!barPicker && (
+          <div className="model-pick">
+            <span>{t('modelLabel')}</span>
+            <ModelSelect
+              providers={providers}
+              value={choice}
+              label={t('modelLabel')}
+              onChange={(next) => void persistChoice(next, conversationId)}
+            />
+          </div>
+        )}
         {conversationId && (
           <button
             type="button"
@@ -391,6 +378,15 @@ export function ChatPane({
             }
           }}
         />
+        {barPicker && (
+          <ModelSelect
+            providers={providers}
+            value={choice}
+            label={t('modelLabel')}
+            className="composer-model"
+            onChange={(next) => void persistChoice(next, conversationId)}
+          />
+        )}
         {busy ? (
           <button
             className="send stop"
@@ -412,6 +408,44 @@ export function ChatPane({
         )}
       </form>
     </section>
+  );
+}
+
+function ModelSelect({
+  providers,
+  value,
+  onChange,
+  label,
+  className,
+}: {
+  providers: ProviderPublic[];
+  value: string;
+  onChange: (next: string) => void;
+  label?: string;
+  className?: string;
+}) {
+  return (
+    <select
+      className={className}
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      {providers
+        .filter((provider) => provider.enabled && provider.models.length > 0)
+        .map((provider) => (
+          <optgroup key={provider.id} label={provider.name}>
+            {provider.models.map((model) => (
+              <option
+                key={`${provider.id}:${model}`}
+                value={`${provider.id}:${model}`}
+              >
+                {model}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+    </select>
   );
 }
 

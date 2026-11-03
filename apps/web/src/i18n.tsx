@@ -161,6 +161,8 @@ const ru = {
   invite: 'Пригласить',
   copyToken: 'Одноразовый токен — передайте его менеджеру:',
   youAre: 'Вы вошли как',
+  shareModel: 'менеджерам',
+  restrictModels: 'Только выбранные модели',
 };
 
 type Dictionary = { [K in keyof typeof ru]: string };
@@ -314,6 +316,8 @@ const en: Dictionary = {
   invite: 'Invite',
   copyToken: 'One-time token — give it to the manager:',
   youAre: 'Signed in as',
+  shareModel: 'for managers',
+  restrictModels: 'Only selected models',
 };
 
 const dictionaries: Record<Locale, Dictionary> = { ru, en };

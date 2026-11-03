@@ -68,6 +68,9 @@ export async function runTurn(
       ? requested
       : provider.models[0];
   if (!model) throw badRequest('У провайдера не задана модель');
+  if (owner && !(await deps.store.isModelAllowed(owner, provider.id, model))) {
+    throw new HttpError(403, 'Эта модель недоступна');
+  }
   if (providerNeedsKey(provider.kind) && !provider.apiKey) {
     throw badRequest('Сохраните API-ключ провайдера в настройках');
   }

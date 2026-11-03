@@ -224,11 +224,39 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     await next();
   });
 
+  const publishUser = async (user: UserRecord) =>
+    toPublicUser(
+      user,
+      await store.listUserAgentIds(user.id),
+      await store.listModelAccess(user.id),
+    );
+
+  const requireAllowedModel = async (
+    user: UserRecord,
+    providerId: string | null | undefined,
+    model: string | null | undefined,
+    explicitModel: boolean,
+  ) => {
+    const provider = providerId
+      ? await store.getProvider(providerId)
+      : undefined;
+    if (!provider?.enabled) throw badRequest('Выберите включённую модель');
+    if (explicitModel && model && !provider.models.includes(model)) {
+      throw badRequest('У провайдера нет такой модели');
+    }
+    const resolved =
+      model && provider.models.includes(model) ? model : provider.models[0];
+    if (!resolved) throw badRequest('У провайдера не задана модель');
+    const target = explicitModel && model ? model : resolved;
+    if (!(await store.isModelAllowed(user, provider.id, target))) {
+      throw new HttpError(403, 'Эта модель недоступна');
+    }
+    return { providerId: provider.id, model: resolved };
+  };
+
   app.get('/api/auth/me', async (c) => {
     const user = await actor(c);
-    return c.json({
-      user: toPublicUser(user, await store.listUserAgentIds(user.id)),
-    });
+    return c.json({ user: await publishUser(user) });
   });
 
   app.get('/api/admin/users', async (c) => {
@@ -238,7 +266,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const users = await store.listUsers();
     const result = [];
     for (const item of users) {
-      result.push(toPublicUser(item, await store.listUserAgentIds(item.id)));
+      result.push(await publishUser(item));
     }
     return c.json(result);
   });
@@ -286,7 +314,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
     const patch: Partial<
-      Pick<UserRecord, 'name' | 'status' | 'dailyRequestLimit'>
+      Pick<
+        UserRecord,
+        'name' | 'status' | 'dailyRequestLimit' | 'modelsRestricted'
+      >
     > = {};
     if (typeof body.name === 'string' && body.name.trim())
       patch.name = body.name.trim();
@@ -302,6 +333,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     }
     if ('dailyRequestLimit' in body)
       patch.dailyRequestLimit = parseLimit(body.dailyRequestLimit);
+    if ('modelsRestricted' in body)
+      patch.modelsRestricted = body.modelsRestricted === true;
     const updated = await store.updateUser(current.id, patch);
     if (!updated) return c.json({ error: 'Пользователь не найден' }, 404);
     if (Array.isArray(body.agentIds)) {
@@ -310,9 +343,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       );
       await store.setUserAgents(updated.id, agentIds);
     }
-    return c.json(
-      toPublicUser(updated, await store.listUserAgentIds(updated.id)),
-    );
+    if (Array.isArray(body.models)) {
+      await store.setModelAccess(updated.id, parseModelRefs(body.models));
+    }
+    return c.json(await publishUser(updated));
   });
 
   app.get('/api/admin/usage', async (c) => {
@@ -322,6 +356,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const since = new Date();
     since.setUTCHours(0, 0, 0, 0);
     const summary = await store.usageSummary(since.toISOString());
+    const byModel = await store.usageByModel(since.toISOString());
     const byUser = new Map(summary.map((row) => [row.userId, row.calls]));
     const users = await store.listUsers();
     return c.json(
@@ -331,13 +366,63 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         name: item.name,
         calls: byUser.get(item.id) ?? 0,
         limit: item.dailyRequestLimit,
+        models: byModel
+          .filter((row) => row.userId === item.id)
+          .map((row) => ({ model: row.model, calls: row.calls })),
       })),
     );
   });
 
-  app.get('/api/providers', async (c) =>
-    c.json((await store.listProviders()).map(toPublicProvider)),
-  );
+  app.put('/api/admin/models/shared', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const models = parseModelRefs(body.models).filter(
+      (item) => item.providerId && item.model,
+    );
+    const known = await store.listProviders();
+    const kept = models.filter((item) =>
+      known.some(
+        (provider) =>
+          provider.id === item.providerId &&
+          provider.models.includes(item.model),
+      ),
+    );
+    await store.setModelAccess('', kept);
+    return c.json({ models: kept });
+  });
+
+  app.get('/api/providers', async (c) => {
+    const user = await actor(c);
+    const rows = await store.listProviders();
+    const shared = await store.listModelAccess('');
+    const allowed =
+      user.role === 'manager' ? await store.allowedModels(user) : null;
+    const visible = rows
+      .map((row) => {
+        const managerModels = shared
+          .filter(
+            (item) =>
+              item.providerId === row.id && row.models.includes(item.model),
+          )
+          .map((item) => item.model);
+        const models = allowed
+          ? row.models.filter((model) =>
+              allowed.some(
+                (item) => item.providerId === row.id && item.model === model,
+              ),
+            )
+          : row.models;
+        return { ...toPublicProvider(row), models, managerModels };
+      })
+      .filter(
+        (row) =>
+          user.role !== 'manager' || (row.enabled && row.models.length > 0),
+      );
+    return c.json(visible);
+  });
 
   app.post('/api/providers', async (c) => {
     const input = parseProviderInput(await readBody(c));
@@ -680,6 +765,14 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       typeof record.model === 'string'
         ? record.model
         : (agent.model ?? defaults.model);
+    if (user.role === 'manager' && providerId && model) {
+      await requireAllowedModel(
+        user,
+        providerId,
+        model,
+        typeof record.model === 'string',
+      );
+    }
     const created = await store.insertConversation({
       title: locale === 'en' ? 'New chat' : 'Новый чат',
       agentId: agent.id,
@@ -716,6 +809,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const providerId =
       typeof body.providerId === 'string' ? body.providerId : undefined;
     const model = typeof body.model === 'string' ? body.model : undefined;
+    if (
+      user.role === 'manager' &&
+      (providerId !== undefined || model !== undefined)
+    ) {
+      await requireAllowedModel(
+        user,
+        providerId ?? current.providerId,
+        model ?? current.model,
+        model !== undefined,
+      );
+    }
     const updated = await store.updateConversation(current.id, {
       title: title || undefined,
       providerId,
@@ -734,7 +838,11 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.post('/api/conversations/:id/messages', async (c) => {
     const user = await actor(c);
-    if (!(await store.getConversation(c.req.param('id'), user.id))) {
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) {
       return c.json({ error: 'Чат не найден' }, 404);
     }
     const body = await readBody(c);
@@ -748,6 +856,20 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const content = body.content.trim();
     if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
     await assertQuota(store, user);
+    const agent = conversation.agentId
+      ? await store.getAgent(conversation.agentId)
+      : undefined;
+    const explicitModel = typeof body.model === 'string';
+    const selection = await requireAllowedModel(
+      user,
+      typeof body.providerId === 'string'
+        ? body.providerId
+        : (conversation.providerId ?? agent?.providerId),
+      explicitModel && typeof body.model === 'string'
+        ? body.model
+        : (conversation.model ?? agent?.model),
+      explicitModel,
+    );
     const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
     return streamSSE(c, async (stream) => {
       const write = async (event: ClientEvent) => {
@@ -761,9 +883,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
             content,
             locale,
             userId: user.id,
-            providerId:
-              typeof body.providerId === 'string' ? body.providerId : undefined,
-            model: typeof body.model === 'string' ? body.model : undefined,
+            providerId: selection.providerId,
+            model: selection.model,
             signal: c.req.raw.signal,
             onEvent: write,
           },
@@ -976,6 +1097,22 @@ function normalizeEmail(value: unknown): string {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     throw badRequest('Некорректная почта');
   return email;
+}
+
+function parseModelRefs(
+  value: unknown,
+): { providerId: string; model: string }[] {
+  if (!Array.isArray(value)) return [];
+  const refs: { providerId: string; model: string }[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (typeof item.providerId !== 'string' || typeof item.model !== 'string')
+      continue;
+    const providerId = item.providerId.trim();
+    const model = item.model.trim();
+    if (providerId && model) refs.push({ providerId, model });
+  }
+  return refs;
 }
 
 function parseLimit(value: unknown): number | null {

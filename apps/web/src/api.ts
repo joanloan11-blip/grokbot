@@ -87,6 +87,11 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  setSharedModels: (models: { providerId: string; model: string }[]) =>
+    request<{ models: { providerId: string; model: string }[] }>(
+      '/api/admin/models/shared',
+      { method: 'PUT', body: JSON.stringify({ models }) },
+    ),
   updateUser: (
     id: string,
     body: {
@@ -94,6 +99,8 @@ export const api = {
       status?: PublicUser['status'];
       dailyRequestLimit?: number | null;
       agentIds?: string[];
+      modelsRestricted?: boolean;
+      models?: { providerId: string; model: string }[];
     },
   ) =>
     request<PublicUser>(`/api/admin/users/${id}`, {

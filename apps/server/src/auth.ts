@@ -85,7 +85,11 @@ export function readSession(token: string, secret: string): string | undefined {
   }
 }
 
-export function toPublicUser(user: UserRecord, agentIds: string[]): PublicUser {
+export function toPublicUser(
+  user: UserRecord,
+  agentIds: string[],
+  models: { providerId: string; model: string }[] = [],
+): PublicUser {
   return {
     id: user.id,
     email: user.email,
@@ -94,6 +98,8 @@ export function toPublicUser(user: UserRecord, agentIds: string[]): PublicUser {
     status: user.status,
     dailyRequestLimit: user.dailyRequestLimit,
     agentIds,
+    modelsRestricted: user.modelsRestricted,
+    models,
     createdAt: user.createdAt,
   };
 }

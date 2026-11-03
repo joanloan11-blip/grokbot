@@ -178,6 +178,7 @@ export function toPublicProvider(row: ProviderRow): ProviderPublic {
     models: row.models,
     enabled: row.enabled,
     hasApiKey: row.apiKey.length > 0,
+    managerModels: [],
   };
 }
 
@@ -329,7 +330,14 @@ export class Store {
         status TEXT NOT NULL,
         daily_request_limit INTEGER,
         invite_token_hash TEXT,
+        models_restricted INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS model_access (
+        provider_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        user_id TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (provider_id, model, user_id)
       );
       CREATE TABLE IF NOT EXISTS user_agents (
         user_id TEXT NOT NULL,
@@ -359,6 +367,11 @@ export class Store {
       'users',
       'invite_token_hash',
       'ALTER TABLE users ADD COLUMN invite_token_hash TEXT',
+    );
+    await add(
+      'users',
+      'models_restricted',
+      'ALTER TABLE users ADD COLUMN models_restricted INTEGER NOT NULL DEFAULT 0',
     );
     await this.rebuildMemoryTable();
   }
@@ -1058,6 +1071,7 @@ export class Store {
       role: input.role,
       status: input.status,
       dailyRequestLimit: input.dailyRequestLimit,
+      modelsRestricted: false,
       createdAt: nowIso(),
     };
     await this.sql.run(
@@ -1083,7 +1097,12 @@ export class Store {
     patch: Partial<
       Pick<
         UserRecord,
-        'name' | 'passwordHash' | 'role' | 'status' | 'dailyRequestLimit'
+        | 'name'
+        | 'passwordHash'
+        | 'role'
+        | 'status'
+        | 'dailyRequestLimit'
+        | 'modelsRestricted'
       >
     >,
   ): Promise<UserRecord | undefined> {
@@ -1099,15 +1118,20 @@ export class Store {
         patch.dailyRequestLimit === undefined
           ? current.dailyRequestLimit
           : patch.dailyRequestLimit,
+      modelsRestricted:
+        patch.modelsRestricted === undefined
+          ? current.modelsRestricted
+          : patch.modelsRestricted,
     };
     await this.sql.run(
-      `UPDATE users SET name = ?, password_hash = ?, role = ?, status = ?, daily_request_limit = ? WHERE id = ?`,
+      `UPDATE users SET name = ?, password_hash = ?, role = ?, status = ?, daily_request_limit = ?, models_restricted = ? WHERE id = ?`,
       [
         next.name,
         next.passwordHash,
         next.role,
         next.status,
         next.dailyRequestLimit,
+        next.modelsRestricted ? 1 : 0,
         id,
       ],
     );
@@ -1161,6 +1185,84 @@ export class Store {
     return rows.map((row) => ({ userId: row.user_id, calls: Number(row.n) }));
   }
 
+  async usageByModel(
+    sinceIso: string,
+  ): Promise<{ userId: string; model: string; calls: number }[]> {
+    const rows = await this.sql.all<{
+      user_id: string;
+      model: string;
+      n: number;
+    }>(
+      `SELECT user_id, model, COUNT(*) AS n FROM usage_events
+       WHERE created_at >= ? GROUP BY user_id, model ORDER BY model`,
+      [sinceIso],
+    );
+    return rows.map((row) => ({
+      userId: row.user_id,
+      model: row.model,
+      calls: Number(row.n),
+    }));
+  }
+
+  async listModelAccess(
+    userId = '',
+  ): Promise<{ providerId: string; model: string }[]> {
+    const rows = await this.sql.all<{ provider_id: string; model: string }>(
+      'SELECT provider_id, model FROM model_access WHERE user_id = ? ORDER BY model',
+      [userId],
+    );
+    return rows.map((row) => ({
+      providerId: row.provider_id,
+      model: row.model,
+    }));
+  }
+
+  async setModelAccess(
+    userId: string,
+    models: { providerId: string; model: string }[],
+  ): Promise<void> {
+    await this.sql.run('DELETE FROM model_access WHERE user_id = ?', [userId]);
+    const seen = new Set<string>();
+    for (const item of models) {
+      const providerId = item.providerId.trim();
+      const model = item.model.trim();
+      if (!providerId || !model) continue;
+      const key = `${providerId}\n${model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      await this.sql.run(
+        'INSERT INTO model_access (provider_id, model, user_id) VALUES (?, ?, ?)',
+        [providerId, model, userId],
+      );
+    }
+  }
+
+  async allowedModels(
+    user: UserRecord,
+  ): Promise<{ providerId: string; model: string }[]> {
+    const shared = await this.listModelAccess('');
+    if (!user.modelsRestricted) return shared;
+    const personal = await this.listModelAccess(user.id);
+    return personal.filter((item) =>
+      shared.some(
+        (grant) =>
+          grant.providerId === item.providerId && grant.model === item.model,
+      ),
+    );
+  }
+
+  async isModelAllowed(
+    user: UserRecord,
+    providerId: string,
+    model: string,
+  ): Promise<boolean> {
+    if (user.role !== 'manager') return true;
+    const allowed = await this.allowedModels(user);
+    return allowed.some(
+      (item) => item.providerId === providerId && item.model === model,
+    );
+  }
+
   async claimOrphans(userId: string): Promise<void> {
     await this.sql.run(
       `UPDATE conversations SET user_id = ? WHERE user_id IS NULL OR user_id = ''`,
@@ -1205,6 +1307,7 @@ export interface UserRecord {
   role: 'admin' | 'manager';
   status: 'active' | 'pending' | 'disabled';
   dailyRequestLimit: number | null;
+  modelsRestricted: boolean;
   createdAt: string;
 }
 
@@ -1216,6 +1319,7 @@ interface UserSql {
   role: string;
   status: string;
   daily_request_limit: number | null;
+  models_restricted: number | null;
   created_at: string;
 }
 
@@ -1232,6 +1336,7 @@ function mapUser(row: UserSql): UserRecord {
         : 'active',
     dailyRequestLimit:
       row.daily_request_limit === null ? null : Number(row.daily_request_limit),
+    modelsRestricted: Number(row.models_restricted) === 1,
     createdAt: row.created_at,
   };
 }
