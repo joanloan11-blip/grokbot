@@ -12,9 +12,10 @@ import {
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n, useTheme } from '../i18n';
+import { GithubPane } from './GithubPane';
 import { IconMenu } from './icons';
 
-export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'general';
+export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'github' | 'general';
 
 const KINDS: ProviderKind[] = [
   'openai',
@@ -29,17 +30,20 @@ export function SettingsPane({
   onTab,
   onMenu,
   onProvidersChanged,
+  shareModels = false,
 }: {
   tab: SettingsTab;
   onTab: (tab: SettingsTab) => void;
   onMenu: () => void;
   onProvidersChanged: () => void;
+  shareModels?: boolean;
 }) {
   const { t } = useI18n();
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'providers', label: t('tabProviders') },
     { id: 'mcp', label: t('tabMcp') },
     { id: 'skills', label: t('tabSkills') },
+    { id: 'github', label: t('tabGithub') },
     { id: 'general', label: t('tabGeneral') },
   ];
   return (
@@ -71,17 +75,42 @@ export function SettingsPane({
           ))}
         </div>
         {tab === 'providers' && (
-          <ProvidersPanel onChanged={onProvidersChanged} />
+          <ProvidersPanel
+            onChanged={onProvidersChanged}
+            shareModels={shareModels}
+          />
         )}
         {tab === 'mcp' && <McpPanel />}
         {tab === 'skills' && <SkillsPanel />}
+        {tab === 'github' && <GithubPane />}
         {tab === 'general' && <GeneralPanel />}
       </div>
     </section>
   );
 }
 
-function ProvidersPanel({ onChanged }: { onChanged: () => void }) {
+async function toggleShared(
+  providers: ProviderPublic[],
+  providerId: string,
+  model: string,
+  shared: boolean,
+): Promise<void> {
+  const models = providers.flatMap((provider) =>
+    provider.managerModels
+      .filter((item) => !(provider.id === providerId && item === model))
+      .map((item) => ({ providerId: provider.id, model: item })),
+  );
+  if (shared) models.push({ providerId, model });
+  await api.setSharedModels(models);
+}
+
+function ProvidersPanel({
+  onChanged,
+  shareModels,
+}: {
+  onChanged: () => void;
+  shareModels: boolean;
+}) {
   const { t } = useI18n();
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
   const [editing, setEditing] = useState<
@@ -285,7 +314,45 @@ function ProvidersPanel({ onChanged }: { onChanged: () => void }) {
                 {provider.enabled ? t('enabled') : t('statusDisconnected')}
               </span>
             </div>
-            <p className="models">{provider.models.join(', ') || '—'}</p>
+            {shareModels ? (
+              <div className="model-shares">
+                {provider.models.length === 0 && <p className="models">—</p>}
+                {provider.models.map((model) => {
+                  const shared = provider.managerModels.includes(model);
+                  return (
+                    <label key={model} className="check">
+                      <input
+                        type="checkbox"
+                        checked={shared}
+                        onChange={() =>
+                          void toggleShared(
+                            providers,
+                            provider.id,
+                            model,
+                            !shared,
+                          )
+                            .then(() => load())
+                            .then(() => onChanged())
+                            .catch((reason: unknown) =>
+                              setError(
+                                reason instanceof Error
+                                  ? reason.message
+                                  : t('error'),
+                              ),
+                            )
+                        }
+                      />
+                      <span>
+                        {model}
+                        <em>{t('shareModel')}</em>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="models">{provider.models.join(', ') || '—'}</p>
+            )}
             <div className="row-actions">
               <button
                 type="button"

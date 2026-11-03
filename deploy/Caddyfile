@@ -1,0 +1,5 @@
+# TLS на границе. Приложение внутри сети слушает HTTP.
+# Домен берётся из переменной MAYAK_DOMAIN (см. docker-compose.yml).
+{$MAYAK_DOMAIN} {
+	reverse_proxy app:8787
+}

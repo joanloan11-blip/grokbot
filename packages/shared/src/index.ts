@@ -18,8 +18,15 @@ export interface ProviderPublic {
   kind: ProviderKind;
   baseUrl: string;
   models: string[];
+  /** Модели этого провайдера, которые админ открыл менеджерам. */
+  managerModels: string[];
   enabled: boolean;
   hasApiKey: boolean;
+}
+
+export interface ModelRef {
+  providerId: string;
+  model: string;
 }
 
 export interface ProviderInput {
@@ -35,10 +42,42 @@ export interface Conversation {
   id: string;
   title: string;
   agentId: string | null;
+  userId: string | null;
   providerId: string | null;
   model: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type UserRole = 'admin' | 'manager';
+export type UserStatus = 'active' | 'pending' | 'disabled';
+
+export interface PublicUser {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  status: UserStatus;
+  dailyRequestLimit: number | null;
+  agentIds: string[];
+  /** false — все модели из общего списка. true — только `models`. */
+  modelsRestricted: boolean;
+  models: ModelRef[];
+  createdAt: string;
+}
+
+export interface UsageModelCount {
+  model: string;
+  calls: number;
+}
+
+export interface UsageRow {
+  userId: string;
+  email: string;
+  name: string;
+  calls: number;
+  limit: number | null;
+  models: UsageModelCount[];
 }
 
 export interface Agent {
@@ -51,6 +90,8 @@ export interface Agent {
   model: string | null;
   mcpServerIds: string[];
   skillNames: string[];
+  /** Репозитории owner/name, которые агент может читать через GitHub. */
+  githubRepos: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +105,36 @@ export interface AgentInput {
   model?: string | null;
   mcpServerIds?: string[];
   skillNames?: string[];
+  githubRepos?: string[];
+}
+
+export interface GithubStatus {
+  connected: boolean;
+  login: string | null;
+  oauth: boolean;
+  error?: string;
+}
+
+export interface GithubRepoInfo {
+  fullName: string;
+  private: boolean;
+  description: string;
+  defaultBranch: string;
+}
+
+export interface GithubSkillPreview {
+  name: string;
+  description: string;
+}
+
+export interface GithubPreview {
+  id: string;
+  repo: string;
+  kind: 'node' | 'python' | 'docker' | 'config' | 'unknown';
+  summary: string;
+  command: string;
+  args: string[];
+  skills: GithubSkillPreview[];
 }
 
 export interface AgentTemplate {
@@ -84,6 +155,7 @@ export interface MemoryNote {
 export interface Routine {
   id: string;
   agentId: string;
+  userId: string;
   name: string;
   cron: string;
   prompt: string;

@@ -300,6 +300,7 @@ code {
 .side-foot {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .side-foot .ghost {
   flex: 1;
@@ -616,6 +617,28 @@ input[type="checkbox"]:checked::after {
   border-radius: 22px;
   box-shadow: var(--shadow);
 }
+.composer-model {
+  flex: none;
+  max-width: 190px;
+  height: 44px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0 10px;
+  color: var(--text);
+}
+.model-shares {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.model-shares em {
+  margin-left: 8px;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 0.8rem;
+}
 .composer textarea {
   flex: 1;
   resize: none;
@@ -783,6 +806,25 @@ input[type="checkbox"]:checked::after {
   background: transparent;
   color: var(--text);
   padding: 6px 10px;
+}
+.auth-wrap {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.auth-card {
+  width: min(440px, 100%);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+.team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .scrim {
   display: none;

@@ -1,28 +1,83 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Agent, Conversation, ProviderPublic } from '@mayak/shared';
-import { api } from './api';
+import type {
+  Agent,
+  Conversation,
+  ProviderPublic,
+  PublicUser,
+} from '@mayak/shared';
+import { ApiError, api } from './api';
 import { AgentEditor } from './components/AgentEditor';
 import { AgentWizard } from './components/AgentWizard';
+import { AuthScreen } from './components/AuthScreen';
 import { ChatPane } from './components/ChatPane';
 import { BeaconMark, IconPlus } from './components/icons';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
+import { TeamPane } from './components/TeamPane';
 import { I18nProvider, useI18n } from './i18n';
 
 type View =
   | { name: 'chat' }
   | { name: 'settings'; tab: SettingsTab }
-  | { name: 'agent' };
+  | { name: 'agent' }
+  | { name: 'team' };
 
 export function App() {
   return (
     <I18nProvider>
-      <Shell />
+      <Gate />
     </I18nProvider>
   );
 }
 
-function Shell() {
+function Gate() {
+  const [ready, setReady] = useState(false);
+  const [required, setRequired] = useState(false);
+  const [user, setUser] = useState<PublicUser | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const config = await api.authConfig();
+        if (cancelled) return;
+        setRequired(config.required);
+        if (config.required) {
+          try {
+            setUser((await api.me()).user);
+          } catch {
+            setUser(null);
+          }
+        }
+      } catch {
+        setRequired(false);
+      } finally {
+        if (!cancelled) setReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onLogout = useCallback(() => {
+    void api.logout().catch(() => undefined);
+    setUser(null);
+  }, []);
+
+  if (!ready) return null;
+  if (required && !user) return <AuthScreen onUser={setUser} />;
+  return <Shell user={user} onLogout={onLogout} />;
+}
+
+function Shell({
+  user,
+  onLogout,
+}: {
+  user: PublicUser | null;
+  onLogout: () => void;
+}) {
   const { t, locale, setLocale } = useI18n();
+  const isAdmin = !user || user.role === 'admin';
   const [view, setView] = useState<View>({ name: 'chat' });
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
@@ -49,10 +104,11 @@ function Shell() {
           : (nextAgents[0]?.id ?? null),
       );
       setOnline(true);
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout();
       setOnline(false);
     }
-  }, []);
+  }, [onLogout]);
 
   useEffect(() => {
     void refresh();
@@ -122,11 +178,17 @@ function Shell() {
             </button>
           ))}
         </div>
-        <button className="ghost" type="button" onClick={() => setWizard(true)}>
-          <IconPlus />
-          {t('newAgent')}
-        </button>
-        {agent && (
+        {isAdmin && (
+          <button
+            className="ghost"
+            type="button"
+            onClick={() => setWizard(true)}
+          >
+            <IconPlus />
+            {t('newAgent')}
+          </button>
+        )}
+        {isAdmin && agent && (
           <button
             className="ghost slim"
             type="button"
@@ -167,16 +229,30 @@ function Shell() {
           ))}
         </nav>
         <div className="side-foot">
-          <button
-            type="button"
-            className={view.name === 'settings' ? 'ghost active' : 'ghost'}
-            onClick={() => {
-              setView({ name: 'settings', tab: 'providers' });
-              setNavOpen(false);
-            }}
-          >
-            {t('settings')}
-          </button>
+          {user?.role === 'admin' && (
+            <button
+              type="button"
+              className={view.name === 'team' ? 'ghost active' : 'ghost'}
+              onClick={() => {
+                setView({ name: 'team' });
+                setNavOpen(false);
+              }}
+            >
+              {t('team')}
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              type="button"
+              className={view.name === 'settings' ? 'ghost active' : 'ghost'}
+              onClick={() => {
+                setView({ name: 'settings', tab: 'providers' });
+                setNavOpen(false);
+              }}
+            >
+              {t('settings')}
+            </button>
+          )}
           <button
             type="button"
             className="lang"
@@ -184,7 +260,17 @@ function Shell() {
           >
             {locale === 'ru' ? 'EN' : 'RU'}
           </button>
+          {user && (
+            <button type="button" className="ghost" onClick={onLogout}>
+              {t('logout')}
+            </button>
+          )}
         </div>
+        {user && (
+          <p className="muted empty-side">
+            {t('youAre')} {user.email}
+          </p>
+        )}
       </aside>
       {navOpen && (
         <button
@@ -227,6 +313,7 @@ function Shell() {
             defaultProviderId={agent.providerId}
             defaultModel={agent.model}
             providers={providers}
+            barPicker={user?.role === 'manager'}
             onMenu={() => setNavOpen(true)}
             onConversation={(conversation) => {
               setActiveId(conversation.id);
@@ -244,11 +331,14 @@ function Shell() {
               setActiveId(null);
             }}
           />
-        ) : view.name === 'settings' ? (
+        ) : view.name === 'team' && user?.role === 'admin' ? (
+          <TeamPane onMenu={() => setNavOpen(true)} />
+        ) : view.name === 'settings' && isAdmin ? (
           <SettingsPane
             tab={view.tab}
             onTab={(tab) => setView({ name: 'settings', tab })}
             onMenu={() => setNavOpen(true)}
+            shareModels={user?.role === 'admin'}
             onProvidersChanged={() => void refresh()}
           />
         ) : (
