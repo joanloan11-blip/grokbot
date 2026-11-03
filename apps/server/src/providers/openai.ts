@@ -58,9 +58,20 @@ export async function* streamOpenAI(options: {
   });
 
   if (!response.ok) {
+    const detail = await readErrorBody(response);
+    if (
+      response.status === 404 &&
+      /model_not_found|deprecated|does not exist/i.test(detail)
+    ) {
+      yield {
+        type: 'error',
+        message: `Модель «${options.model}» больше недоступна у провайдера. Выберите другую модель в поле ввода или нажмите «Загрузить модели» в Настройках → Модели.`,
+      };
+      return;
+    }
     yield {
       type: 'error',
-      message: `OpenAI-совместимый API ${response.status}: ${await readErrorBody(response)}`,
+      message: `OpenAI-совместимый API ${response.status}: ${detail}`,
     };
     return;
   }

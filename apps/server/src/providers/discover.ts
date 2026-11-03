@@ -14,7 +14,25 @@ const TIMEOUT_MS = 15_000;
 
 /** Модели, которые не подходят для чата (эмбеддинги, озвучка, картинки и т.п.). */
 const NOT_CHAT =
-  /(embed|embedding|whisper|tts|dall-e|davinci-00|babbage|moderation|transcribe|realtime|audio|image|search-preview|computer-use|aqa|imagen|veo|-001$)/i;
+  /(embed|embedding|whisper|tts|dall-e|davinci|babbage|moderation|transcribe|realtime|audio|image|search|computer-use|aqa|imagen|veo|codex|instruct|deep-research|sora|-001$|\d{4}-\d{2}-\d{2}|-\d{4}$)/i;
+
+/**
+ * Модели, которые предлагаем первыми (стабильные имена, без дат и алиасов
+ * вида *-chat-latest, которые провайдеры часто отключают).
+ */
+const PREFERRED = [
+  /^gpt-5(\.\d+)?-mini$/,
+  /^gpt-5(\.\d+)?$/,
+  /^gpt-4\.1-mini$/,
+  /^gpt-4o-mini$/,
+  /^gpt-4\.1$/,
+  /^gpt-4o$/,
+  /^o4-mini$/,
+  /^claude-(sonnet|opus|haiku)-\d/,
+  /^gemini-\d(\.\d)?-(flash|pro)$/,
+  /^deepseek-(chat|reasoner)$/,
+  /^grok-\d/,
+];
 
 export function defaultBaseUrl(kind: ProviderKind): string {
   if (kind === 'deepseek') return DEEPSEEK_BASE_URL;
@@ -86,9 +104,102 @@ export async function listProviderModels(input: {
 
 /** Сначала новые и «основные» модели, потом остальные по алфавиту. */
 function compareModels(a: string, b: string): number {
-  const rank = (id: string) =>
-    /(latest|preview|mini|flash|sonnet|chat|turbo)/i.test(id) ? 0 : 1;
+  const rank = (id: string) => {
+    const index = PREFERRED.findIndex((pattern) => pattern.test(id));
+    if (index >= 0) return index;
+    // Алиасы *-latest и превью — в конец: их чаще всего отключают.
+    return /(latest|preview|exp)/i.test(id) ? 200 : 100;
+  };
   return rank(a) - rank(b) || b.localeCompare(a, 'en', { numeric: true });
+}
+
+/**
+ * Пробный запрос к модели (1–16 токенов). true — модель отвечает,
+ * false — модель удалена, отключена или не работает в чате.
+ */
+export async function probeModel(input: {
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}): Promise<boolean> {
+  if (input.kind === 'mock') return true;
+  const base = (input.baseUrl || defaultBaseUrl(input.kind)).replace(/\/$/, '');
+  let url: string;
+  let body: Record<string, unknown>;
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  };
+  if (input.kind === 'anthropic') {
+    url = `${base.replace(/\/v1$/, '')}/v1/messages`;
+    headers['x-api-key'] = input.apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    body = {
+      model: input.model,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+  } else if (input.kind === 'gemini') {
+    url = `${base}/models/${encodeURIComponent(input.model)}:generateContent?key=${encodeURIComponent(input.apiKey)}`;
+    body = {
+      contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+      generationConfig: { maxOutputTokens: 1 },
+    };
+  } else {
+    url = `${base.replace(/\/chat\/completions$/, '')}/chat/completions`;
+    headers.authorization = `Bearer ${input.apiKey}`;
+    body = {
+      model: input.model,
+      messages: [{ role: 'user', content: 'hi' }],
+      // У OpenAI новые модели не принимают max_tokens.
+      ...(base.includes('api.openai.com')
+        ? { max_completion_tokens: 16 }
+        : { max_tokens: 1 }),
+    };
+  }
+  try {
+    const response = await llmFetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (response.ok) return true;
+    const text = (await response.text().catch(() => '')).toLowerCase();
+    // 400 из-за параметров (температура, лимит токенов) — модель при этом жива.
+    if (
+      response.status === 400 &&
+      !/model_not_found|does not exist|deprecated|not supported|not a chat model|unknown model|invalid model/.test(
+        text,
+      )
+    )
+      return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Проверяет первые `limit` моделей, по 3 одновременно. */
+export async function probeModels(
+  input: { kind: ProviderKind; baseUrl: string; apiKey: string },
+  models: string[],
+  limit = 8,
+): Promise<{ working: string[]; failed: string[] }> {
+  const queue = models.slice(0, limit);
+  const status = new Map<string, boolean>();
+  const workers = Array.from({ length: 3 }, async () => {
+    while (queue.length) {
+      const model = queue.shift()!;
+      status.set(model, await probeModel({ ...input, model }));
+    }
+  });
+  await Promise.all(workers);
+  const checked = models.filter((model) => status.has(model));
+  return {
+    working: checked.filter((model) => status.get(model)),
+    failed: checked.filter((model) => status.get(model) === false),
+  };
 }
 
 /**
@@ -102,6 +213,7 @@ export async function discoverProvider(input: {
   models?: string[];
   existing: ProviderRow[];
   currentId?: string;
+  probe?: boolean;
 }): Promise<DiscoverResult> {
   const typedKey = input.apiKey?.trim() ?? '';
   const current = input.currentId
@@ -174,7 +286,16 @@ export async function discoverProvider(input: {
     if (!apiKey) continue;
     try {
       const models = await listProviderModels({ ...guess, apiKey });
-      return { ...guess, models, keyFrom, verified: true };
+      // Плюс уже выбранные пользователем модели — чтобы отметить отключённые.
+      const chosen = (input.models ?? []).filter(
+        (model) => model && model !== 'mock',
+      );
+      const toProbe = [...new Set([...chosen, ...models])];
+      const { working, failed } =
+        input.probe === false
+          ? { working: [], failed: [] }
+          : await probeModels({ ...guess, apiKey }, toProbe, chosen.length + 8);
+      return { ...guess, models, working, failed, keyFrom, verified: true };
     } catch (error) {
       lastError = error instanceof Error ? error.message : 'Ошибка';
       keyFrom = undefined;

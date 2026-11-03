@@ -1507,3 +1507,10 @@ input[type="checkbox"]:checked::after {
 .detected {
   color: var(--text);
 }
+.chip.bad {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+.chip.ok:not(.on) {
+  color: var(--text);
+}

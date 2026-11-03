@@ -406,5 +406,9 @@ export interface DiscoverResult {
   keyFrom?: { providerId: string; name: string };
   /** Ключ проверен запросом списка моделей. */
   verified: boolean;
+  /** Модели, ответившие на пробный запрос. */
+  working?: string[];
+  /** Модели, которые провайдер отклонил (удалены, отключены, не для чата). */
+  failed?: string[];
   error?: string;
 }

@@ -166,8 +166,14 @@ function ProvidersPanel({
           const picked = (current.models ?? [])
             .map((item) => item.trim())
             .filter(Boolean);
-          if (result.verified && picked.length === 0 && result.models.length)
-            next.models = result.models.slice(0, 3);
+          const working = result.working ?? [];
+          if (result.verified && picked.length === 0) {
+            // Предлагаем только модели, которые ответили на пробный запрос.
+            next.models = (working.length ? working : result.models).slice(
+              0,
+              3,
+            );
+          }
           return next;
         });
       } catch (reason) {
@@ -424,7 +430,30 @@ function ProvidersPanel({
               </span>
             )}
             {found?.error && <span className="fault">{found.error}</span>}
+            {found?.failed?.some((model) =>
+              (editing.models ?? []).map((item) => item.trim()).includes(model),
+            ) && (
+              <button
+                type="button"
+                className="ghost slim"
+                onClick={() =>
+                  setEditing({
+                    ...editing,
+                    models: (editing.models ?? [])
+                      .map((item) => item.trim())
+                      .filter((item) => item && !found.failed?.includes(item)),
+                  })
+                }
+              >
+                {t('keepWorking')}
+              </button>
+            )}
           </div>
+          {found?.failed && found.failed.length > 0 && (
+            <p className="hint">
+              {t('modelsFailed')}: {found.failed.join(', ')}
+            </p>
+          )}
           {found?.verified && found.models.length > 0 && (
             <div className="model-chips">
               {found.models.map((model) => {
@@ -435,9 +464,28 @@ function ProvidersPanel({
                   <button
                     key={model}
                     type="button"
-                    className={on ? 'chip on' : 'chip'}
+                    className={[
+                      'chip',
+                      on ? 'on' : '',
+                      found.working?.includes(model) ? 'ok' : '',
+                      found.failed?.includes(model) ? 'bad' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    title={
+                      found.failed?.includes(model)
+                        ? t('modelFailed')
+                        : found.working?.includes(model)
+                          ? t('modelWorks')
+                          : undefined
+                    }
                     onClick={() => toggleModel(model)}
                   >
+                    {found.working?.includes(model)
+                      ? '✓ '
+                      : found.failed?.includes(model)
+                        ? '✕ '
+                        : ''}
                     {model}
                   </button>
                 );

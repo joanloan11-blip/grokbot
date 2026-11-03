@@ -10,6 +10,47 @@ loadDotEnv(path.join(repoRoot, '.env'));
 const config = loadConfig();
 const handle = await createApp(config);
 
+// Проверка моделей: node apps/server/dist/index.js refresh-models <имя или id провайдера>
+// оставляет у провайдера только модели, которые отвечают на пробный запрос.
+if (process.argv[2] === 'refresh-models') {
+  const needle = (process.argv[3] ?? '').trim();
+  const store = handle.runtime.store;
+  const all = await store.listProviders();
+  const provider = all.find((row) => row.id === needle || row.name === needle);
+  if (!provider) {
+    console.error(
+      `Провайдер «${needle}» не найден. Есть: ${all.map((row) => row.name).join(', ')}`,
+    );
+    await handle.close();
+    process.exit(1);
+  }
+  const { discoverProvider } = await import('./providers/discover');
+  const result = await discoverProvider({
+    currentId: provider.id,
+    existing: all,
+    models: provider.models,
+  });
+  const working = result.working ?? [];
+  const kept = provider.models.filter((model) => working.includes(model));
+  const next = kept.length ? kept : working.slice(0, 3);
+  console.log(`Отклонены: ${(result.failed ?? []).join(', ') || '—'}`);
+  console.log(`Рабочие: ${working.join(', ') || '—'}`);
+  if (next.length) {
+    await store.updateProvider(provider.id, {
+      name: provider.name,
+      kind: provider.kind,
+      models: next,
+    });
+    console.log(`Модели провайдера «${provider.name}»: ${next.join(', ')}`);
+  } else {
+    console.log(
+      result.error ?? 'Рабочих моделей не нашлось, список не менялся.',
+    );
+  }
+  await handle.close();
+  process.exit(0);
+}
+
 // Аварийный вход: node apps/server/dist/index.js reset-link <почта>
 // печатает одноразовую ссылку для смены пароля (на час) и завершается.
 if (process.argv[2] === 'reset-link') {
