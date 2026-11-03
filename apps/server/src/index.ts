@@ -8,6 +8,7 @@ loadDotEnv(path.join(repoRoot, '.env'));
 
 const config = loadConfig();
 const handle = await createApp(config);
+const stopScheduler = handle.startScheduler();
 
 const server = serve(
   { fetch: handle.app.fetch, hostname: config.host, port: config.port },
@@ -17,6 +18,7 @@ const server = serve(
 );
 
 async function shutdown(): Promise<void> {
+  stopScheduler();
   server.close();
   await handle.close();
   process.exit(0);

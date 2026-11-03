@@ -1,8 +1,14 @@
 import type {
   ChatMessage,
   ClientEvent,
+  Agent,
+  AgentInput,
+  AgentTemplate,
   Conversation,
   Locale,
+  MemoryNote,
+  Routine,
+  RoutineInput,
   McpServerInput,
   McpServerPublic,
   McpServersFile,
@@ -83,9 +89,67 @@ export const api = {
     request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
-  conversations: () => request<Conversation[]>('/api/conversations'),
+  templates: () => request<AgentTemplate[]>('/api/agent-templates'),
+  agents: () => request<Agent[]>('/api/agents'),
+  createAgent: (input: AgentInput) =>
+    request<Agent>('/api/agents', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateAgent: (id: string, input: AgentInput) =>
+    request<Agent>(`/api/agents/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteAgent: (id: string) =>
+    request<{ ok: boolean }>(`/api/agents/${id}`, { method: 'DELETE' }),
+  memory: (agentId: string) =>
+    request<MemoryNote[]>(`/api/agents/${agentId}/memory`),
+  saveMemory: (agentId: string, key: string, content: string) =>
+    request<MemoryNote>(
+      `/api/agents/${agentId}/memory/${encodeURIComponent(key)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ content }),
+      },
+    ),
+  deleteMemory: (agentId: string, key: string) =>
+    request<{ ok: boolean }>(
+      `/api/agents/${agentId}/memory/${encodeURIComponent(key)}`,
+      {
+        method: 'DELETE',
+      },
+    ),
+  routines: (agentId: string) =>
+    request<Routine[]>(`/api/agents/${agentId}/routines`),
+  createRoutine: (agentId: string, input: RoutineInput) =>
+    request<Routine>(`/api/agents/${agentId}/routines`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateRoutine: (agentId: string, id: string, input: RoutineInput) =>
+    request<Routine>(`/api/agents/${agentId}/routines/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteRoutine: (agentId: string, id: string) =>
+    request<{ ok: boolean }>(`/api/agents/${agentId}/routines/${id}`, {
+      method: 'DELETE',
+    }),
+  runRoutine: (agentId: string, id: string) =>
+    request<{ ok: boolean }>(`/api/agents/${agentId}/routines/${id}/run`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  conversations: (agentId?: string) =>
+    request<Conversation[]>(
+      agentId
+        ? `/api/conversations?agentId=${encodeURIComponent(agentId)}`
+        : '/api/conversations',
+    ),
   createConversation: (body: {
     locale: Locale;
+    agentId?: string;
     providerId?: string;
     model?: string;
   }) =>

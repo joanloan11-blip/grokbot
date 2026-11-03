@@ -1,16 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  DEFAULT_TITLES,
   SECRET_MASK,
-  type ChatMessage,
   type ClientEvent,
   type Locale,
   type McpServerConfigEntry,
   type McpServerInput,
   type McpServerPublic,
   type McpServersFile,
+  type AgentInput,
   type ProviderInput,
+  type RoutineInput,
   DEEPSEEK_BASE_URL,
   DEEPSEEK_MODELS,
   type ProviderKind,
@@ -18,25 +18,22 @@ import {
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { runAgentLoop } from './agent/loop';
 import type { AppConfig } from './config';
+import { isValidCron } from './cron';
 import { type McpRow, Store, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
-import { encodeMcpToolName, McpManager, type LiveTool } from './mcp/manager';
-import { LOAD_SKILL_TOOL, buildSystemPrompt } from './prompt';
+import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
-import type { ModelMessage, ToolDefinition } from './providers/types';
+import { runRoutineNow, startScheduler } from './scheduler';
 import { SkillLibrary, seedSkills } from './skills';
-import { asString, clampText, isRecord, jsonObject } from './util';
-
-interface ExposedTool {
-  definition: ToolDefinition;
-  run: (args: Record<string, unknown>) => Promise<string>;
-}
+import { AGENT_TEMPLATES } from './templates';
+import { runTurn } from './turn';
+import { asString, isRecord } from './util';
 
 export interface AppHandle {
   app: Hono;
   close: () => Promise<void>;
+  startScheduler: () => () => void;
 }
 
 const KINDS: readonly ProviderKind[] = [
@@ -224,21 +221,164 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
-  app.get('/api/conversations', (c) => c.json(store.listConversations()));
+  app.get('/api/agent-templates', (c) => c.json(AGENT_TEMPLATES));
+
+  app.get('/api/agents', (c) => c.json(store.listAgents()));
+
+  app.post('/api/agents', async (c) => {
+    const input = parseAgentInput(await readBody(c), false);
+    if (store.findAgentByName(input.name ?? '')) {
+      throw badRequest('Агент с таким именем уже есть');
+    }
+    const defaults = defaultSelection(store);
+    return c.json(
+      store.insertAgent({
+        ...input,
+        name: input.name ?? 'Агент',
+        providerId:
+          input.providerId === undefined
+            ? defaults.providerId
+            : input.providerId,
+        model: input.model === undefined ? defaults.model : input.model,
+      }),
+      201,
+    );
+  });
+
+  app.get('/api/agents/:id', (c) => {
+    const agent = store.getAgent(c.req.param('id'));
+    if (!agent) return c.json({ error: 'Агент не найден' }, 404);
+    return c.json(agent);
+  });
+
+  app.patch('/api/agents/:id', async (c) => {
+    const current = store.getAgent(c.req.param('id'));
+    if (!current) return c.json({ error: 'Агент не найден' }, 404);
+    const input = parseAgentInput(await readBody(c), true);
+    if (input.name && input.name.toLowerCase() !== current.name.toLowerCase()) {
+      const taken = store.findAgentByName(input.name);
+      if (taken && taken.id !== current.id)
+        throw badRequest('Агент с таким именем уже есть');
+    }
+    const updated = store.updateAgent(current.id, input);
+    return c.json(updated);
+  });
+
+  app.delete('/api/agents/:id', (c) => {
+    if (store.listAgents().length <= 1) {
+      return c.json({ error: 'Нельзя удалить последнего агента' }, 400);
+    }
+    const ok = store.deleteAgent(c.req.param('id'));
+    if (!ok) return c.json({ error: 'Агент не найден' }, 404);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/agents/:id/memory', (c) => {
+    if (!store.getAgent(c.req.param('id')))
+      return c.json({ error: 'Агент не найден' }, 404);
+    return c.json(store.listMemory(c.req.param('id')));
+  });
+
+  app.put('/api/agents/:id/memory/:key', async (c) => {
+    if (!store.getAgent(c.req.param('id')))
+      return c.json({ error: 'Агент не найден' }, 404);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    return c.json(
+      store.writeMemory(
+        c.req.param('id'),
+        decodeURIComponent(c.req.param('key')),
+        asString(body.content),
+      ),
+    );
+  });
+
+  app.delete('/api/agents/:id/memory/:key', (c) => {
+    const ok = store.deleteMemory(
+      c.req.param('id'),
+      decodeURIComponent(c.req.param('key')),
+    );
+    if (!ok) return c.json({ error: 'Заметка не найдена' }, 404);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/agents/:id/routines', (c) => {
+    if (!store.getAgent(c.req.param('id')))
+      return c.json({ error: 'Агент не найден' }, 404);
+    return c.json(store.listRoutines(c.req.param('id')));
+  });
+
+  app.post('/api/agents/:id/routines', async (c) => {
+    if (!store.getAgent(c.req.param('id')))
+      return c.json({ error: 'Агент не найден' }, 404);
+    const input = parseRoutineInput(await readBody(c), false);
+    if (!input.name || !input.cron || !input.prompt) {
+      throw badRequest('Укажите название, cron и промпт');
+    }
+    return c.json(
+      store.insertRoutine(c.req.param('id'), {
+        name: input.name,
+        cron: input.cron,
+        prompt: input.prompt,
+        enabled: input.enabled,
+      }),
+      201,
+    );
+  });
+
+  app.patch('/api/agents/:id/routines/:routineId', async (c) => {
+    const current = store.getRoutine(c.req.param('routineId'));
+    if (!current || current.agentId !== c.req.param('id')) {
+      return c.json({ error: 'Расписание не найдено' }, 404);
+    }
+    const input = parseRoutineInput(await readBody(c), true);
+    return c.json(store.updateRoutine(current.id, input));
+  });
+
+  app.delete('/api/agents/:id/routines/:routineId', (c) => {
+    const current = store.getRoutine(c.req.param('routineId'));
+    if (!current || current.agentId !== c.req.param('id')) {
+      return c.json({ error: 'Расписание не найдено' }, 404);
+    }
+    store.deleteRoutine(current.id);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/agents/:id/routines/:routineId/run', async (c) => {
+    const current = store.getRoutine(c.req.param('routineId'));
+    if (!current || current.agentId !== c.req.param('id')) {
+      return c.json({ error: 'Расписание не найдено' }, 404);
+    }
+    await runRoutineNow({ store, mcp, skills }, current.id);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/conversations', (c) =>
+    c.json(store.listConversations(c.req.query('agentId') || undefined)),
+  );
 
   app.post('/api/conversations', async (c) => {
     const body = await readBody(c).catch(() => ({}));
     const record = isRecord(body) ? body : {};
     const locale: Locale = record.locale === 'en' ? 'en' : 'ru';
+    const requestedAgent =
+      typeof record.agentId === 'string'
+        ? record.agentId
+        : store.listAgents()[0]?.id;
+    const agent = requestedAgent ? store.getAgent(requestedAgent) : undefined;
+    if (!agent) throw badRequest('Агент не найден');
     const defaults = defaultSelection(store);
     const providerId =
       typeof record.providerId === 'string'
         ? record.providerId
-        : defaults.providerId;
+        : (agent.providerId ?? defaults.providerId);
     const model =
-      typeof record.model === 'string' ? record.model : defaults.model;
+      typeof record.model === 'string'
+        ? record.model
+        : (agent.model ?? defaults.model);
     const created = store.insertConversation({
       title: locale === 'en' ? 'New chat' : 'Новый чат',
+      agentId: agent.id,
       providerId,
       model,
     });
@@ -281,8 +421,9 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   });
 
   app.post('/api/conversations/:id/messages', async (c) => {
-    const conversation = store.getConversation(c.req.param('id'));
-    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    if (!store.getConversation(c.req.param('id'))) {
+      return c.json({ error: 'Чат не найден' }, 404);
+    }
     const body = await readBody(c);
     if (
       !isRecord(body) ||
@@ -294,123 +435,27 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const content = body.content.trim();
     if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
     const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
-    const providerId =
-      typeof body.providerId === 'string'
-        ? body.providerId
-        : conversation.providerId;
-    const provider = providerId ? store.getProvider(providerId) : undefined;
-    if (!provider?.enabled)
-      return c.json({ error: 'Выберите включённую модель' }, 400);
-    const requestedModel =
-      typeof body.model === 'string' ? body.model : conversation.model;
-    const model =
-      requestedModel && provider.models.includes(requestedModel)
-        ? requestedModel
-        : provider.models[0];
-    if (!model) return c.json({ error: 'У провайдера не задана модель' }, 400);
-    if (providerNeedsKey(provider.kind) && !provider.apiKey) {
-      return c.json(
-        { error: 'Сохраните API-ключ провайдера в настройках' },
-        400,
-      );
-    }
-
-    store.updateConversation(conversation.id, {
-      providerId: provider.id,
-      model,
-    });
-    const isDefaultTitle = (DEFAULT_TITLES as readonly string[]).includes(
-      conversation.title,
-    );
-    if (isDefaultTitle)
-      store.updateConversation(conversation.id, { title: clampText(content) });
-    const userMessage = store.insertMessage({
-      conversationId: conversation.id,
-      role: 'user',
-      content,
-    });
-    const fresh = store.getConversation(conversation.id);
-
     return streamSSE(c, async (stream) => {
       const write = async (event: ClientEvent) => {
         await stream.writeSSE({ data: JSON.stringify(event) });
       };
-      let pending = '';
-      let pendingReasoning = '';
       try {
-        await write({ type: 'message', message: userMessage });
-        if (fresh && fresh.title !== conversation.title)
-          await write({ type: 'title', title: fresh.title });
-        const exposed = exposeTools(mcp, skills);
-        const history = store.listMessages(conversation.id).map(toModelMessage);
-        await runAgentLoop({
-          client: createClient(provider),
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: buildSystemPrompt(skills.listEnabled(), locale),
-            },
-            ...history,
-          ],
-          tools: exposed.map((tool) => tool.definition),
-          signal: c.req.raw.signal,
-          limitMessage:
-            locale === 'en'
-              ? 'Stopped: the agent step limit was reached.'
-              : 'Остановлено: исчерпан лимит шагов агента.',
-          executeTool: async (call) => {
-            const tool = exposed.find(
-              (item) => item.definition.name === call.name,
-            );
-            if (!tool) return `Неизвестный инструмент ${call.name}`;
-            return tool.run(jsonObject(call.arguments));
+        await runTurn(
+          { store, mcp, skills },
+          {
+            conversationId: c.req.param('id'),
+            content,
+            locale,
+            providerId:
+              typeof body.providerId === 'string' ? body.providerId : undefined,
+            model: typeof body.model === 'string' ? body.model : undefined,
+            signal: c.req.raw.signal,
+            onEvent: write,
           },
-          onEvent: async (event) => {
-            if (event.type === 'text') {
-              pending += event.delta;
-              await write({ type: 'text', delta: event.delta });
-            } else if (event.type === 'reasoning') {
-              pendingReasoning += event.delta;
-              await write({ type: 'reasoning', delta: event.delta });
-            } else if (event.type === 'tool_start') {
-              await write({ type: 'tool_start', call: event.call });
-            } else if (event.type === 'assistant') {
-              pending = '';
-              pendingReasoning = '';
-              const saved = store.insertMessage({
-                conversationId: conversation.id,
-                role: 'assistant',
-                content: event.content,
-                toolCalls: event.toolCalls,
-                reasoning: event.reasoning,
-              });
-              await write({ type: 'message', message: saved });
-            } else if (event.type === 'tool_result') {
-              const saved = store.insertMessage({
-                conversationId: conversation.id,
-                role: 'tool',
-                content: event.content,
-                toolCallId: event.call.id,
-                toolName: event.call.name,
-              });
-              await write({ type: 'message', message: saved });
-            }
-          },
-        });
+        );
         await write({ type: 'done' });
       } catch (error) {
-        if (isAbort(error)) {
-          if (pending.trim() || pendingReasoning.trim()) {
-            store.insertMessage({
-              conversationId: conversation.id,
-              role: 'assistant',
-              content: pending,
-              reasoning: pendingReasoning || undefined,
-            });
-          }
-          return;
-        }
+        if (isAbort(error)) return;
         const message =
           error instanceof Error ? error.message : 'Ошибка агента';
         await write({ type: 'error', message }).catch(() => undefined);
@@ -425,8 +470,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.notFound((c) => c.json({ error: 'Не найдено' }, 404));
 
+  const deps = { store, mcp, skills };
   return {
     app,
+    startScheduler: () => startScheduler(deps),
     close: async () => {
       await mcp.disconnectAll();
       store.close();
@@ -470,6 +517,26 @@ function seed(store: Store, skills: SkillLibrary, config: AppConfig): void {
     store.setSetting('seeded', '1');
   }
   seedSkills(skills.directory, config.examplesSkillsDir);
+  ensureDefaultAgent(store, skills);
+}
+
+function ensureDefaultAgent(store: Store, skills: SkillLibrary): void {
+  if (store.listAgents().length === 0) {
+    const defaults = defaultSelection(store);
+    store.insertAgent({
+      name: 'Маяк',
+      emoji: '🏮',
+      description: 'Основной локальный ассистент',
+      systemPrompt:
+        'Ты — Маяк, локальный ассистент на компьютере пользователя. Отвечай на языке пользователя, коротко и по делу.',
+      providerId: defaults.providerId,
+      model: defaults.model,
+      mcpServerIds: store.listMcp().map((item) => item.id),
+      skillNames: skills.listEnabled().map((item) => item.name),
+    });
+  }
+  const first = store.listAgents()[0];
+  if (first) store.assignOrphanConversations(first.id);
 }
 
 function ensureDeepSeek(store: Store): void {
@@ -482,7 +549,7 @@ function ensureDeepSeek(store: Store): void {
     if (!existing.apiKey) store.updateProvider(existing.id, { apiKey });
     return;
   }
-  store.insertProvider({
+  const created = store.insertProvider({
     name: 'DeepSeek',
     kind: 'deepseek',
     baseUrl: DEEPSEEK_BASE_URL,
@@ -490,72 +557,13 @@ function ensureDeepSeek(store: Store): void {
     models: [...DEEPSEEK_MODELS],
     enabled: true,
   });
-}
-
-function exposeTools(mcp: McpManager, skills: SkillLibrary): ExposedTool[] {
-  const used = new Set<string>([LOAD_SKILL_TOOL.name]);
-  const tools: ExposedTool[] = [
-    {
-      definition: {
-        name: LOAD_SKILL_TOOL.name,
-        description: LOAD_SKILL_TOOL.description,
-        inputSchema: LOAD_SKILL_TOOL.inputSchema,
-      },
-      run: async (args) => {
-        const name = asString(args.name).trim();
-        if (!name) return 'Укажите имя навыка в поле name.';
-        let skill: ReturnType<SkillLibrary['get']>;
-        try {
-          skill = skills.get(name);
-        } catch (error) {
-          return error instanceof Error
-            ? error.message
-            : 'Некорректное имя навыка';
-        }
-        if (!skill?.enabled) return `Навык «${name}» не найден или выключен.`;
-        return [`# ${skill.name}`, skill.description, '', skill.body]
-          .filter(Boolean)
-          .join('\n');
-      },
-    },
-  ];
-
-  for (const server of mcp.listConnected()) {
-    for (const tool of server.tools) {
-      let name = encodeMcpToolName(server.name, tool.name);
-      while (used.has(name)) name = `${name.slice(0, 60)}_${used.size}`;
-      used.add(name);
-      tools.push({
-        definition: {
-          name,
-          description: `[MCP ${server.name}] ${tool.description || tool.name}`,
-          inputSchema: normalizeSchema(tool),
-        },
-        run: (args) => mcp.callTool(server.id, tool.name, args),
-      });
-    }
+  const agent = store.listAgents()[0];
+  if (agent) {
+    store.updateAgent(agent.id, {
+      providerId: created.id,
+      model: 'deepseek-chat',
+    });
   }
-  return tools;
-}
-
-function normalizeSchema(tool: LiveTool): Record<string, unknown> {
-  const schema = tool.inputSchema;
-  if (schema.type === 'object') return schema;
-  return {
-    type: 'object',
-    properties: schema.properties ?? {},
-    required: schema.required ?? [],
-  };
-}
-
-function toModelMessage(message: ChatMessage): ModelMessage {
-  return {
-    role: message.role,
-    content: message.content,
-    toolCalls: message.toolCalls,
-    toolCallId: message.toolCallId,
-    name: message.toolName,
-  };
 }
 
 function defaultSelection(store: Store): {
@@ -628,6 +636,89 @@ async function readBody(c: Context): Promise<unknown> {
   } catch {
     throw badRequest('Некорректный JSON');
   }
+}
+
+function parseAgentInput(
+  body: unknown,
+  partial: boolean,
+): AgentInput & { name?: string } {
+  if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+  const name = body.name === undefined ? undefined : asString(body.name).trim();
+  if (!partial && !name) throw badRequest('Укажите имя агента');
+  if (name !== undefined && !name) throw badRequest('Укажите имя агента');
+  if (name && name.length > 80) throw badRequest('Имя агента слишком длинное');
+  const emoji =
+    body.emoji === undefined
+      ? undefined
+      : asString(body.emoji).trim().slice(0, 8);
+  const description =
+    body.description === undefined
+      ? undefined
+      : asString(body.description).trim();
+  const systemPrompt =
+    body.systemPrompt === undefined ? undefined : asString(body.systemPrompt);
+  if (systemPrompt && systemPrompt.length > 20_000)
+    throw badRequest('Системный промпт слишком длинный');
+  const mcpServerIds =
+    body.mcpServerIds === undefined ? undefined : stringList(body.mcpServerIds);
+  const skillNames =
+    body.skillNames === undefined ? undefined : stringList(body.skillNames);
+  return {
+    name,
+    emoji,
+    description,
+    systemPrompt,
+    providerId:
+      body.providerId === null
+        ? null
+        : typeof body.providerId === 'string'
+          ? body.providerId
+          : undefined,
+    model:
+      body.model === null
+        ? null
+        : typeof body.model === 'string'
+          ? body.model
+          : undefined,
+    mcpServerIds,
+    skillNames,
+  };
+}
+
+function parseRoutineInput(body: unknown, partial: boolean): RoutineInput {
+  if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+  const name = body.name === undefined ? undefined : asString(body.name).trim();
+  const cron = body.cron === undefined ? undefined : asString(body.cron).trim();
+  const prompt = body.prompt === undefined ? undefined : asString(body.prompt);
+  if (!partial || body.name !== undefined) {
+    if (!name) throw badRequest('Укажите название расписания');
+  }
+  if (!partial || body.cron !== undefined) {
+    if (!cron || !isValidCron(cron)) {
+      throw badRequest(
+        'Нужно пять полей cron: минута час день месяц день-недели',
+      );
+    }
+  }
+  if (!partial || body.prompt !== undefined) {
+    if (!prompt?.trim()) throw badRequest('Укажите промпт расписания');
+  }
+  if (prompt && prompt.length > 8_000)
+    throw badRequest('Промпт расписания слишком длинный');
+  return {
+    name,
+    cron,
+    prompt,
+    enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
+  };
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) throw badRequest('Ожидался список строк');
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function parseProviderInput(body: unknown, partial = false): ProviderInput {

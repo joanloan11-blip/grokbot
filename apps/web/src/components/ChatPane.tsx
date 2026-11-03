@@ -12,6 +12,9 @@ import { IconMenu, IconSend, IconStop } from './icons';
 
 interface Props {
   conversationId: string | null;
+  agentId: string;
+  defaultProviderId: string | null;
+  defaultModel: string | null;
   providers: ProviderPublic[];
   onMenu: () => void;
   onConversation: (conversation: Conversation) => void;
@@ -26,6 +29,9 @@ interface Choice {
 
 export function ChatPane({
   conversationId,
+  agentId,
+  defaultProviderId,
+  defaultModel,
   providers,
   onMenu,
   onConversation,
@@ -65,7 +71,7 @@ export function ChatPane({
     if (!conversationId) {
       setMessages([]);
       setTitle('');
-      const first = preferredChoice(choices);
+      const first = choiceFor(choices, defaultProviderId, defaultModel);
       setChoice(first ? keyOf(first) : '');
       return;
     }
@@ -80,7 +86,7 @@ export function ChatPane({
             item.providerId === data.conversation.providerId &&
             item.model === data.conversation.model,
         );
-        const fallback = preferredChoice(choices);
+        const fallback = choiceFor(choices, defaultProviderId, defaultModel);
         setChoice(match ? keyOf(match) : fallback ? keyOf(fallback) : '');
       },
       (reason: unknown) => {
@@ -91,7 +97,7 @@ export function ChatPane({
     return () => {
       cancelled = true;
     };
-  }, [conversationId, choices, t]);
+  }, [conversationId, choices, t, defaultProviderId, defaultModel]);
 
   const scrollKey = `${messages.length}:${streaming}:${reasoning.length}:${pendingTools.length}:${messages.at(-1)?.id ?? ''}`;
   useEffect(() => {
@@ -127,6 +133,7 @@ export function ChatPane({
       if (!id) {
         const created = await api.createConversation({
           locale,
+          agentId,
           providerId: selected.providerId,
           model: selected.model,
         });
@@ -158,6 +165,7 @@ export function ChatPane({
             onConversation({
               id: id as string,
               title: event.title,
+              agentId,
               providerId: selected.providerId,
               model: selected.model,
               createdAt: '',
@@ -528,12 +536,19 @@ function flattenChoices(providers: ProviderPublic[]): Choice[] {
   return out;
 }
 
-function preferredChoice(choices: Choice[]): Choice | undefined {
+function choiceFor(
+  choices: Choice[],
+  providerId: string | null,
+  model: string | null,
+): Choice | undefined {
   return (
+    choices.find(
+      (item) => item.providerId === providerId && item.model === model,
+    ) ??
+    choices.find((item) => item.providerId === providerId) ??
     choices.find(
       (item) => item.kind === 'deepseek' && item.model === 'deepseek-chat',
     ) ??
-    choices.find((item) => item.kind === 'deepseek') ??
     choices[0]
   );
 }

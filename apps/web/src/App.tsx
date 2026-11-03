@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Conversation, ProviderPublic } from '@mayak/shared';
+import type { Agent, Conversation, ProviderPublic } from '@mayak/shared';
 import { api } from './api';
+import { AgentEditor } from './components/AgentEditor';
+import { AgentWizard } from './components/AgentWizard';
 import { ChatPane } from './components/ChatPane';
 import { BeaconMark, IconPlus } from './components/icons';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { I18nProvider, useI18n } from './i18n';
 
-type View = { name: 'chat' } | { name: 'settings'; tab: SettingsTab };
+type View =
+  | { name: 'chat' }
+  | { name: 'settings'; tab: SettingsTab }
+  | { name: 'agent' };
 
 export function App() {
   return (
@@ -21,18 +26,28 @@ function Shell() {
   const [view, setView] = useState<View>({ name: 'chat' });
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentId, setAgentId] = useState<string | null>(() =>
+    localStorage.getItem('mayak.agentId'),
+  );
   const [activeId, setActiveId] = useState<string | null>(null);
   const [online, setOnline] = useState(true);
   const [navOpen, setNavOpen] = useState(false);
+  const [wizard, setWizard] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [nextConversations, nextProviders] = await Promise.all([
-        api.conversations(),
+      const [nextAgents, nextProviders] = await Promise.all([
+        api.agents(),
         api.providers(),
       ]);
-      setConversations(nextConversations);
+      setAgents(nextAgents);
       setProviders(nextProviders);
+      setAgentId((current) =>
+        current && nextAgents.some((agent) => agent.id === current)
+          ? current
+          : (nextAgents[0]?.id ?? null),
+      );
       setOnline(true);
     } catch {
       setOnline(false);
@@ -42,6 +57,20 @@ function Shell() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!agentId) {
+      setConversations([]);
+      return;
+    }
+    localStorage.setItem('mayak.agentId', agentId);
+    void api
+      .conversations(agentId)
+      .then(setConversations)
+      .catch(() => setConversations([]));
+  }, [agentId]);
+
+  const agent = agents.find((item) => item.id === agentId) ?? agents[0];
 
   const openChat = (id: string | null) => {
     setActiveId(id);
@@ -59,6 +88,38 @@ function Shell() {
             <small>{t('tagline')}</small>
           </div>
         </div>
+        <p className="side-label">{t('agents')}</p>
+        <div className="agent-row">
+          {agents.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={
+                item.id === agent?.id ? 'agent-pill active' : 'agent-pill'
+              }
+              onClick={() => {
+                setAgentId(item.id);
+                setActiveId(null);
+                setView({ name: 'chat' });
+              }}
+            >
+              {item.emoji} {item.name}
+            </button>
+          ))}
+        </div>
+        <button className="ghost" type="button" onClick={() => setWizard(true)}>
+          <IconPlus />
+          {t('newAgent')}
+        </button>
+        {agent && (
+          <button
+            className="ghost slim"
+            type="button"
+            onClick={() => setView({ name: 'agent' })}
+          >
+            {t('configureAgent')}
+          </button>
+        )}
         <button
           className="primary-btn"
           type="button"
@@ -127,9 +188,29 @@ function Shell() {
             </button>
           </div>
         )}
-        {view.name === 'chat' ? (
+        {view.name === 'agent' && agent ? (
+          <AgentEditor
+            agent={agent}
+            providers={providers}
+            onMenu={() => setNavOpen(true)}
+            onSaved={(saved) => {
+              setAgents((current) =>
+                current.map((item) => (item.id === saved.id ? saved : item)),
+              );
+              setView({ name: 'chat' });
+            }}
+            onDeleted={() => {
+              setView({ name: 'chat' });
+              setActiveId(null);
+              void refresh();
+            }}
+          />
+        ) : view.name === 'chat' && agent ? (
           <ChatPane
             conversationId={activeId}
+            agentId={agent.id}
+            defaultProviderId={agent.providerId}
+            defaultModel={agent.model}
             providers={providers}
             onMenu={() => setNavOpen(true)}
             onConversation={(conversation) => {
@@ -148,12 +229,26 @@ function Shell() {
               setActiveId(null);
             }}
           />
-        ) : (
+        ) : view.name === 'settings' ? (
           <SettingsPane
             tab={view.tab}
             onTab={(tab) => setView({ name: 'settings', tab })}
             onMenu={() => setNavOpen(true)}
             onProvidersChanged={() => void refresh()}
+          />
+        ) : (
+          <p className="muted empty-side">{t('noAgent')}</p>
+        )}
+        {wizard && (
+          <AgentWizard
+            onClose={() => setWizard(false)}
+            onCreated={(id) => {
+              setWizard(false);
+              setAgentId(id);
+              setActiveId(null);
+              setView({ name: 'chat' });
+              void refresh();
+            }}
           />
         )}
       </main>

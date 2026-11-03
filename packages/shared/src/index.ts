@@ -34,10 +34,69 @@ export interface ProviderInput {
 export interface Conversation {
   id: string;
   title: string;
+  agentId: string | null;
   providerId: string | null;
   model: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  emoji: string;
+  description: string;
+  systemPrompt: string;
+  providerId: string | null;
+  model: string | null;
+  mcpServerIds: string[];
+  skillNames: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentInput {
+  name?: string;
+  emoji?: string;
+  description?: string;
+  systemPrompt?: string;
+  providerId?: string | null;
+  model?: string | null;
+  mcpServerIds?: string[];
+  skillNames?: string[];
+}
+
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  emoji: string;
+  description: string;
+  systemPrompt: string;
+}
+
+export interface MemoryNote {
+  agentId: string;
+  key: string;
+  content: string;
+  updatedAt: string;
+}
+
+export interface Routine {
+  id: string;
+  agentId: string;
+  name: string;
+  cron: string;
+  prompt: string;
+  enabled: boolean;
+  lastRunAt: string | null;
+  createdAt: string;
+}
+
+export interface RoutineInput {
+  name?: string;
+  cron?: string;
+  prompt?: string;
+  enabled?: boolean;
 }
 
 export interface ToolCall {
