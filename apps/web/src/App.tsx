@@ -64,10 +64,25 @@ function Shell() {
       return;
     }
     localStorage.setItem('mayak.agentId', agentId);
+    let cancelled = false;
     void api
       .conversations(agentId)
-      .then(setConversations)
-      .catch(() => setConversations([]));
+      .then((next) => {
+        if (!cancelled)
+          setConversations((current) =>
+            mergeConversations(agentId, current, next),
+          );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setConversations((current) =>
+            current.filter((item) => item.agentId === agentId),
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agentId]);
 
   const agent = agents.find((item) => item.id === agentId) ?? agents[0];
@@ -253,6 +268,24 @@ function Shell() {
         )}
       </main>
     </div>
+  );
+}
+
+function mergeConversations(
+  agentId: string,
+  current: Conversation[],
+  next: Conversation[],
+): Conversation[] {
+  const byId = new Map<string, Conversation>();
+  for (const item of next) byId.set(item.id, item);
+  for (const item of current) {
+    if (item.agentId && item.agentId !== agentId) continue;
+    const existing = byId.get(item.id);
+    if (!existing || item.updatedAt > existing.updatedAt)
+      byId.set(item.id, item);
+  }
+  return [...byId.values()].sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
   );
 }
 
