@@ -321,7 +321,7 @@ export function ChatPane({
             </div>
           </div>
         )}
-        {renderMessages(messages, t)}
+        {renderMessages(messages, t, (text) => void send(text))}
         {(reasoning || streaming) && (
           <article className="bubble assistant">
             <span className="who">{t('assistant')}</span>
@@ -452,6 +452,7 @@ function ModelSelect({
 function renderMessages(
   messages: ChatMessage[],
   t: ReturnType<typeof useI18n>['t'],
+  onSend: (text: string) => void,
 ) {
   const nodes = [];
   for (const message of messages) {
@@ -483,6 +484,7 @@ function renderMessages(
               name={call.name}
               args={call.arguments}
               result={result?.content}
+              onSend={onSend}
               labelRunning={t('toolRunning')}
               labelArgs={t('toolArgs')}
               labelDone={t('toolDone')}
@@ -503,6 +505,7 @@ function ToolCard({
   labelRunning,
   labelArgs,
   labelDone,
+  onSend,
 }: {
   name: string;
   args: string;
@@ -511,6 +514,7 @@ function ToolCard({
   labelRunning: string;
   labelArgs: string;
   labelDone: string;
+  onSend?: (text: string) => void;
 }) {
   return (
     <div className={running ? 'tool running' : 'tool'}>
@@ -530,7 +534,93 @@ function ToolCard({
           {pretty(args)}
         </pre>
       )}
-      {result !== undefined && <div className="tool-result">{result}</div>}
+      {result?.startsWith('ASK:') && onSend && (
+        <AskChoices raw={result.slice(4)} onSend={onSend} />
+      )}
+      {result?.startsWith('APPROVAL:') && <ApprovalCard raw={result} />}
+      {result !== undefined &&
+        !result.startsWith('ASK:') &&
+        !result.startsWith('APPROVAL:') && (
+          <div className="tool-result">{result}</div>
+        )}
+    </div>
+  );
+}
+
+function AskChoices({
+  raw,
+  onSend,
+}: {
+  raw: string;
+  onSend: (text: string) => void;
+}) {
+  let question = raw;
+  let options: string[] = [];
+  try {
+    const parsed = JSON.parse(raw) as { question?: string; options?: string[] };
+    question = parsed.question || raw;
+    options = parsed.options ?? [];
+  } catch {
+    options = [];
+  }
+  return (
+    <div className="tool-result">
+      <p>{question}</p>
+      <div className="row-actions">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            className="ghost slim"
+            onClick={() => onSend(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ApprovalCard({ raw }: { raw: string }) {
+  const id = raw.split(':')[1] ?? '';
+  const [state, setState] = useState(raw);
+  return (
+    <div className="tool-result">
+      <p>Подтвердить действие?</p>
+      {state.startsWith('APPROVAL:') && (
+        <div className="row-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            onClick={() =>
+              void fetch(`/api/approvals/${id}`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ approve: true }),
+              }).then(() => setState('Подтверждено'))
+            }
+          >
+            Да
+          </button>
+          <button
+            type="button"
+            className="ghost slim"
+            onClick={() =>
+              void fetch(`/api/approvals/${id}`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ approve: false }),
+              }).then(() => setState('Отклонено'))
+            }
+          >
+            Нет
+          </button>
+        </div>
+      )}
+      {!state.startsWith('APPROVAL:') && <p>{state}</p>}
     </div>
   );
 }
