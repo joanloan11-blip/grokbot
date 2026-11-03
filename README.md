@@ -76,7 +76,7 @@ xattr -dr com.apple.quarantine /Applications/Mayak.app
    - **OpenAI-совместимый** — OpenAI, OpenRouter, Groq, Ollama, LM Studio и любой другой `/v1`. Базовый URL без хвоста метода, например `https://openrouter.ai/api/v1` или `http://127.0.0.1:11434/v1`.
    - **Anthropic** — по умолчанию `https://api.anthropic.com`.
    - **Google Gemini** — по умолчанию `https://generativelanguage.googleapis.com/v1beta`.
-   - **DeepSeek** — пресет OpenAI-совместимого API: базовый URL `https://api.deepseek.com`, модели `deepseek-chat` и `deepseek-reasoner`. У `deepseek-reasoner` поток `reasoning_content` показывается в чате свёрнутым блоком «Рассуждение», отдельно от ответа, и сохраняется в истории. В модель этот текст обратно не отправляется.
+   - **DeepSeek** — пресет OpenAI-совместимого API: базовый URL `https://api.deepseek.com`, модели `deepseek-chat` и `deepseek-reasoner`. У `deepseek-reasoner` поток `reasoning_content` показывается в чате свёрнутым блоком «Рассуждение», отдельно от ответа, и сохраняется в истории. В модель этот текст обратно не отправляется. В системном промпте есть просьба рассуждать на языке последнего сообщения пользователя, а не на английском по умолчанию.
 3. Вставьте API-ключ и идентификаторы моделей, по одному на строку (`gpt-4o-mini`, `claude-sonnet-4-5`, `gemini-2.5-flash`, имя модели Ollama и т.д.).
 4. Сохраните. Ключ пишется в SQLite на сервере. В ответах API его нет, только признак «ключ задан». Пустое поле при редактировании ключ не стирает.
 5. В шапке чата выберите модель. Ответы идут потоком, вызовы инструментов видны карточками.

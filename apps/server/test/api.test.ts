@@ -33,6 +33,24 @@ async function post(pathname: string, body: unknown): Promise<Response> {
   });
 }
 
+async function demoProvider(): Promise<ProviderPublic> {
+  const providers = (await (
+    await handle.app.request('/api/providers')
+  ).json()) as ProviderPublic[];
+  const mock = providers.find((item) => item.kind === 'mock');
+  if (!mock) throw new Error('demo provider missing');
+  return mock;
+}
+
+async function demoConversation(): Promise<{ id: string }> {
+  const mock = await demoProvider();
+  return (await post('/api/conversations', {
+    locale: 'ru',
+    providerId: mock.id,
+    model: mock.models[0] ?? 'mock',
+  }).then((response) => response.json())) as { id: string };
+}
+
 async function readEvents(response: Response): Promise<ClientEvent[]> {
   const raw = await response.text();
   const events: ClientEvent[] = [];
@@ -83,14 +101,15 @@ describe('HTTP API', () => {
   });
 
   it('streams a mock chat reply and keeps history', async () => {
-    const conversation = (await (
-      await post('/api/conversations', { locale: 'ru' })
-    ).json()) as { id: string };
+    const mock = await demoProvider();
+    const conversation = await demoConversation();
     const response = await post(
       `/api/conversations/${conversation.id}/messages`,
       {
         content: 'привет, маяк',
         locale: 'ru',
+        providerId: mock.id,
+        model: 'mock',
       },
     );
     expect(response.status).toBe(200);
@@ -119,9 +138,7 @@ describe('HTTP API', () => {
   });
 
   it('loads a skill through the agent loop', async () => {
-    const conversation = (await (
-      await post('/api/conversations', {})
-    ).json()) as { id: string };
+    const conversation = await demoConversation();
     const events = await readEvents(
       await post(`/api/conversations/${conversation.id}/messages`, {
         content: 'skill summary',
@@ -159,9 +176,7 @@ describe('HTTP API', () => {
       expect.arrayContaining(['echo', 'add']),
     );
 
-    const conversation = (await (
-      await post('/api/conversations', {})
-    ).json()) as { id: string };
+    const conversation = await demoConversation();
     const events = await readEvents(
       await post(`/api/conversations/${conversation.id}/messages`, {
         content: 'echo ping-from-test',

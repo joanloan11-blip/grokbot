@@ -15,8 +15,8 @@ export function buildSystemPrompt(
       : 'Ты — Маяк, локальный ассистент на компьютере пользователя.';
   const rules =
     locale === 'en'
-      ? 'Reply in the user language. When a listed skill fits the task, call load_skill with its exact name and follow the instructions. Use memory_read and memory_write for notes that should survive across chats. Use MCP tools when they help you answer accurately. Do not invent tool results.'
-      : 'Отвечай на языке пользователя. Если задаче подходит один из навыков, сначала вызови load_skill с его точным именем и следуй инструкциям. memory_read и memory_write — заметки, которые сохраняются между чатами. Инструменты MCP вызывай, когда они помогают ответить точно. Не выдумывай результаты инструментов.';
+      ? "Reply in the user language. If you use an internal reasoning channel, reason in the same language as the user's latest message, not in English by default. When a listed skill fits the task, call load_skill with its exact name and follow the instructions. Use memory_read and memory_write for notes that should survive across chats. Use MCP tools when they help you answer accurately. Do not invent tool results."
+      : 'Отвечай на языке пользователя. Если есть внутренний канал рассуждений, рассуждай на языке последнего сообщения пользователя, а не на английском по умолчанию. Если задаче подходит один из навыков, сначала вызови load_skill с его точным именем и следуй инструкциям. memory_read и memory_write — заметки, которые сохраняются между чатами. Инструменты MCP вызывай, когда они помогают ответить точно. Не выдумывай результаты инструментов.';
   const peers = options?.peers ?? [];
   const peerBlock =
     peers.length === 0

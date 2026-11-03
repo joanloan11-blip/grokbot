@@ -1,16 +1,13 @@
-import path from 'node:path';
 import { DEEPSEEK_BASE_URL } from '@mayak/shared';
 import { describe, expect, it } from 'vitest';
 import { runAgentLoop } from '../src/agent/loop';
 import { loadConfig, repoRoot } from '../src/config';
-import { loadDotEnv } from '../src/env';
 import { McpManager } from '../src/mcp/manager';
 import { createOpenAIClient } from '../src/providers/openai';
 import type { ProviderEvent } from '../src/providers/types';
 
-loadDotEnv(path.join(repoRoot, '.env'));
-
-const apiKey = process.env.DEEPSEEK_API_KEY?.trim() ?? '';
+// setup.ts moves the real key aside so other tests stay on the demo model.
+const apiKey = process.env.MAYAK_TEST_STASH_DEEPSEEK_API_KEY?.trim() ?? '';
 const live =
   apiKey && apiKey !== 'unit-deepseek-key' ? describe : describe.skip;
 
