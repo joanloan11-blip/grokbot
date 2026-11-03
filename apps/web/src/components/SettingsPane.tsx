@@ -86,7 +86,12 @@ export function SettingsPane({
         {tab === 'mcp' && <McpPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'github' && <GithubPane />}
-        {tab === 'general' && <GeneralPanel />}
+        {tab === 'general' && (
+          <>
+            <GeneralPanel />
+            <MoyskladPanel />
+          </>
+        )}
       </div>
     </section>
   );
@@ -1023,6 +1028,87 @@ function SkillsPanel() {
         )}
       </div>
     </div>
+  );
+}
+
+function MoyskladPanel() {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<{
+    connected: boolean;
+    account?: string;
+    error?: string;
+  } | null>(null);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    void api
+      .moysklad()
+      .then(setStatus)
+      .catch(() => setStatus({ connected: false }));
+  }, []);
+  async function save(next: string) {
+    setBusy(true);
+    setError('');
+    try {
+      setStatus(await api.saveMoysklad(next));
+      setToken('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('error'));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form
+      className="panel card form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save(token);
+      }}
+    >
+      <h3>
+        {t('moyskladTitle')}{' '}
+        <span className={status?.connected ? 'pill on' : 'pill'}>
+          {status?.connected
+            ? `${t('moyskladConnected')}${status.account ? ` · ${status.account}` : ''}`
+            : t('moyskladOff')}
+        </span>
+      </h3>
+      <p className="hint">{t('moyskladLead')}</p>
+      <label>
+        {t('moyskladToken')}
+        <input
+          type="password"
+          autoComplete="off"
+          value={token}
+          placeholder={status?.connected ? '••••••' : ''}
+          onChange={(event) => setToken(event.target.value)}
+        />
+      </label>
+      {(error || status?.error) && (
+        <p className="fault">{error || status?.error}</p>
+      )}
+      <div className="row-actions">
+        <button
+          className="primary-btn"
+          type="submit"
+          disabled={busy || !token.trim()}
+        >
+          {t('moyskladSave')}
+        </button>
+        {status?.connected && (
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => void save('')}
+          >
+            {t('moyskladDisconnect')}
+          </button>
+        )}
+      </div>
+    </form>
   );
 }
 

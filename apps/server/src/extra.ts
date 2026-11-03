@@ -7,7 +7,8 @@ import type { AppConfig } from './config';
 import type { Store, UserRecord } from './db';
 import { HttpError, badRequest } from './errors';
 import { extractUploadText } from './files';
-import { encryptSecret } from './github/secret';
+import { decryptSecret, encryptSecret } from './github/secret';
+import { checkMoyskladToken } from './moysklad';
 import type { McpManager } from './mcp/manager';
 import { runSandboxed } from './sandbox';
 import { deliverToAgent, type TurnDeps } from './turn';
@@ -228,7 +229,50 @@ export function registerExtraRoutes(
       approvals: (await deps.store.getSetting('approvals_enabled')) === '1',
       approvalAuto: (await deps.store.getSetting('approval_auto')) || '',
       telegram: Boolean(await deps.store.getSetting('telegram_token')),
+      moysklad: Boolean(await deps.store.getSetting('moysklad_token')),
     });
+  });
+
+  // МойСклад: токен только на запись, наружу не отдаётся. Пустая строка — отключить.
+  app.put('/api/admin/moysklad', async (c) => {
+    await admin(c);
+    const body = await deps.readBody(c);
+    const token =
+      isRecord(body) && typeof body.token === 'string' ? body.token.trim() : '';
+    if (!token) {
+      await deps.store.setSetting('moysklad_token', '');
+      return c.json({ ok: true, connected: false });
+    }
+    let who: string;
+    try {
+      who = await checkMoyskladToken(token);
+    } catch (error) {
+      throw badRequest(
+        error instanceof Error ? error.message : 'МойСклад не ответил',
+      );
+    }
+    await deps.store.setSetting(
+      'moysklad_token',
+      encryptSecret(token, deps.config.jwtSecret),
+    );
+    return c.json({ ok: true, connected: true, account: who });
+  });
+
+  app.get('/api/admin/moysklad', async (c) => {
+    await admin(c);
+    const stored = await deps.store.getSetting('moysklad_token');
+    if (!stored) return c.json({ connected: false });
+    try {
+      const account = await checkMoyskladToken(
+        decryptSecret(stored, deps.config.jwtSecret),
+      );
+      return c.json({ connected: true, account });
+    } catch (error) {
+      return c.json({
+        connected: false,
+        error: error instanceof Error ? error.message : 'ошибка',
+      });
+    }
   });
 
   app.put('/api/admin/search', async (c) => {

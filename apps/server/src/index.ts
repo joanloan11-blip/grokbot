@@ -10,6 +10,32 @@ loadDotEnv(path.join(repoRoot, '.env'));
 const config = loadConfig();
 const handle = await createApp(config);
 
+// МойСклад: echo <токен> | node apps/server/dist/index.js moysklad-token
+// проверяет токен и сохраняет его зашифрованным (как кнопка в Настройках → Общие).
+if (process.argv[2] === 'moysklad-token') {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const token = Buffer.concat(chunks).toString('utf8').trim();
+  const { checkMoyskladToken } = await import('./moysklad');
+  const { encryptSecret } = await import('./github/secret');
+  try {
+    const who = await checkMoyskladToken(token);
+    await handle.runtime.store.setSetting(
+      'moysklad_token',
+      encryptSecret(token, config.jwtSecret),
+    );
+    console.log(`МойСклад подключён: ${who}`);
+  } catch (error) {
+    console.error(
+      error instanceof Error ? error.message : 'МойСклад не ответил',
+    );
+    await handle.close();
+    process.exit(1);
+  }
+  await handle.close();
+  process.exit(0);
+}
+
 // Проверка моделей: node apps/server/dist/index.js refresh-models <имя или id провайдера>
 // оставляет у провайдера только модели, которые отвечают на пробный запрос.
 if (process.argv[2] === 'refresh-models') {

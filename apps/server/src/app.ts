@@ -10,6 +10,7 @@ import {
   type McpServerPublic,
   type McpServersFile,
   type AgentInput,
+  type ProjectInput,
   type ProviderInput,
   type RoutineInput,
   DEEPSEEK_BASE_URL,
@@ -94,8 +95,24 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   const actor = (c: Context) => userFromRequest(c, store, auth, LOCAL_USER_ID);
   const canUseAgent = async (user: UserRecord, agentId: string) => {
     if (user.role === 'admin') return true;
+    const agent = await store.getAgent(agentId);
+    if (!agent) return false;
+    if (agent.ownerId) return agent.ownerId === user.id;
     const ids = await store.listUserAgentIds(user.id);
     return ids.includes(agentId);
+  };
+  /** Менять агента может админ или владелец личного агента. */
+  const canEditAgent = (user: UserRecord, agent: { ownerId?: string | null }) =>
+    user.role === 'admin' ||
+    (Boolean(agent.ownerId) && agent.ownerId === user.id);
+  /** Менеджер не подключает MCP и GitHub: это решает админ для общих агентов. */
+  const limitForManager = (
+    user: UserRecord,
+    input: AgentInput & { name?: string },
+  ) => {
+    if (user.role === 'admin') return input;
+    const { mcpServerIds: _mcp, githubRepos: _gh, ...rest } = input;
+    return rest;
   };
 
   app.use('*', async (c, next) => {
@@ -725,27 +742,54 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.get('/api/agents', async (c) => {
     const user = await actor(c);
-    const all = await store.listAgents();
-    if (user.role === 'admin') return c.json(all);
-    const allowed = new Set(await store.listUserAgentIds(user.id));
-    return c.json(all.filter((agent) => allowed.has(agent.id)));
+    return c.json(await store.listAgentsFor(user));
   });
 
   app.post('/api/agents', async (c) => {
-    const input = parseAgentInput(await readBody(c), false);
+    const user = await actor(c);
+    const input = limitForManager(
+      user,
+      parseAgentInput(await readBody(c), false),
+    );
     if (await store.findAgentByName(input.name ?? '')) {
       throw badRequest('Агент с таким именем уже есть');
     }
-    const defaults = await defaultSelection(store);
+    if (user.role !== 'admin') {
+      const own = (await store.listAgents()).filter(
+        (agent) => agent.ownerId === user.id,
+      );
+      if (own.length >= 20) throw badRequest('Не больше 20 личных агентов');
+    }
+    let defaults = await defaultSelection(store);
+    if (user.role !== 'admin' && input.model === undefined) {
+      // Менеджеру — первая из моделей, которые ему открыл админ.
+      const first = (await store.allowedModels(user))[0];
+      if (!first)
+        throw new HttpError(
+          403,
+          'Администратор ещё не открыл вам ни одной модели',
+        );
+      defaults = { providerId: first.providerId, model: first.model };
+    }
+    const providerId =
+      input.providerId === undefined ? defaults.providerId : input.providerId;
+    const model = input.model === undefined ? defaults.model : input.model;
+    if (user.role !== 'admin' && providerId && model) {
+      await requireAllowedModel(
+        user,
+        providerId,
+        model,
+        input.model !== undefined,
+      );
+    }
     return c.json(
       await store.insertAgent({
         ...input,
         name: input.name ?? 'Агент',
-        providerId:
-          input.providerId === undefined
-            ? defaults.providerId
-            : input.providerId,
-        model: input.model === undefined ? defaults.model : input.model,
+        providerId,
+        model,
+        // Агент админа — общий; агент менеджера — личный.
+        ownerId: user.role === 'admin' ? null : user.id,
       }),
       201,
     );
@@ -761,9 +805,35 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   });
 
   app.patch('/api/agents/:id', async (c) => {
+    const user = await actor(c);
     const current = await store.getAgent(c.req.param('id'));
-    if (!current) return c.json({ error: 'Агент не найден' }, 404);
-    const input = parseAgentInput(await readBody(c), true);
+    if (!current || !(await canUseAgent(user, current.id)))
+      return c.json({ error: 'Агент не найден' }, 404);
+    if (!canEditAgent(user, current))
+      throw new HttpError(403, 'Общего агента настраивает администратор');
+    const raw = await readBody(c);
+    const input = limitForManager(user, parseAgentInput(raw, true));
+    if (user.role !== 'admin' && (input.providerId || input.model)) {
+      await requireAllowedModel(
+        user,
+        input.providerId ?? current.providerId,
+        input.model ?? current.model,
+        input.model !== undefined && input.model !== null,
+      );
+    }
+    // Админ может сделать личного агента менеджера общим для команды.
+    if (
+      user.role === 'admin' &&
+      isRecord(raw) &&
+      raw.shared === true &&
+      current.ownerId
+    ) {
+      const owner = current.ownerId;
+      await store.setAgentOwner(current.id, null);
+      const ids = await store.listUserAgentIds(owner);
+      if (!ids.includes(current.id))
+        await store.setUserAgents(owner, [...ids, current.id]);
+    }
     if (input.name && input.name.toLowerCase() !== current.name.toLowerCase()) {
       const taken = await store.findAgentByName(input.name);
       if (taken && taken.id !== current.id)
@@ -774,6 +844,12 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   });
 
   app.delete('/api/agents/:id', async (c) => {
+    const user = await actor(c);
+    const target = await store.getAgent(c.req.param('id'));
+    if (!target || !(await canUseAgent(user, target.id)))
+      return c.json({ error: 'Агент не найден' }, 404);
+    if (!canEditAgent(user, target))
+      throw new HttpError(403, 'Общего агента удаляет администратор');
     if ((await store.listAgents()).length <= 1) {
       return c.json({ error: 'Нельзя удалить последнего агента' }, 400);
     }
@@ -915,6 +991,13 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   app.get('/api/conversations', async (c) => {
     const user = await actor(c);
     const agentId = c.req.query('agentId') || undefined;
+    const projectId = c.req.query('projectId') || undefined;
+    if (projectId) {
+      if (!(await store.getProject(projectId, user.id))) return c.json([]);
+      return c.json(
+        await store.listConversations(user.id, undefined, projectId),
+      );
+    }
     if (agentId && !(await canUseAgent(user, agentId))) return c.json([]);
     return c.json(await store.listConversations(user.id, agentId));
   });
@@ -950,12 +1033,19 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         typeof record.model === 'string',
       );
     }
+    let projectId: string | null = null;
+    if (typeof record.projectId === 'string' && record.projectId) {
+      if (!(await store.getProject(record.projectId, user.id)))
+        throw badRequest('Проект не найден');
+      projectId = record.projectId;
+    }
     const created = await store.insertConversation({
       title: locale === 'en' ? 'New chat' : 'Новый чат',
       agentId: agent.id,
       userId: user.id,
       providerId,
       model,
+      projectId,
     });
     return c.json(created, 201);
   });
@@ -997,12 +1087,69 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         model !== undefined,
       );
     }
+    let projectId: string | null | undefined;
+    if (body.projectId === null) projectId = null;
+    else if (typeof body.projectId === 'string') {
+      if (!(await store.getProject(body.projectId, user.id)))
+        throw badRequest('Проект не найден');
+      projectId = body.projectId;
+    }
     const updated = await store.updateConversation(current.id, {
       title: title || undefined,
       providerId,
       model,
+      projectId,
     });
     return c.json(updated);
+  });
+
+  // ---------- Проекты (клиент, сделка, задача) ----------
+  const parseProject = (body: unknown): ProjectInput => {
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    return {
+      name: typeof body.name === 'string' ? body.name : undefined,
+      client: typeof body.client === 'string' ? body.client : undefined,
+      instructions:
+        typeof body.instructions === 'string' ? body.instructions : undefined,
+      archived: typeof body.archived === 'boolean' ? body.archived : undefined,
+    };
+  };
+
+  app.get('/api/projects', async (c) => {
+    const user = await actor(c);
+    return c.json(await store.listProjects(user.id));
+  });
+
+  app.post('/api/projects', async (c) => {
+    const user = await actor(c);
+    const input = parseProject(await readBody(c));
+    if (!input.name?.trim()) throw badRequest('Укажите название проекта');
+    if ((await store.listProjects(user.id)).length >= 200)
+      throw badRequest('Слишком много проектов');
+    return c.json(
+      await store.insertProject(user.id, { ...input, name: input.name }),
+      201,
+    );
+  });
+
+  app.patch('/api/projects/:id', async (c) => {
+    const user = await actor(c);
+    if (!(await store.getProject(c.req.param('id'), user.id)))
+      return c.json({ error: 'Проект не найден' }, 404);
+    return c.json(
+      await store.updateProject(
+        c.req.param('id'),
+        parseProject(await readBody(c)),
+      ),
+    );
+  });
+
+  app.delete('/api/projects/:id', async (c) => {
+    const user = await actor(c);
+    if (!(await store.getProject(c.req.param('id'), user.id)))
+      return c.json({ error: 'Проект не найден' }, 404);
+    await store.deleteProject(c.req.param('id'));
+    return c.json({ ok: true });
   });
 
   app.delete('/api/conversations/:id', async (c) => {

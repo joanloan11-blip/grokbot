@@ -10,6 +10,8 @@ import type {
   ProviderInput,
   ProviderKind,
   ProviderPublic,
+  Project,
+  ProjectInput,
   Routine,
   RoutineInput,
   SearchHit,
@@ -72,8 +74,33 @@ interface ConversationSql {
   user_id: string | null;
   provider_id: string | null;
   model: string | null;
+  project_id?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface ProjectSql {
+  id: string;
+  user_id: string;
+  name: string;
+  client: string;
+  instructions: string;
+  archived: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapProject(row: ProjectSql): Project {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    client: row.client ?? '',
+    instructions: row.instructions ?? '',
+    archived: Number(row.archived) === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 interface AgentSql {
@@ -86,6 +113,7 @@ interface AgentSql {
   model: string | null;
   mcp_ids_json: string;
   skill_names_json: string;
+  owner_user_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -340,6 +368,29 @@ export class Store {
       'password_changed_at',
       'ALTER TABLE users ADD COLUMN password_changed_at TEXT',
     );
+    await add(
+      'agents',
+      'owner_user_id',
+      'ALTER TABLE agents ADD COLUMN owner_user_id TEXT',
+    );
+    await add(
+      'conversations',
+      'project_id',
+      'ALTER TABLE conversations ADD COLUMN project_id TEXT',
+    );
+    await this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        client TEXT NOT NULL DEFAULT '',
+        instructions TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, updated_at);
+    `);
     await this.sql.exec(`
       CREATE TABLE IF NOT EXISTS password_resets (
         token_hash TEXT PRIMARY KEY,
@@ -709,7 +760,15 @@ export class Store {
   async listConversations(
     userId: string,
     agentId?: string,
+    projectId?: string,
   ): Promise<Conversation[]> {
+    if (projectId) {
+      const rows = (await this.sql.all(
+        'SELECT * FROM conversations WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC',
+        [userId, projectId],
+      )) as unknown as ConversationSql[];
+      return rows.map(mapConversation);
+    }
     const rows = (agentId
       ? await this.sql.all(
           'SELECT * FROM conversations WHERE user_id = ? AND agent_id = ? ORDER BY updated_at DESC',
@@ -741,6 +800,7 @@ export class Store {
     userId: string;
     providerId: string | null;
     model: string | null;
+    projectId?: string | null;
   }): Promise<Conversation> {
     const row: Conversation = {
       id: newId(),
@@ -749,12 +809,13 @@ export class Store {
       userId: input.userId,
       providerId: input.providerId,
       model: input.model,
+      projectId: input.projectId ?? null,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
     await this.sql.run(
-      `INSERT INTO conversations (id, title, agent_id, user_id, provider_id, model, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversations (id, title, agent_id, user_id, provider_id, model, project_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.title,
@@ -762,6 +823,7 @@ export class Store {
         row.userId,
         row.providerId,
         row.model,
+        row.projectId ?? null,
         row.createdAt,
         row.updatedAt,
       ],
@@ -790,7 +852,9 @@ export class Store {
 
   async updateConversation(
     id: string,
-    patch: Partial<Pick<Conversation, 'title' | 'providerId' | 'model'>>,
+    patch: Partial<
+      Pick<Conversation, 'title' | 'providerId' | 'model' | 'projectId'>
+    >,
   ): Promise<Conversation | undefined> {
     const current = await this.getConversation(id);
     if (!current) return undefined;
@@ -800,13 +864,108 @@ export class Store {
       providerId:
         patch.providerId === undefined ? current.providerId : patch.providerId,
       model: patch.model === undefined ? current.model : patch.model,
+      projectId:
+        patch.projectId === undefined
+          ? (current.projectId ?? null)
+          : patch.projectId,
       updatedAt: nowIso(),
     };
     await this.sql.run(
-      'UPDATE conversations SET title = ?, provider_id = ?, model = ?, updated_at = ? WHERE id = ?',
-      [next.title, next.providerId, next.model, next.updatedAt, id],
+      'UPDATE conversations SET title = ?, provider_id = ?, model = ?, project_id = ?, updated_at = ? WHERE id = ?',
+      [
+        next.title,
+        next.providerId,
+        next.model,
+        next.projectId ?? null,
+        next.updatedAt,
+        id,
+      ],
     );
     return next;
+  }
+
+  // ---------- Проекты ----------
+  async listProjects(userId: string): Promise<Project[]> {
+    const rows = (await this.sql.all(
+      'SELECT * FROM projects WHERE user_id = ? ORDER BY archived ASC, updated_at DESC',
+      [userId],
+    )) as unknown as ProjectSql[];
+    return rows.map(mapProject);
+  }
+
+  async getProject(id: string, userId?: string): Promise<Project | undefined> {
+    const row = (await this.sql.get('SELECT * FROM projects WHERE id = ?', [
+      id,
+    ])) as ProjectSql | undefined;
+    if (!row || (userId && row.user_id !== userId)) return undefined;
+    return mapProject(row);
+  }
+
+  async insertProject(
+    userId: string,
+    input: ProjectInput & { name: string },
+  ): Promise<Project> {
+    const now = nowIso();
+    const row: Project = {
+      id: newId(),
+      userId,
+      name: input.name.trim().slice(0, 120),
+      client: (input.client ?? '').trim().slice(0, 200),
+      instructions: (input.instructions ?? '').slice(0, 20_000),
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.sql.run(
+      'INSERT INTO projects (id, user_id, name, client, instructions, archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)',
+      [row.id, userId, row.name, row.client, row.instructions, now, now],
+    );
+    return row;
+  }
+
+  async updateProject(
+    id: string,
+    patch: ProjectInput,
+  ): Promise<Project | undefined> {
+    const current = await this.getProject(id);
+    if (!current) return undefined;
+    const next: Project = {
+      ...current,
+      name: patch.name?.trim() ? patch.name.trim().slice(0, 120) : current.name,
+      client:
+        patch.client === undefined
+          ? current.client
+          : patch.client.trim().slice(0, 200),
+      instructions:
+        patch.instructions === undefined
+          ? current.instructions
+          : patch.instructions.slice(0, 20_000),
+      archived: patch.archived ?? current.archived,
+      updatedAt: nowIso(),
+    };
+    await this.sql.run(
+      'UPDATE projects SET name = ?, client = ?, instructions = ?, archived = ?, updated_at = ? WHERE id = ?',
+      [
+        next.name,
+        next.client,
+        next.instructions,
+        next.archived ? 1 : 0,
+        next.updatedAt,
+        id,
+      ],
+    );
+    return next;
+  }
+
+  async deleteProject(id: string): Promise<boolean> {
+    await this.sql.run(
+      'UPDATE conversations SET project_id = NULL WHERE project_id = ?',
+      [id],
+    );
+    const result = await this.sql.run('DELETE FROM projects WHERE id = ?', [
+      id,
+    ]);
+    return result.changes > 0;
   }
 
   async deleteConversation(id: string): Promise<boolean> {
@@ -973,6 +1132,24 @@ export class Store {
     }
   }
 
+  async setAgentOwner(id: string, ownerId: string | null): Promise<void> {
+    await this.sql.run('UPDATE agents SET owner_user_id = ? WHERE id = ?', [
+      ownerId,
+      id,
+    ]);
+  }
+
+  /** Агенты, доступные пользователю: свои личные + выданные общие (админу — все). */
+  async listAgentsFor(user: { id: string; role: string }): Promise<Agent[]> {
+    const all = await this.listAgents();
+    if (user.role === 'admin') return all;
+    const allowed = new Set(await this.listUserAgentIds(user.id));
+    return all.filter(
+      (agent) =>
+        agent.ownerId === user.id || (!agent.ownerId && allowed.has(agent.id)),
+    );
+  }
+
   async findAgentByName(name: string): Promise<Agent | undefined> {
     const needle = name.trim().toLowerCase();
     return (await this.listAgents()).find(
@@ -980,7 +1157,9 @@ export class Store {
     );
   }
 
-  async insertAgent(input: AgentInput & { name: string }): Promise<Agent> {
+  async insertAgent(
+    input: AgentInput & { name: string; ownerId?: string | null },
+  ): Promise<Agent> {
     const now = nowIso();
     const row: Agent = {
       id: newId(),
@@ -993,14 +1172,15 @@ export class Store {
       mcpServerIds: input.mcpServerIds ?? [],
       skillNames: input.skillNames ?? [],
       githubRepos: input.githubRepos ?? [],
+      ownerId: input.ownerId ?? null,
       createdAt: now,
       updatedAt: now,
     };
     await this.sql.run(
       `INSERT INTO agents (
           id, name, emoji, description, system_prompt, provider_id, model,
-          mcp_ids_json, skill_names_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          mcp_ids_json, skill_names_json, owner_user_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.name,
@@ -1011,6 +1191,7 @@ export class Store {
         row.model,
         JSON.stringify(row.mcpServerIds),
         JSON.stringify(row.skillNames),
+        row.ownerId,
         row.createdAt,
         row.updatedAt,
       ],
@@ -2147,6 +2328,7 @@ function mapConversation(row: ConversationSql): Conversation {
     userId: row.user_id,
     providerId: row.provider_id,
     model: row.model,
+    projectId: row.project_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -2164,6 +2346,7 @@ function mapAgent(row: AgentSql): Agent {
     mcpServerIds: parseStringArray(row.mcp_ids_json),
     skillNames: parseStringArray(row.skill_names_json),
     githubRepos: [],
+    ownerId: row.owner_user_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

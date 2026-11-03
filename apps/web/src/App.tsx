@@ -3,16 +3,20 @@ import type {
   Agent,
   Conversation,
   ProviderPublic,
+  Project,
   PublicUser,
   SearchHit,
 } from '@mayak/shared';
 import { ApiError, api } from './api';
 import { AgentEditor } from './components/AgentEditor';
+import { ProjectDialog } from './components/ProjectDialog';
 import { AgentWizard } from './components/AgentWizard';
 import { AuthScreen } from './components/AuthScreen';
 import { ChatPane } from './components/ChatPane';
 import {
   BeaconMark,
+  IconEdit,
+  IconFolder,
   IconPlus,
   IconSearch,
   IconSidebar,
@@ -139,6 +143,40 @@ function Shell({
     };
   }, [chatQuery]);
   const [wizard, setWizard] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('mayak.projectId');
+    } catch {
+      return null;
+    }
+  });
+  const [projectDialog, setProjectDialog] = useState<Project | 'new' | null>(
+    null,
+  );
+  const project = projects.find((item) => item.id === projectId) ?? null;
+  const selectProject = (id: string | null) => {
+    setProjectId(id);
+    setActiveId(null);
+    setView({ name: 'chat' });
+    try {
+      if (id) localStorage.setItem('mayak.projectId', id);
+      else localStorage.removeItem('mayak.projectId');
+    } catch {
+      /* ignore */
+    }
+  };
+  useEffect(() => {
+    void api
+      .projects()
+      .then((next) => {
+        setProjects(next);
+        setProjectId((current) =>
+          current && next.some((item) => item.id === current) ? current : null,
+        );
+      })
+      .catch(() => setProjects([]));
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -165,6 +203,20 @@ function Shell({
   }, [refresh]);
 
   useEffect(() => {
+    if (projectId) {
+      let cancelled = false;
+      void api
+        .projectConversations(projectId)
+        .then((next) => {
+          if (!cancelled) setConversations(next);
+        })
+        .catch(() => {
+          if (!cancelled) setConversations([]);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!agentId) {
       setConversations([]);
       return;
@@ -189,7 +241,7 @@ function Shell({
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, projectId]);
 
   const agent = agents.find((item) => item.id === agentId) ?? agents[0];
 
@@ -234,6 +286,62 @@ function Shell({
             onChange={(event) => setChatQuery(event.target.value)}
           />
         </label>
+        <div className="side-head">
+          <p className="side-label">{t('projects')}</p>
+          <button
+            type="button"
+            className="icon-btn quiet tiny"
+            aria-label={t('projectNew')}
+            title={t('projectNew')}
+            onClick={() => setProjectDialog('new')}
+          >
+            <IconPlus />
+          </button>
+        </div>
+        <nav className="project-list">
+          {projects.length === 0 && (
+            <button
+              type="button"
+              className="conv hint-row"
+              onClick={() => setProjectDialog('new')}
+            >
+              <span>{t('projectEmpty')}</span>
+            </button>
+          )}
+          {projects
+            .filter((item) => !item.archived)
+            .map((item) => (
+              <div
+                key={item.id}
+                className={item.id === projectId ? 'project active' : 'project'}
+              >
+                <button
+                  type="button"
+                  className="project-open"
+                  onClick={() =>
+                    selectProject(item.id === projectId ? null : item.id)
+                  }
+                >
+                  <IconFolder />
+                  <span>
+                    {item.name}
+                    {item.client && <small>{item.client}</small>}
+                  </span>
+                </button>
+                {item.id === projectId && (
+                  <button
+                    type="button"
+                    className="icon-btn quiet tiny"
+                    aria-label={t('projectEdit')}
+                    title={t('projectEdit')}
+                    onClick={() => setProjectDialog(item)}
+                  >
+                    <IconEdit />
+                  </button>
+                )}
+              </div>
+            ))}
+        </nav>
         <p className="side-label">{t('agents')}</p>
         <div className="agent-row">
           {agents.map((item) => (
@@ -250,20 +358,15 @@ function Shell({
               }}
             >
               {item.emoji} {item.name}
+              {item.ownerId && <em className="own-mark">{t('personal')}</em>}
             </button>
           ))}
         </div>
-        {isAdmin && (
-          <button
-            className="ghost"
-            type="button"
-            onClick={() => setWizard(true)}
-          >
-            <IconPlus />
-            {t('newAgent')}
-          </button>
-        )}
-        {isAdmin && agent && (
+        <button className="ghost" type="button" onClick={() => setWizard(true)}>
+          <IconPlus />
+          {t('newAgent')}
+        </button>
+        {agent && (isAdmin || (user && agent.ownerId === user.id)) && (
           <button
             className="ghost slim"
             type="button"
@@ -272,7 +375,9 @@ function Shell({
             {t('configureAgent')}
           </button>
         )}
-        <p className="side-label">{t('chats')}</p>
+        <p className="side-label">
+          {project ? `${t('chats')} · ${project.name}` : t('chats')}
+        </p>
         {hits && (
           <div className="search-hits">
             <p className="side-label">{t('searchResults')}</p>
@@ -319,7 +424,15 @@ function Shell({
                     ? 'conv active'
                     : 'conv'
                 }
-                onClick={() => openChat(conversation.id)}
+                onClick={() => {
+                  if (
+                    projectId &&
+                    conversation.agentId &&
+                    conversation.agentId !== agentId
+                  )
+                    setAgentId(conversation.agentId);
+                  openChat(conversation.id);
+                }}
               >
                 <span>{conversation.title}</span>
                 <time dateTime={conversation.updatedAt}>
@@ -393,6 +506,8 @@ function Shell({
           <AgentEditor
             agent={agent}
             providers={providers}
+            restricted={!isAdmin}
+            canShare={isAdmin}
             onMenu={openNav}
             onSaved={(saved) => {
               setAgents((current) =>
@@ -413,6 +528,7 @@ function Shell({
             defaultProviderId={agent.providerId}
             defaultModel={agent.model}
             providers={providers}
+            projectId={projectId}
             barPicker={user?.role === 'manager'}
             onMenu={openNav}
             onConversation={(conversation) => {
@@ -444,8 +560,30 @@ function Shell({
         ) : (
           <p className="muted empty-side">{t('noAgent')}</p>
         )}
+        {projectDialog && (
+          <ProjectDialog
+            project={projectDialog === 'new' ? null : projectDialog}
+            onClose={() => setProjectDialog(null)}
+            onSaved={(saved) => {
+              setProjects((current) => [
+                saved,
+                ...current.filter((item) => item.id !== saved.id),
+              ]);
+              setProjectDialog(null);
+              selectProject(saved.id);
+            }}
+            onDeleted={(id) => {
+              setProjects((current) =>
+                current.filter((item) => item.id !== id),
+              );
+              setProjectDialog(null);
+              if (projectId === id) selectProject(null);
+            }}
+          />
+        )}
         {wizard && (
           <AgentWizard
+            restricted={!isAdmin}
             onClose={() => setWizard(false)}
             onCreated={(id) => {
               setWizard(false);

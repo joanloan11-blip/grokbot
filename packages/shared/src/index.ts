@@ -45,8 +45,30 @@ export interface Conversation {
   userId: string | null;
   providerId: string | null;
   model: string | null;
+  /** Проект (клиент/сделка), к которому относится чат. */
+  projectId?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Project {
+  id: string;
+  userId: string;
+  name: string;
+  /** Клиент или компания, необязательно. */
+  client: string;
+  /** Контекст и правила проекта: агент получает их в каждом чате проекта. */
+  instructions: string;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectInput {
+  name?: string;
+  client?: string;
+  instructions?: string;
+  archived?: boolean;
 }
 
 export type UserRole = 'admin' | 'manager';
@@ -94,6 +116,8 @@ export interface Agent {
   skillNames: string[];
   /** Репозитории owner/name, которые агент может читать через GitHub. */
   githubRepos: string[];
+  /** Личный агент менеджера (null — общий агент команды). */
+  ownerId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -116,3 +116,20 @@ export function IconClose() {
     </svg>
   );
 }
+
+export function IconFolder() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}
+
+export function IconEdit() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17z" />
+      <path d="m14 7 3 3" />
+    </svg>
+  );
+}

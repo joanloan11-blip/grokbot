@@ -27,6 +27,8 @@ interface Props {
   defaultModel: string | null;
   providers: ProviderPublic[];
   barPicker?: boolean;
+  /** Новые чаты создаются в этом проекте. */
+  projectId?: string | null;
   onMenu: () => void;
   onConversation: (conversation: Conversation) => void;
   onDeleted: (id: string) => void;
@@ -44,6 +46,7 @@ export function ChatPane({
   defaultProviderId,
   defaultModel,
   providers,
+  projectId = null,
   onMenu,
   onConversation,
   onDeleted,
@@ -146,6 +149,7 @@ export function ChatPane({
       agentId,
       providerId: selected?.providerId,
       model: selected?.model,
+      projectId,
     });
     createdRef.current = created.id;
     setTitle(created.title);

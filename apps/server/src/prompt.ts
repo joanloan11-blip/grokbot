@@ -6,6 +6,8 @@ export function buildSystemPrompt(
   options?: {
     persona?: string;
     peers?: { name: string; description: string }[];
+    /** Дополнительный контекст (например, проект), идёт после правил. */
+    context?: string;
   },
 ): string {
   const identity = options?.persona?.trim()
@@ -26,7 +28,10 @@ export function buildSystemPrompt(
             ? 'Other agents you can message with send_to_agent'
             : 'Другие агенты, которым можно написать через send_to_agent'
         }:\n${peers.map((peer) => `- ${peer.name}: ${peer.description || (locale === 'en' ? 'no description' : 'без описания')}`).join('\n')}`;
-  const header = `${identity}\n\n${rules}${peerBlock}`;
+  const context = options?.context?.trim()
+    ? `\n\n${options.context.trim()}`
+    : '';
+  const header = `${identity}\n\n${rules}${peerBlock}${context}`;
 
   if (skills.length === 0) {
     return `${header}\n\n${locale === 'en' ? 'No skills are enabled.' : 'Включённых навыков нет.'}`;

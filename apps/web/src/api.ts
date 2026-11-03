@@ -20,6 +20,8 @@ import type {
   McpServerInput,
   McpServerPublic,
   McpServersFile,
+  Project,
+  ProjectInput,
   ProviderInput,
   ProviderPublic,
   SearchHit,
@@ -243,7 +245,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  updateAgent: (id: string, input: AgentInput) =>
+  updateAgent: (id: string, input: AgentInput & { shared?: boolean }) =>
     request<Agent>(`/api/agents/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -298,11 +300,38 @@ export const api = {
         ? `/api/conversations?agentId=${encodeURIComponent(agentId)}`
         : '/api/conversations',
     ),
+  projects: () => request<Project[]>('/api/projects'),
+  createProject: (input: ProjectInput & { name: string }) =>
+    request<Project>('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateProject: (id: string, input: ProjectInput) =>
+    request<Project>(`/api/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteProject: (id: string) =>
+    request<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
+  projectConversations: (projectId: string) =>
+    request<Conversation[]>(
+      `/api/conversations?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  moysklad: () =>
+    request<{ connected: boolean; account?: string; error?: string }>(
+      '/api/admin/moysklad',
+    ),
+  saveMoysklad: (token: string) =>
+    request<{ connected: boolean; account?: string }>('/api/admin/moysklad', {
+      method: 'PUT',
+      body: JSON.stringify({ token }),
+    }),
   createConversation: (body: {
     locale: Locale;
     agentId?: string;
     providerId?: string;
     model?: string;
+    projectId?: string | null;
   }) =>
     request<Conversation>('/api/conversations', {
       method: 'POST',

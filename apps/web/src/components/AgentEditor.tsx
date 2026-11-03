@@ -18,12 +18,18 @@ export function AgentEditor({
   onMenu,
   onSaved,
   onDeleted,
+  restricted = false,
+  canShare = false,
 }: {
   agent: Agent;
   providers: ProviderPublic[];
   onMenu: () => void;
   onSaved: (agent: Agent) => void;
   onDeleted: () => void;
+  /** Менеджер правит личного агента: без MCP и GitHub. */
+  restricted?: boolean;
+  /** Админ может сделать личного агента менеджера общим. */
+  canShare?: boolean;
 }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState(agent);
@@ -44,7 +50,7 @@ export function AgentEditor({
     setDraft(agent);
     void Promise.all([
       api.skills(),
-      api.mcp(),
+      api.mcp().catch(() => []),
       api.memory(agent.id),
       api.routines(agent.id),
       api.githubStatus().catch(() => null),
@@ -201,47 +207,65 @@ export function AgentEditor({
                 {skill.name}
               </label>
             ))}
-            {servers.map((server) => (
-              <label key={server.id} className="check">
-                <input
-                  type="checkbox"
-                  checked={draft.mcpServerIds.includes(server.id)}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      mcpServerIds: event.target.checked
-                        ? [...draft.mcpServerIds, server.id]
-                        : draft.mcpServerIds.filter(
-                            (item) => item !== server.id,
-                          ),
-                    })
-                  }
-                />
-                MCP {server.name}
-              </label>
-            ))}
-            {githubRepos.map((item) => (
-              <label key={item.fullName} className="check">
-                <input
-                  type="checkbox"
-                  checked={(draft.githubRepos ?? []).includes(item.fullName)}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      githubRepos: event.target.checked
-                        ? [...(draft.githubRepos ?? []), item.fullName]
-                        : (draft.githubRepos ?? []).filter(
-                            (name) => name !== item.fullName,
-                          ),
-                    })
-                  }
-                />
-                {item.fullName}
-              </label>
-            ))}
+            {!restricted &&
+              servers.map((server) => (
+                <label key={server.id} className="check">
+                  <input
+                    type="checkbox"
+                    checked={draft.mcpServerIds.includes(server.id)}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        mcpServerIds: event.target.checked
+                          ? [...draft.mcpServerIds, server.id]
+                          : draft.mcpServerIds.filter(
+                              (item) => item !== server.id,
+                            ),
+                      })
+                    }
+                  />
+                  MCP {server.name}
+                </label>
+              ))}
+            {!restricted &&
+              githubRepos.map((item) => (
+                <label key={item.fullName} className="check">
+                  <input
+                    type="checkbox"
+                    checked={(draft.githubRepos ?? []).includes(item.fullName)}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        githubRepos: event.target.checked
+                          ? [...(draft.githubRepos ?? []), item.fullName]
+                          : (draft.githubRepos ?? []).filter(
+                              (name) => name !== item.fullName,
+                            ),
+                      })
+                    }
+                  />
+                  {item.fullName}
+                </label>
+              ))}
           </div>
-          {githubRepos.length > 0 && <p className="hint">{t('githubRepos')}</p>}
+          {!restricted && githubRepos.length > 0 && (
+            <p className="hint">{t('githubRepos')}</p>
+          )}
+          {agent.ownerId && <p className="hint">{t('personalAgentHint')}</p>}
           <div className="row-actions">
+            {canShare && agent.ownerId && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() =>
+                  void api
+                    .updateAgent(agent.id, { shared: true } as never)
+                    .then((saved) => onSaved(saved))
+                }
+              >
+                {t('makeShared')}
+              </button>
+            )}
             <button className="primary-btn" type="submit">
               {t('save')}
             </button>

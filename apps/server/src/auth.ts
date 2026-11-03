@@ -201,11 +201,8 @@ export function isSharedCatalogWrite(
   ) {
     return true;
   }
-  if (pathname === '/api/agents' && method === 'POST') return true;
-  return (
-    /^\/api\/agents\/[^/]+$/.test(pathname) &&
-    (method === 'PATCH' || method === 'DELETE')
-  );
+  // Агентов менеджеры создают сами (личные); права проверяют маршруты /api/agents.
+  return false;
 }
 
 function base64url(value: string): string {

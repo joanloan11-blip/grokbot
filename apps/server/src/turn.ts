@@ -27,6 +27,7 @@ import type {
 import { readGithubToken, runGithubTool } from './github/tools';
 import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
+import { formatStock, searchStock } from './moysklad';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
@@ -134,7 +135,12 @@ export async function runTurn(
     depth,
     conversation.id,
   );
-  const peers = (await deps.store.listAgents())
+  // Писать можно только агентам, которые доступны владельцу чата.
+  const peers = (
+    owner
+      ? await deps.store.listAgentsFor(owner)
+      : await deps.store.listAgents()
+  )
     .filter((item) => item.id !== agent.id)
     .map((item) => ({ name: item.name, description: item.description }));
   const history = await buildHistory(
@@ -177,7 +183,11 @@ export async function runTurn(
               .listEnabled()
               .filter((skill) => agent.skillNames.includes(skill.name)),
             input.locale,
-            { persona: agent.systemPrompt, peers: depth === 0 ? peers : [] },
+            {
+              persona: agent.systemPrompt,
+              context: await projectBlock(deps.store, conversation.projectId),
+              peers: depth === 0 ? peers : [],
+            },
           ),
         },
         ...history,
@@ -265,11 +275,15 @@ export async function deliverToAgent(
   },
 ): Promise<string> {
   if (input.depth > 0) return 'Вложенная пересылка между агентами отключена.';
-  const target = await deps.store.findAgentByName(input.targetName);
+  const sender = await deps.store.getUser(input.userId);
+  const reachable = sender
+    ? await deps.store.listAgentsFor(sender)
+    : await deps.store.listAgents();
+  const found = await deps.store.findAgentByName(input.targetName);
+  const target =
+    found && reachable.some((item) => item.id === found.id) ? found : undefined;
   if (!target) {
-    const names = (await deps.store.listAgents())
-      .map((agent) => agent.name)
-      .join(', ');
+    const names = reachable.map((agent) => agent.name).join(', ');
     return `Агент «${input.targetName}» не найден. Доступны: ${names || '—'}.`;
   }
   if (target.id === input.from.id)
@@ -776,6 +790,7 @@ async function exposeTools(
   }
 
   for (const name of [
+    'stock_lookup',
     'skill_manage',
     'workspace_list',
     'workspace_read',
@@ -786,7 +801,16 @@ async function exposeTools(
   ])
     used.add(name);
   const dataDir = path.dirname(deps.skills.directory);
-  const root = () => workspaceRoot(dataDir, userId, agent.id);
+  // В проекте рабочая папка общая для всех чатов проекта.
+  const conversationRow = await deps.store.getConversation(conversationId);
+  const root = () =>
+    workspaceRoot(
+      dataDir,
+      userId,
+      conversationRow?.projectId
+        ? `project-${conversationRow.projectId}`
+        : agent.id,
+    );
   const guard = (run: () => string) => {
     try {
       return run();
@@ -794,6 +818,43 @@ async function exposeTools(
       return error instanceof Error ? error.message : 'Ошибка рабочей папки';
     }
   };
+  const moyskladStored = await deps.store.getSetting('moysklad_token');
+  if (moyskladStored && deps.jwtSecret) {
+    const secret = deps.jwtSecret;
+    tools.push({
+      definition: {
+        name: 'stock_lookup',
+        description:
+          'Live stock and prices from MoySklad (read-only): search by name, article, OEM or code. Use it before telling a client whether an item is in stock or how much it costs. Наличие и цены из МойСклад.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Название, артикул, OEM-номер или код',
+            },
+            limit: {
+              type: 'number',
+              description: 'Сколько позиций вернуть (1–15)',
+            },
+          },
+          required: ['query'],
+        },
+      },
+      run: async (args) => {
+        const query = asString(args.query).trim();
+        if (!query) return 'Укажите query: название, артикул или OEM.';
+        const limit = Math.min(15, Math.max(1, Number(args.limit) || 8));
+        try {
+          const token = decryptSecret(moyskladStored, secret);
+          return formatStock(query, await searchStock(token, query, limit));
+        } catch (error) {
+          return error instanceof Error ? error.message : 'МойСклад недоступен';
+        }
+      },
+    });
+  }
+
   tools.push(
     {
       definition: {
@@ -1217,4 +1278,21 @@ function isAbort(error: unknown): boolean {
     error instanceof Error &&
     (error.name === 'AbortError' || error.message === 'Запрос отменён')
   );
+}
+
+/** Контекст проекта для системного промпта. */
+async function projectBlock(
+  store: Store,
+  projectId?: string | null,
+): Promise<string> {
+  if (!projectId) return '';
+  const project = await store.getProject(projectId);
+  if (!project) return '';
+  return [
+    `## Проект: ${project.name}${project.client ? ` (клиент: ${project.client})` : ''}`,
+    project.instructions.trim(),
+    'Все чаты этого проекта используют одну рабочую папку (workspace_*). Храни там материалы по проекту.',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }

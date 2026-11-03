@@ -20,9 +20,12 @@ const STEPS = [
 export function AgentWizard({
   onClose,
   onCreated,
+  restricted = false,
 }: {
   onClose: () => void;
   onCreated: (id: string) => void;
+  /** Менеджер: личный агент без MCP. */
+  restricted?: boolean;
 }) {
   const { t } = useI18n();
   const [step, setStep] = useState(0);
@@ -46,7 +49,7 @@ export function AgentWizard({
       api.templates(),
       api.providers(),
       api.skills(),
-      api.mcp(),
+      api.mcp().catch(() => []),
     ])
       .then(([nextTemplates, nextProviders, nextSkills, nextServers]) => {
         setTemplates(nextTemplates);
@@ -117,7 +120,7 @@ export function AgentWizard({
         providerId: providerId || null,
         model: model || null,
         skillNames,
-        mcpServerIds,
+        mcpServerIds: restricted ? [] : mcpServerIds,
       });
       onCreated(created.id);
     } catch (reason) {
@@ -249,22 +252,23 @@ export function AgentWizard({
                 {skill.name}
               </label>
             ))}
-            {servers.map((server) => (
-              <label key={server.id} className="check">
-                <input
-                  type="checkbox"
-                  checked={mcpServerIds.includes(server.id)}
-                  onChange={(event) =>
-                    setMcpServerIds((current) =>
-                      event.target.checked
-                        ? [...current, server.id]
-                        : current.filter((item) => item !== server.id),
-                    )
-                  }
-                />
-                MCP {server.name}
-              </label>
-            ))}
+            {!restricted &&
+              servers.map((server) => (
+                <label key={server.id} className="check">
+                  <input
+                    type="checkbox"
+                    checked={mcpServerIds.includes(server.id)}
+                    onChange={(event) =>
+                      setMcpServerIds((current) =>
+                        event.target.checked
+                          ? [...current, server.id]
+                          : current.filter((item) => item !== server.id),
+                      )
+                    }
+                  />
+                  MCP {server.name}
+                </label>
+              ))}
           </div>
         )}
         {step === 5 && (
