@@ -28,6 +28,7 @@ import { readGithubToken, runGithubTool } from './github/tools';
 import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
+import { readImageSettings, runImageTool } from './images';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
@@ -790,6 +791,7 @@ async function exposeTools(
   }
 
   for (const name of [
+    'generate_image',
     'stock_lookup',
     'skill_manage',
     'workspace_list',
@@ -818,6 +820,52 @@ async function exposeTools(
       return error instanceof Error ? error.message : 'Ошибка рабочей папки';
     }
   };
+  const imageSettings = await readImageSettings(deps.store);
+  if (imageSettings.enabled) {
+    tools.push({
+      definition: {
+        name: 'generate_image',
+        description:
+          'Create a picture from a text prompt (or edit the images the user attached when edit_attached=true) and show it in the chat. Write a detailed visual prompt in English or Russian: subject, style, composition, colors, text on the image. Генерирует или правит картинку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: 'Detailed description of the image',
+            },
+            size: {
+              type: 'string',
+              enum: ['auto', '1024x1024', '1536x1024', '1024x1536'],
+              description: 'Square, landscape or portrait',
+            },
+            quality: {
+              type: 'string',
+              enum: ['auto', 'low', 'medium', 'high'],
+            },
+            edit_attached: {
+              type: 'boolean',
+              description:
+                'Edit the images attached to the latest user message instead of drawing from scratch',
+            },
+          },
+          required: ['prompt'],
+        },
+      },
+      run: async (args) =>
+        runImageTool({
+          store: deps.store,
+          dataDir,
+          userId,
+          conversationId,
+          prompt: asString(args.prompt),
+          size: asString(args.size) || undefined,
+          quality: asString(args.quality) || undefined,
+          editAttached: args.edit_attached === true,
+        }),
+    });
+  }
+
   const moyskladStored = await deps.store.getSetting('moysklad_token');
   if (moyskladStored && deps.jwtSecret) {
     const secret = deps.jwtSecret;

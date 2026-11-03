@@ -1783,3 +1783,27 @@ input[type="checkbox"]:checked::after {
   flex: none;
   margin-left: 0;
 }
+
+.gen-image {
+  margin: 0;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.gen-image img {
+  display: block;
+  max-width: min(100%, 512px);
+  border-radius: 14px;
+}
+.gen-image figcaption {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.gen-image figcaption a {
+  color: var(--text);
+  flex: none;
+}

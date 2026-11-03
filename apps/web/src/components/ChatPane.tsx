@@ -752,10 +752,12 @@ function ToolCard({
       )}
       {result?.startsWith('APPROVAL:') && <ApprovalCard raw={result} />}
       {result?.startsWith('DIFF:') && <DiffView raw={result.slice(5)} />}
+      {result?.startsWith('IMAGE:') && <ImageResult raw={result.slice(6)} />}
       {result !== undefined &&
         !result.startsWith('ASK:') &&
         !result.startsWith('APPROVAL:') &&
-        !result.startsWith('DIFF:') && (
+        !result.startsWith('DIFF:') &&
+        !result.startsWith('IMAGE:') && (
           <div className="tool-result">{result}</div>
         )}
     </div>
@@ -947,5 +949,29 @@ function DiffView({ raw }: { raw: string }) {
         ))}
       </pre>
     </div>
+  );
+}
+
+function ImageResult({ raw }: { raw: string }) {
+  const { t } = useI18n();
+  let image: { id: string; name: string; prompt?: string };
+  try {
+    image = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const url = `/api/files/${image.id}`;
+  return (
+    <figure className="gen-image">
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={image.prompt || image.name} loading="lazy" />
+      </a>
+      <figcaption>
+        <span>{image.prompt}</span>
+        <a href={url} download={image.name}>
+          {t('download')}
+        </a>
+      </figcaption>
+    </figure>
   );
 }

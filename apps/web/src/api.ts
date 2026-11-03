@@ -317,6 +317,27 @@ export const api = {
     request<Conversation[]>(
       `/api/conversations?projectId=${encodeURIComponent(projectId)}`,
     ),
+  imageSettings: () =>
+    request<{
+      enabled: boolean;
+      providerId: string | null;
+      model: string;
+      quality: string;
+      dailyLimit: number;
+      usedToday: number;
+      providers: { id: string; name: string; baseUrl: string }[];
+    }>('/api/admin/images'),
+  saveImageSettings: (body: {
+    enabled?: boolean;
+    providerId?: string;
+    model?: string;
+    quality?: string;
+    dailyLimit?: number;
+  }) =>
+    request<{ enabled: boolean }>('/api/admin/images', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   moysklad: () =>
     request<{ connected: boolean; account?: string; error?: string }>(
       '/api/admin/moysklad',

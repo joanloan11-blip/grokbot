@@ -9,6 +9,7 @@ import { HttpError, badRequest } from './errors';
 import { extractUploadText } from './files';
 import { decryptSecret, encryptSecret } from './github/secret';
 import { checkMoyskladToken } from './moysklad';
+import { IMAGE_QUALITIES, imagesUsedToday, readImageSettings } from './images';
 import type { McpManager } from './mcp/manager';
 import { runSandboxed } from './sandbox';
 import { deliverToAgent, type TurnDeps } from './turn';
@@ -231,6 +232,54 @@ export function registerExtraRoutes(
       telegram: Boolean(await deps.store.getSetting('telegram_token')),
       moysklad: Boolean(await deps.store.getSetting('moysklad_token')),
     });
+  });
+
+  // Картинки: провайдер, модель, качество и дневной лимит на пользователя.
+  app.get('/api/admin/images', async (c) => {
+    const user = await admin(c);
+    const settings = await readImageSettings(deps.store);
+    const providers = (await deps.store.listProviders())
+      .filter((row) => row.kind === 'openai' && row.apiKey)
+      .map((row) => ({ id: row.id, name: row.name, baseUrl: row.baseUrl }));
+    return c.json({
+      ...settings,
+      providers,
+      usedToday: await imagesUsedToday(deps.store, user.id),
+    });
+  });
+
+  app.put('/api/admin/images', async (c) => {
+    await admin(c);
+    const body = await deps.readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON');
+    if (typeof body.enabled === 'boolean')
+      await deps.store.setSetting('images_enabled', body.enabled ? '1' : '0');
+    if (typeof body.providerId === 'string') {
+      const provider = await deps.store.getProvider(body.providerId);
+      if (!provider || provider.kind !== 'openai')
+        throw badRequest('Нужен OpenAI-совместимый провайдер');
+      await deps.store.setSetting('image_provider_id', provider.id);
+    }
+    if (
+      typeof body.model === 'string' &&
+      /^[\w.:-]{2,80}$/.test(body.model.trim())
+    )
+      await deps.store.setSetting('image_model', body.model.trim());
+    if (
+      typeof body.quality === 'string' &&
+      (IMAGE_QUALITIES as readonly string[]).includes(body.quality)
+    )
+      await deps.store.setSetting('image_quality', body.quality);
+    if (
+      typeof body.dailyLimit === 'number' &&
+      body.dailyLimit >= 1 &&
+      body.dailyLimit <= 1000
+    )
+      await deps.store.setSetting(
+        'image_daily_limit',
+        String(Math.floor(body.dailyLimit)),
+      );
+    return c.json(await readImageSettings(deps.store));
   });
 
   // МойСклад: токен только на запись, наружу не отдаётся. Пустая строка — отключить.

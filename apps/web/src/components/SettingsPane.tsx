@@ -89,6 +89,7 @@ export function SettingsPane({
         {tab === 'general' && (
           <>
             <GeneralPanel />
+            <ImagesPanel />
             <MoyskladPanel />
           </>
         )}
@@ -1027,6 +1028,122 @@ function SkillsPanel() {
           </form>
         )}
       </div>
+    </div>
+  );
+}
+
+function ImagesPanel() {
+  const { t } = useI18n();
+  const [data, setData] = useState<Awaited<
+    ReturnType<typeof api.imageSettings>
+  > | null>(null);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const load = useCallback(async () => setData(await api.imageSettings()), []);
+  useEffect(() => {
+    void load().catch((reason: unknown) =>
+      setError(reason instanceof Error ? reason.message : t('error')),
+    );
+  }, [load, t]);
+  if (!data) return null;
+  const save = async (patch: Parameters<typeof api.saveImageSettings>[0]) => {
+    setError('');
+    setSaved(false);
+    try {
+      await api.saveImageSettings(patch);
+      await load();
+      setSaved(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('error'));
+    }
+  };
+  return (
+    <div className="panel card form">
+      <h3>
+        {t('imagesTitle')}{' '}
+        <span className={data.enabled ? 'pill on' : 'pill'}>
+          {data.enabled ? t('moyskladConnected') : t('moyskladOff')}
+        </span>
+      </h3>
+      <p className="hint">{t('imagesLead')}</p>
+      {data.providers.length === 0 ? (
+        <p className="fault">{t('imagesNoProvider')}</p>
+      ) : (
+        <>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={data.enabled}
+              onChange={(event) => void save({ enabled: event.target.checked })}
+            />
+            {t('imagesEnabled')}
+          </label>
+          <label>
+            {t('imagesProvider')}
+            <select
+              value={data.providerId ?? ''}
+              onChange={(event) =>
+                void save({ providerId: event.target.value })
+              }
+            >
+              {data.providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {t('imagesModel')}
+            <select
+              value={data.model}
+              onChange={(event) => void save({ model: event.target.value })}
+            >
+              {[
+                'gpt-image-2',
+                'gpt-image-1.5',
+                'gpt-image-1',
+                'gpt-image-1-mini',
+              ].map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {t('imagesQuality')}
+            <select
+              value={data.quality}
+              onChange={(event) => void save({ quality: event.target.value })}
+            >
+              <option value="low">{t('qualityLow')}</option>
+              <option value="medium">{t('qualityMedium')}</option>
+              <option value="high">{t('qualityHigh')}</option>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+          <label>
+            {t('imagesLimit')}
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              defaultValue={data.dailyLimit}
+              onBlur={(event) => {
+                const next = Number(event.target.value);
+                if (next !== data.dailyLimit && next >= 1)
+                  void save({ dailyLimit: next });
+              }}
+            />
+          </label>
+          <p className="hint">
+            {t('imagesUsed')}: {data.usedToday}
+          </p>
+        </>
+      )}
+      {saved && <p className="note">{t('saved')}</p>}
+      {error && <p className="fault">{error}</p>}
     </div>
   );
 }

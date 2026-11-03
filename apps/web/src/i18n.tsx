@@ -178,6 +178,21 @@ const ru = {
   personalAgentHint:
     'Личный агент: виден только владельцу. MCP-серверы и GitHub подключает администратор у общих агентов.',
   makeShared: 'Сделать общим для команды',
+  imagesTitle: 'Картинки',
+  imagesLead:
+    'Агенты рисуют и правят изображения инструментом generate_image (OpenAI Images). Картинка появляется прямо в чате, её можно скачать. Стоимость: примерно 1–7 ₽ за картинку в зависимости от качества.',
+  imagesNoProvider:
+    'Нет провайдера OpenAI с ключом. Добавьте его в Настройки → Модели.',
+  imagesEnabled: 'Разрешить агентам создавать картинки',
+  imagesProvider: 'Провайдер',
+  imagesModel: 'Модель',
+  imagesQuality: 'Качество по умолчанию',
+  qualityLow: 'Низкое — быстро и дёшево',
+  qualityMedium: 'Среднее',
+  qualityHigh: 'Высокое — дольше и дороже',
+  imagesLimit: 'Картинок в день на пользователя',
+  imagesUsed: 'Вы создали сегодня',
+  download: 'Скачать',
   moyskladTitle: 'МойСклад',
   moyskladLead:
     'Токен только на чтение: агенты смогут проверять наличие и цены инструментом stock_lookup. Токен хранится на сервере зашифрованным.',
@@ -422,6 +437,21 @@ const en: Dictionary = {
   personalAgentHint:
     'Personal agent: only its owner sees it. MCP servers and GitHub are added by the admin on shared agents.',
   makeShared: 'Share with the team',
+  imagesTitle: 'Images',
+  imagesLead:
+    'Agents draw and edit pictures with the generate_image tool (OpenAI Images). The picture appears in the chat and can be downloaded. Cost: about $0.01–0.08 per image depending on quality.',
+  imagesNoProvider:
+    'No OpenAI provider with a key. Add one in Settings → Models.',
+  imagesEnabled: 'Let agents create images',
+  imagesProvider: 'Provider',
+  imagesModel: 'Model',
+  imagesQuality: 'Default quality',
+  qualityLow: 'Low — fast and cheap',
+  qualityMedium: 'Medium',
+  qualityHigh: 'High — slower and pricier',
+  imagesLimit: 'Images per user per day',
+  imagesUsed: 'You created today',
+  download: 'Download',
   moyskladTitle: 'MoySklad',
   moyskladLead:
     'Read-only token: agents can check stock and prices with the stock_lookup tool. The token is stored encrypted on the server.',
