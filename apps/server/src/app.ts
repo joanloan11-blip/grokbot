@@ -41,6 +41,7 @@ import { registerExtraRoutes } from './extra';
 import { registerGithubRoutes } from './github/routes';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
+import { discoverProvider } from './providers/discover';
 import { runRoutineNow, startScheduler, triggerWebhook } from './scheduler';
 import { SkillLibrary, seedSkills } from './skills';
 import { AGENT_TEMPLATES } from './templates';
@@ -540,9 +541,44 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json(visible);
   });
 
+  // Определить провайдера по ключу или моделям и загрузить список моделей.
+  app.post('/api/providers/discover', async (c) => {
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const apiKey =
+      typeof body.apiKey === 'string' && body.apiKey !== SECRET_MASK
+        ? body.apiKey
+        : undefined;
+    return c.json(
+      await discoverProvider({
+        apiKey,
+        baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl : undefined,
+        kind: isKind(body.kind) ? body.kind : undefined,
+        models: Array.isArray(body.models)
+          ? body.models.filter(
+              (item): item is string => typeof item === 'string',
+            )
+          : undefined,
+        currentId:
+          typeof body.providerId === 'string' ? body.providerId : undefined,
+        existing: await store.listProviders(),
+      }),
+    );
+  });
+
+  /** Ключ, скопированный на сервере из другого провайдера (в браузер не попадает). */
+  const borrowedKey = async (body: unknown): Promise<string | undefined> => {
+    if (!isRecord(body) || typeof body.keyFromProviderId !== 'string')
+      return undefined;
+    const donor = await store.getProvider(body.keyFromProviderId);
+    return donor?.apiKey || undefined;
+  };
+
   app.post('/api/providers', async (c) => {
-    const input = parseProviderInput(await readBody(c));
+    const raw = await readBody(c);
+    const input = parseProviderInput(raw);
     if (input.apiKey === SECRET_MASK) input.apiKey = undefined;
+    if (!input.apiKey) input.apiKey = await borrowedKey(raw);
     const row = await store.insertProvider(input);
     return c.json(toPublicProvider(row), 201);
   });
@@ -561,6 +597,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       true,
     );
     if (!input.apiKey || input.apiKey === SECRET_MASK) input.apiKey = undefined;
+    if (!input.apiKey) input.apiKey = await borrowedKey(body);
     const row = await store.updateProvider(current.id, input);
     if (!row) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json(toPublicProvider(row));

@@ -1,5 +1,7 @@
 import type {
   Attachment,
+  DiscoverResult,
+  ProviderKind,
   ChatMessage,
   ClientEvent,
   PublicUser,
@@ -171,12 +173,26 @@ export const api = {
       body: JSON.stringify({ mode }),
     }),
   providers: () => request<ProviderPublic[]>('/api/providers'),
-  createProvider: (input: ProviderInput) =>
+  discoverProvider: (body: {
+    apiKey?: string;
+    baseUrl?: string;
+    kind?: ProviderKind;
+    models?: string[];
+    providerId?: string;
+  }) =>
+    request<DiscoverResult>('/api/providers/discover', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  createProvider: (input: ProviderInput & { keyFromProviderId?: string }) =>
     request<ProviderPublic>('/api/providers', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  updateProvider: (id: string, input: Partial<ProviderInput>) =>
+  updateProvider: (
+    id: string,
+    input: Partial<ProviderInput> & { keyFromProviderId?: string },
+  ) =>
     request<ProviderPublic>(`/api/providers/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(input),

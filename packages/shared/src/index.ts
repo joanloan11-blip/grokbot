@@ -289,3 +289,122 @@ export type ClientEvent =
 export const SECRET_MASK = '••••••';
 
 export const DEFAULT_TITLES = ['Новый чат', 'New chat'] as const;
+
+// ---------- Автоопределение провайдера по ключу и по имени модели ----------
+
+export interface ProviderGuess {
+  kind: ProviderKind;
+  baseUrl: string;
+  name: string;
+}
+
+const OPENAI_URL = 'https://api.openai.com/v1';
+
+/** Тип провайдера по префиксу ключа. Для «голого» sk-… вернёт несколько вариантов. */
+export function guessProvidersFromKey(rawKey: string): ProviderGuess[] {
+  const key = rawKey.trim();
+  if (!key) return [];
+  if (key.startsWith('sk-ant-'))
+    return [
+      {
+        kind: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        name: 'Anthropic',
+      },
+    ];
+  if (key.startsWith('AIza'))
+    return [
+      {
+        kind: 'gemini',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        name: 'Google Gemini',
+      },
+    ];
+  if (key.startsWith('sk-or-'))
+    return [
+      {
+        kind: 'openai',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        name: 'OpenRouter',
+      },
+    ];
+  if (key.startsWith('gsk_'))
+    return [
+      {
+        kind: 'openai',
+        baseUrl: 'https://api.groq.com/openai/v1',
+        name: 'Groq',
+      },
+    ];
+  if (key.startsWith('xai-'))
+    return [
+      { kind: 'openai', baseUrl: 'https://api.x.ai/v1', name: 'xAI Grok' },
+    ];
+  if (key.startsWith('pplx-'))
+    return [
+      {
+        kind: 'openai',
+        baseUrl: 'https://api.perplexity.ai',
+        name: 'Perplexity',
+      },
+    ];
+  if (
+    key.startsWith('sk-proj-') ||
+    key.startsWith('sk-svcacct-') ||
+    key.startsWith('sk-admin-')
+  )
+    return [{ kind: 'openai', baseUrl: OPENAI_URL, name: 'OpenAI' }];
+  if (key.startsWith('sk-')) {
+    // DeepSeek и старые ключи OpenAI выглядят одинаково: проверяем оба.
+    return [
+      { kind: 'deepseek', baseUrl: DEEPSEEK_BASE_URL, name: 'DeepSeek' },
+      { kind: 'openai', baseUrl: OPENAI_URL, name: 'OpenAI' },
+    ];
+  }
+  return [];
+}
+
+/** Тип провайдера по имени модели (для вручную введённых моделей). */
+export function guessProviderFromModel(
+  rawModel: string,
+): ProviderGuess | undefined {
+  const model = rawModel.trim().toLowerCase();
+  if (!model) return undefined;
+  if (model.startsWith('claude'))
+    return {
+      kind: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      name: 'Anthropic',
+    };
+  if (model.startsWith('gemini') || model.startsWith('gemma'))
+    return {
+      kind: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      name: 'Google Gemini',
+    };
+  if (model.startsWith('deepseek'))
+    return { kind: 'deepseek', baseUrl: DEEPSEEK_BASE_URL, name: 'DeepSeek' };
+  if (model.startsWith('grok'))
+    return { kind: 'openai', baseUrl: 'https://api.x.ai/v1', name: 'xAI Grok' };
+  if (model.includes('/'))
+    return {
+      kind: 'openai',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      name: 'OpenRouter',
+    };
+  if (/^(gpt|o\d|chatgpt|text-|davinci)/.test(model))
+    return { kind: 'openai', baseUrl: OPENAI_URL, name: 'OpenAI' };
+  return undefined;
+}
+
+export interface DiscoverResult {
+  kind: ProviderKind;
+  baseUrl: string;
+  name: string;
+  models: string[];
+  /** Ключ не введён, но есть сохранённый ключ этого типа у другого провайдера. */
+  keyFrom?: { providerId: string; name: string };
+  /** Ключ проверен запросом списка моделей. */
+  verified: boolean;
+  error?: string;
+}

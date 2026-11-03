@@ -1478,3 +1478,32 @@ input[type="checkbox"]:checked::after {
   word-break: break-all;
   user-select: all;
 }
+
+.model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+.chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 0.82rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+.chip:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.chip.on {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+.detected {
+  color: var(--text);
+}

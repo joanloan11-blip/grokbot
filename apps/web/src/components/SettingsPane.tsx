@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DEEPSEEK_BASE_URL,
   DEEPSEEK_MODELS,
   type McpServerInput,
   type McpServerPublic,
+  type DiscoverResult,
   type ProviderInput,
   type ProviderKind,
   type ProviderPublic,
+  guessProviderFromModel,
+  guessProvidersFromKey,
   type Skill,
   type SkillSummary,
 } from '@mayak/shared';
@@ -119,6 +122,95 @@ function ProvidersPanel({
   const [error, setError] = useState('');
   const [testNote, setTestNote] = useState('');
   const [testing, setTesting] = useState(false);
+  // Автоопределение: тип/адрес меняем сами, пока пользователь их не трогал.
+  const [touched, setTouched] = useState({
+    kind: false,
+    baseUrl: false,
+    name: false,
+  });
+  const [found, setFound] = useState<DiscoverResult | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const discoverSeq = useRef(0);
+  const autoName = useRef('');
+
+  const runDiscover = useCallback(
+    async (form: NonNullable<typeof editing>, flags: typeof touched) => {
+      const seq = ++discoverSeq.current;
+      setDiscovering(true);
+      try {
+        const result = await api.discoverProvider({
+          apiKey: form.apiKey?.trim() || undefined,
+          baseUrl:
+            flags.baseUrl || flags.kind ? form.baseUrl?.trim() : undefined,
+          kind: flags.kind ? form.kind : undefined,
+          models: (form.models ?? [])
+            .map((item) => item.trim())
+            .filter(Boolean),
+          providerId: form.id,
+        });
+        if (seq !== discoverSeq.current) return;
+        setFound(result);
+        setEditing((current) => {
+          if (!current) return current;
+          const next = { ...current };
+          if (!flags.kind) next.kind = result.kind;
+          if (!flags.baseUrl && !flags.kind) next.baseUrl = result.baseUrl;
+          if (
+            !flags.name &&
+            result.name &&
+            (!current.name.trim() || current.name === autoName.current)
+          ) {
+            next.name = result.name;
+            autoName.current = result.name;
+          }
+          const picked = (current.models ?? [])
+            .map((item) => item.trim())
+            .filter(Boolean);
+          if (result.verified && picked.length === 0 && result.models.length)
+            next.models = result.models.slice(0, 3);
+          return next;
+        });
+      } catch (reason) {
+        if (seq === discoverSeq.current)
+          setFound({
+            kind: form.kind,
+            baseUrl: form.baseUrl ?? '',
+            name: '',
+            models: [],
+            verified: false,
+            error: reason instanceof Error ? reason.message : t('error'),
+          });
+      } finally {
+        if (seq === discoverSeq.current) setDiscovering(false);
+      }
+    },
+    [t],
+  );
+
+  // Ключ введён → через паузу определяем провайдера и грузим модели.
+  const keyValue = editing?.apiKey?.trim() ?? '';
+  useEffect(() => {
+    if (!editing || keyValue.length < 10) return;
+    const timer = window.setTimeout(
+      () => void runDiscover(editing, touched),
+      700,
+    );
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyValue]);
+
+  const toggleModel = (model: string) => {
+    if (!editing) return;
+    const list = (editing.models ?? [])
+      .map((item) => item.trim())
+      .filter(Boolean);
+    setEditing({
+      ...editing,
+      models: list.includes(model)
+        ? list.filter((item) => item !== model)
+        : [...list, model],
+    });
+  };
 
   const load = useCallback(async () => {
     setProviders(await api.providers());
@@ -142,10 +234,16 @@ function ProvidersPanel({
       enabled: editing.enabled !== false,
     };
     if (editing.apiKey?.trim()) payload.apiKey = editing.apiKey.trim();
+    const keyFromProviderId =
+      !payload.apiKey && !editing.hasApiKey
+        ? found?.keyFrom?.providerId
+        : undefined;
     try {
-      if (editing.id) await api.updateProvider(editing.id, payload);
-      else await api.createProvider(payload);
+      if (editing.id)
+        await api.updateProvider(editing.id, { ...payload, keyFromProviderId });
+      else await api.createProvider({ ...payload, keyFromProviderId });
       setEditing(null);
+      setFound(null);
       await load();
       onChanged();
     } catch (reason) {
@@ -174,7 +272,9 @@ function ProvidersPanel({
         <button
           type="button"
           className="primary-btn"
-          onClick={() =>
+          onClick={() => {
+            setTouched({ kind: false, baseUrl: false, name: false });
+            setFound(null);
             setEditing({
               name: '',
               kind: 'openai',
@@ -182,8 +282,8 @@ function ProvidersPanel({
               models: [''],
               enabled: true,
               apiKey: '',
-            })
-          }
+            });
+          }}
         >
           {t('addProvider')}
         </button>
@@ -202,9 +302,10 @@ function ProvidersPanel({
             {t('providerName')}
             <input
               value={editing.name}
-              onChange={(event) =>
-                setEditing({ ...editing, name: event.target.value })
-              }
+              onChange={(event) => {
+                setTouched((current) => ({ ...current, name: true }));
+                setEditing({ ...editing, name: event.target.value });
+              }}
               required
             />
           </label>
@@ -212,11 +313,12 @@ function ProvidersPanel({
             {t('providerKind')}
             <select
               value={editing.kind}
-              onChange={(event) =>
+              onChange={(event) => {
+                setTouched((current) => ({ ...current, kind: true }));
                 setEditing(
                   applyKindPreset(editing, event.target.value as ProviderKind),
-                )
-              }
+                );
+              }}
             >
               {KINDS.map((kind) => (
                 <option key={kind} value={kind}>
@@ -238,9 +340,10 @@ function ProvidersPanel({
                 <input
                   value={editing.baseUrl ?? ''}
                   placeholder={placeholderUrl(editing.kind)}
-                  onChange={(event) =>
-                    setEditing({ ...editing, baseUrl: event.target.value })
-                  }
+                  onChange={(event) => {
+                    setTouched((current) => ({ ...current, baseUrl: true }));
+                    setEditing({ ...editing, baseUrl: event.target.value });
+                  }}
                 />
               </label>
               <label>
@@ -256,7 +359,17 @@ function ProvidersPanel({
                 />
               </label>
               <p className="hint">
-                {editing.hasApiKey ? t('apiKeySaved') : t('apiKeyHint')}
+                {editing.hasApiKey ? t('apiKeySaved') : t('apiKeyHint')}{' '}
+                {!touched.kind &&
+                  keyValue.length >= 6 &&
+                  guessProvidersFromKey(keyValue)[0] && (
+                    <span className="detected">
+                      {t('detectedAs')}:{' '}
+                      {guessProvidersFromKey(keyValue)
+                        .map((item) => item.name)
+                        .join(' / ')}
+                    </span>
+                  )}
               </p>
             </>
           )}
@@ -265,15 +378,72 @@ function ProvidersPanel({
             <textarea
               rows={3}
               value={(editing.models ?? []).join('\n')}
-              onChange={(event) =>
-                setEditing({
-                  ...editing,
-                  models: event.target.value.split('\n'),
-                })
-              }
+              onChange={(event) => {
+                const models = event.target.value.split('\n');
+                let next = { ...editing, models };
+                // Своя модель без ключа: тип провайдера угадываем по имени модели.
+                if (!touched.kind && !keyValue && !editing.id) {
+                  const guess = models
+                    .map(guessProviderFromModel)
+                    .find(Boolean);
+                  if (guess) {
+                    const keepName =
+                      touched.name ||
+                      (next.name.trim() !== '' &&
+                        next.name !== autoName.current);
+                    if (!keepName) autoName.current = guess.name;
+                    next = {
+                      ...next,
+                      kind: guess.kind,
+                      baseUrl: touched.baseUrl ? next.baseUrl : guess.baseUrl,
+                      name: keepName ? next.name : guess.name,
+                    };
+                  }
+                }
+                setEditing(next);
+              }}
+              onBlur={() => {
+                if (!keyValue && !editing.hasApiKey && !editing.id)
+                  void runDiscover(editing, touched);
+              }}
             />
           </label>
           <p className="hint">{t('modelsHint')}</p>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="ghost slim"
+              disabled={discovering}
+              onClick={() => void runDiscover(editing, touched)}
+            >
+              {discovering ? t('modelsLoading') : t('loadModels')}
+            </button>
+            {found?.keyFrom && !keyValue && !editing.hasApiKey && (
+              <span className="hint">
+                {t('keyFrom')} «{found.keyFrom.name}»
+              </span>
+            )}
+            {found?.error && <span className="fault">{found.error}</span>}
+          </div>
+          {found?.verified && found.models.length > 0 && (
+            <div className="model-chips">
+              {found.models.map((model) => {
+                const on = (editing.models ?? [])
+                  .map((item) => item.trim())
+                  .includes(model);
+                return (
+                  <button
+                    key={model}
+                    type="button"
+                    className={on ? 'chip on' : 'chip'}
+                    onClick={() => toggleModel(model)}
+                  >
+                    {model}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <label className="check">
             <input
               type="checkbox"
@@ -357,7 +527,9 @@ function ProvidersPanel({
               <button
                 type="button"
                 className="ghost slim"
-                onClick={() =>
+                onClick={() => {
+                  setTouched({ kind: true, baseUrl: true, name: true });
+                  setFound(null);
                   setEditing({
                     id: provider.id,
                     name: provider.name,
@@ -367,8 +539,8 @@ function ProvidersPanel({
                     enabled: provider.enabled,
                     apiKey: '',
                     hasApiKey: provider.hasApiKey,
-                  })
-                }
+                  });
+                }}
               >
                 {t('edit')}
               </button>
