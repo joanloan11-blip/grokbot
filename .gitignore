@@ -1,0 +1,12 @@
+node_modules
+dist
+release
+examples/demo-mcp-server/dist
+data
+.env
+*.log
+.DS_Store
+*.tsbuildinfo
+apps/desktop/dist
+coverage
+.vite
