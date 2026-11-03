@@ -77,6 +77,8 @@ export interface UsageRow {
   name: string;
   calls: number;
   limit: number | null;
+  tokens?: number;
+  costUsd?: number;
   models: UsageModelCount[];
 }
 

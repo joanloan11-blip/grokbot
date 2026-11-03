@@ -36,6 +36,7 @@ import type { AppConfig } from './config';
 import { isValidCron } from './cron';
 import { type McpRow, Store, type UserRecord, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
+import { registerExtraRoutes } from './extra';
 import { registerGithubRoutes } from './github/routes';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
@@ -47,6 +48,7 @@ import { asString, isRecord } from './util';
 
 export interface AppHandle {
   app: Hono;
+  runtime: import('./turn').TurnDeps;
   close: () => Promise<void>;
   startScheduler: () => () => void;
 }
@@ -360,18 +362,23 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const byModel = await store.usageByModel(since.toISOString());
     const byUser = new Map(summary.map((row) => [row.userId, row.calls]));
     const users = await store.listUsers();
-    return c.json(
-      users.map((item) => ({
+    const usageRows = [];
+    for (const item of users) {
+      const tokens = await store.tokenSumSince(item.id, since.toISOString());
+      usageRows.push({
         userId: item.id,
         email: item.email,
         name: item.name,
         calls: byUser.get(item.id) ?? 0,
         limit: item.dailyRequestLimit,
+        tokens,
+        costUsd: Number(((tokens / 1_000_000) * 1).toFixed(4)),
         models: byModel
           .filter((row) => row.userId === item.id)
           .map((row) => ({ model: row.model, calls: row.calls })),
-      })),
-    );
+      });
+    }
+    return c.json(usageRows);
   });
 
   app.put('/api/admin/models/shared', async (c) => {
@@ -668,7 +675,11 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.post('/api/hooks/:token', async (c) => {
     const extra = await c.req.text().catch(() => '');
-    const ok = await triggerWebhook({ store, mcp, skills, jwtSecret: config.jwtSecret }, c.req.param('token'), extra);
+    const ok = await triggerWebhook(
+      { store, mcp, skills, jwtSecret: config.jwtSecret },
+      c.req.param('token'),
+      extra,
+    );
     if (!ok) return c.json({ error: 'Вебхук не найден' }, 404);
     return c.json({ ok: true });
   });
@@ -676,7 +687,11 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   app.get('/api/agents/:id/routines/:routineId/runs', async (c) => {
     const user = await actor(c);
     const routine = await store.getRoutine(c.req.param('routineId'));
-    if (!routine || routine.userId !== user.id || routine.agentId !== c.req.param('id')) {
+    if (
+      !routine ||
+      routine.userId !== user.id ||
+      routine.agentId !== c.req.param('id')
+    ) {
       return c.json({ error: 'Расписание не найдено' }, 404);
     }
     return c.json(await store.listRoutineRuns(routine.id));
@@ -702,7 +717,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json(
       await store.insertRoutine(user.id, c.req.param('id'), {
         name: input.name,
-        cron: input.cron,
+        cron: input.cron ?? '',
         prompt: input.prompt,
         enabled: input.enabled,
       }),
@@ -916,6 +931,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     });
   });
 
+  const runtime = { store, mcp, skills, jwtSecret: config.jwtSecret };
   registerGithubRoutes(app, {
     store,
     mcp,
@@ -925,6 +941,14 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     readBody,
     present: (row) => presentMcp(row, mcp),
   });
+  registerExtraRoutes(app, {
+    store,
+    mcp,
+    config,
+    actor,
+    readBody,
+    runtime,
+  });
 
   if (config.staticDir) {
     const root = path.resolve(config.staticDir);
@@ -933,10 +957,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.notFound((c) => c.json({ error: 'Не найдено' }, 404));
 
-  const deps = { store, mcp, skills, jwtSecret: config.jwtSecret };
   return {
     app,
-    startScheduler: () => startScheduler(deps),
+    runtime,
+    startScheduler: () => startScheduler(runtime),
     close: async () => {
       await mcp.disconnectAll();
       await store.close();

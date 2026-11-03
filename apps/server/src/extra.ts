@@ -1,0 +1,285 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import type { Context, Hono } from 'hono';
+import type { AppConfig } from './config';
+import type { Store, UserRecord } from './db';
+import { HttpError, badRequest } from './errors';
+import { extractUploadText } from './files';
+import { encryptSecret } from './github/secret';
+import type { McpManager } from './mcp/manager';
+import { runSandboxed } from './sandbox';
+import { deliverToAgent, type TurnDeps } from './turn';
+import { isRecord } from './util';
+
+export function registerExtraRoutes(
+  app: Hono,
+  deps: {
+    store: Store;
+    mcp: McpManager;
+    config: AppConfig;
+    actor: (c: Context) => Promise<UserRecord>;
+    readBody: (c: Context) => Promise<unknown>;
+    runtime: TurnDeps;
+  },
+): void {
+  const admin = async (c: Context) => {
+    const user = await deps.actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return user;
+  };
+
+  app.get('/api/tasks', async (c) => {
+    const user = await deps.actor(c);
+    const conversationId = c.req.query('conversationId') || undefined;
+    return c.json(await deps.store.listTasks(user.id, conversationId));
+  });
+
+  app.get('/api/pages', async (c) => {
+    const user = await deps.actor(c);
+    return c.json(await deps.store.listPages(user.id));
+  });
+
+  app.get('/api/public/pages/:token', async (c) => {
+    const page = await deps.store.getPageByToken(c.req.param('token'));
+    if (!page) return c.text('Не найдено', 404);
+    const safeTitle = escapeHtml(page.title);
+    const safeBody = escapeHtml(page.body);
+    return c.html(
+      `<!doctype html><html lang="ru"><meta charset="utf-8"><title>${safeTitle}</title>
+      <body style="font-family:Georgia,serif;max-width:760px;margin:40px auto;padding:0 16px;background:#f6f1e7;color:#1b2430">
+      <h1>${safeTitle}</h1><pre style="white-space:pre-wrap;font:16px/1.5 sans-serif">${safeBody}</pre></body>`,
+    );
+  });
+
+  app.get('/api/files/:id', async (c) => {
+    const user = await deps.actor(c);
+    const file = await deps.store.getUpload(c.req.param('id'), user.id);
+    if (!file) return c.json({ error: 'Файл не найден' }, 404);
+    const bytes = fs.readFileSync(file.path);
+    return new Response(bytes, {
+      headers: {
+        'content-type': file.mime || 'application/octet-stream',
+        'content-disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
+      },
+    });
+  });
+
+  app.post('/api/conversations/:id/files', async (c) => {
+    const user = await deps.actor(c);
+    const conversation = await deps.store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    const body = await c.req.parseBody();
+    const file = body.file;
+    if (
+      !file ||
+      typeof file === 'string' ||
+      typeof file.arrayBuffer !== 'function'
+    ) {
+      throw badRequest('Приложите файл в поле file');
+    }
+    if (file.size > 8_000_000) throw badRequest('Файл больше 8 МБ');
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const text = extractUploadText(
+      file.name,
+      file.type || 'application/octet-stream',
+      bytes,
+    );
+    const dir = path.join(deps.config.dataDir, 'uploads', user.id);
+    fs.mkdirSync(dir, { recursive: true });
+    const idName = `${Date.now()}-${file.name.replace(/[^\w.-]+/g, '_')}`;
+    const stored = path.join(dir, idName);
+    fs.writeFileSync(stored, bytes);
+    const id = await deps.store.insertUpload({
+      userId: user.id,
+      conversationId: conversation.id,
+      name: file.name,
+      mime: file.type || 'application/octet-stream',
+      path: stored,
+      text,
+    });
+    return c.json({ id, name: file.name, text: text.slice(0, 4000) }, 201);
+  });
+
+  app.post('/api/messages/:id/reactions', async (c) => {
+    const user = await deps.actor(c);
+    const body = await deps.readBody(c);
+    const emoji =
+      isRecord(body) && typeof body.emoji === 'string'
+        ? body.emoji.slice(0, 8)
+        : '';
+    if (!emoji) throw badRequest('Нужен emoji');
+    await deps.store.setReaction(c.req.param('id'), user.id, emoji);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/approvals/:id', async (c) => {
+    const user = await deps.actor(c);
+    const approval = await deps.store.getApproval(c.req.param('id'));
+    if (!approval || approval.userId !== user.id) {
+      return c.json({ error: 'Подтверждение не найдено' }, 404);
+    }
+    if (approval.status !== 'pending')
+      return c.json({ ok: true, status: approval.status });
+    const body = await deps.readBody(c);
+    const allow = isRecord(body) && body.approve === true;
+    if (!allow) {
+      await deps.store.setApprovalStatus(approval.id, 'denied');
+      return c.json({ ok: true, status: 'denied' });
+    }
+    const result = await replayApproval(deps.runtime, approval, user.id);
+    await deps.store.setApprovalStatus(approval.id, 'approved');
+    await deps.store.insertMessage({
+      conversationId: approval.conversationId,
+      role: 'assistant',
+      content: `Подтверждено «${approval.toolName}»:\n\n${result.slice(0, 4000)}`,
+    });
+    return c.json({
+      ok: true,
+      status: 'approved',
+      result: result.slice(0, 2000),
+    });
+  });
+
+  app.get('/api/admin/search', async (c) => {
+    await admin(c);
+    return c.json({
+      provider: (await deps.store.getSetting('search_provider')) || 'searxng',
+      url: (await deps.store.getSetting('search_url')) || '',
+      hasKey: Boolean(await deps.store.getSetting('search_key')),
+      sandbox: (await deps.store.getSetting('code_sandbox')) === '1',
+      approvals: (await deps.store.getSetting('approvals_enabled')) === '1',
+      approvalAuto: (await deps.store.getSetting('approval_auto')) || '',
+      telegram: Boolean(await deps.store.getSetting('telegram_token')),
+    });
+  });
+
+  app.put('/api/admin/search', async (c) => {
+    await admin(c);
+    const body = await deps.readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON');
+    if (typeof body.provider === 'string') {
+      await deps.store.setSetting('search_provider', body.provider);
+    }
+    if (typeof body.url === 'string')
+      await deps.store.setSetting('search_url', body.url.trim());
+    if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+      await deps.store.setSetting(
+        'search_key',
+        encryptSecret(body.apiKey.trim(), deps.config.jwtSecret),
+      );
+    }
+    if (typeof body.sandbox === 'boolean') {
+      await deps.store.setSetting('code_sandbox', body.sandbox ? '1' : '0');
+    }
+    if (typeof body.approvals === 'boolean') {
+      await deps.store.setSetting(
+        'approvals_enabled',
+        body.approvals ? '1' : '0',
+      );
+    }
+    if (typeof body.approvalAuto === 'string') {
+      await deps.store.setSetting(
+        'approval_auto',
+        body.approvalAuto.slice(0, 500),
+      );
+    }
+    if (
+      typeof body.dailyTokenLimit === 'number' &&
+      typeof body.userId === 'string'
+    ) {
+      await deps.store.setSetting(
+        `token_limit:${body.userId}`,
+        String(Math.max(0, Math.floor(body.dailyTokenLimit))),
+      );
+    }
+    return c.json({ ok: true });
+  });
+
+  app.put('/api/admin/telegram', async (c) => {
+    await admin(c);
+    const body = await deps.readBody(c);
+    const token =
+      isRecord(body) && typeof body.token === 'string' ? body.token.trim() : '';
+    if (token.length < 10) throw badRequest('Вставьте токен бота');
+    await deps.store.setSetting(
+      'telegram_token',
+      encryptSecret(token, deps.config.jwtSecret),
+    );
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/telegram/link', async (c) => {
+    const user = await deps.actor(c);
+    const code = randomBytes(4).toString('hex');
+    await deps.store.setSetting(`tg_link_${code}`, user.id);
+    return c.json({ code, hint: `Отправьте боту /start ${code}` });
+  });
+}
+
+async function replayApproval(
+  deps: TurnDeps,
+  approval: {
+    toolName: string;
+    arguments: string;
+    conversationId: string;
+    userId: string;
+  },
+  userId: string,
+): Promise<string> {
+  let args: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(approval.arguments) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      args = parsed as Record<string, unknown>;
+    }
+  } catch {
+    args = {};
+  }
+  if (approval.toolName === 'run_code') {
+    return runSandboxed({
+      enabled: (await deps.store.getSetting('code_sandbox')) === '1',
+      language: String(args.language ?? ''),
+      code: String(args.code ?? ''),
+    });
+  }
+  if (approval.toolName === 'send_to_agent') {
+    const conversation = await deps.store.getConversation(
+      approval.conversationId,
+      userId,
+    );
+    const agent = conversation?.agentId
+      ? await deps.store.getAgent(conversation.agentId)
+      : undefined;
+    if (!agent) return 'Агент не найден';
+    return deliverToAgent(deps, {
+      from: agent,
+      userId,
+      targetName: String(args.agent ?? ''),
+      message: String(args.message ?? ''),
+      depth: 0,
+      locale: 'ru',
+    });
+  }
+  if (approval.toolName.startsWith('mcp__')) {
+    const parts = approval.toolName.split('__');
+    const serverName = parts[1];
+    const toolName = parts.slice(2).join('__');
+    const servers = await deps.store.listMcp();
+    const server = servers.find((item) => item.name === serverName);
+    if (!server) return 'MCP-сервер не найден';
+    return deps.mcp.callTool(server.id, toolName, args);
+  }
+  return 'Это действие нельзя повторить автоматически.';
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}

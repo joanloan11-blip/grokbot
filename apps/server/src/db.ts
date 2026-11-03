@@ -322,6 +322,11 @@ export class Store {
       'output_tokens',
       'ALTER TABLE usage_events ADD COLUMN output_tokens INTEGER',
     );
+    await add(
+      'users',
+      'daily_token_limit',
+      'ALTER TABLE users ADD COLUMN daily_token_limit INTEGER',
+    );
     await this.sql.exec(`
       CREATE TABLE IF NOT EXISTS routine_runs (
         id TEXT PRIMARY KEY,
@@ -1174,7 +1179,8 @@ export class Store {
     return rows.map((row) => ({
       id: row.id,
       routineId: row.routine_id,
-      status: row.status === 'ok' || row.status === 'error' ? row.status : 'running',
+      status:
+        row.status === 'ok' || row.status === 'error' ? row.status : 'running',
       output: row.output,
       error: row.error,
       startedAt: row.started_at,
@@ -1398,11 +1404,31 @@ export class Store {
     userId: string;
     providerId: string | null;
     model: string;
+    inputTokens?: number;
+    outputTokens?: number;
   }): Promise<void> {
     await this.sql.run(
-      'INSERT INTO usage_events (id, user_id, provider_id, model, created_at) VALUES (?, ?, ?, ?, ?)',
-      [newId(), input.userId, input.providerId, input.model, nowIso()],
+      `INSERT INTO usage_events (id, user_id, provider_id, model, created_at, input_tokens, output_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newId(),
+        input.userId,
+        input.providerId,
+        input.model,
+        nowIso(),
+        input.inputTokens ?? null,
+        input.outputTokens ?? null,
+      ],
     );
+  }
+
+  async tokenSumSince(userId: string, sinceIso: string): Promise<number> {
+    const row = await this.sql.get<{ n: number }>(
+      `SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS n
+       FROM usage_events WHERE user_id = ? AND created_at >= ?`,
+      [userId, sinceIso],
+    );
+    return Number(row?.n ?? 0);
   }
 
   async usageSummary(
@@ -1526,6 +1552,414 @@ export class Store {
       [tokenHash],
     );
     return row ? mapUser(row) : undefined;
+  }
+
+  async remember(input: {
+    userId: string;
+    agentId: string;
+    kind: string;
+    key: string;
+    content: string;
+  }): Promise<void> {
+    const kind =
+      input.kind === 'profile' || input.kind === 'shared'
+        ? input.kind
+        : 'journal';
+    const agentId = kind === 'shared' ? '' : input.agentId;
+    if (kind === 'journal') {
+      await this.sql.run(
+        `INSERT INTO memory_entries (id, user_id, agent_id, kind, note_key, content, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newId(),
+          input.userId,
+          agentId,
+          kind,
+          input.key,
+          input.content,
+          nowIso(),
+        ],
+      );
+      return;
+    }
+    await this.sql.run(
+      `DELETE FROM memory_entries WHERE user_id = ? AND agent_id = ? AND kind = ? AND note_key = ?`,
+      [input.userId, agentId, kind, input.key],
+    );
+    await this.sql.run(
+      `INSERT INTO memory_entries (id, user_id, agent_id, kind, note_key, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newId(),
+        input.userId,
+        agentId,
+        kind,
+        input.key,
+        input.content,
+        nowIso(),
+      ],
+    );
+  }
+
+  async recall(
+    userId: string,
+    agentId: string,
+    query: string,
+  ): Promise<
+    { kind: string; key: string; content: string; createdAt: string }[]
+  > {
+    const needle = `%${query.trim().replace(/[%_]/g, '')}%`;
+    const rows = await this.sql.all<{
+      kind: string;
+      note_key: string;
+      content: string;
+      created_at: string;
+    }>(
+      `SELECT kind, note_key, content, created_at FROM memory_entries
+       WHERE user_id = ? AND (agent_id = ? OR agent_id = '' OR kind = 'shared')
+         AND (content LIKE ? OR note_key LIKE ?)
+       ORDER BY created_at DESC LIMIT 20`,
+      [userId, agentId, needle, needle],
+    );
+    return rows.map((row) => ({
+      kind: row.kind,
+      key: row.note_key,
+      content: row.content,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async createTask(input: {
+    userId: string;
+    agentId: string;
+    conversationId: string | null;
+    title: string;
+    prompt: string;
+  }): Promise<string> {
+    const id = newId();
+    await this.sql.run(
+      `INSERT INTO tasks (id, user_id, agent_id, conversation_id, title, prompt, status, result, created_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', '', ?, NULL)`,
+      [
+        id,
+        input.userId,
+        input.agentId,
+        input.conversationId,
+        input.title,
+        input.prompt,
+        nowIso(),
+      ],
+    );
+    return id;
+  }
+
+  async finishTask(
+    id: string,
+    status: 'done' | 'error',
+    result: string,
+  ): Promise<void> {
+    await this.sql.run(
+      `UPDATE tasks SET status = ?, result = ?, finished_at = ? WHERE id = ?`,
+      [status, result.slice(0, 20_000), nowIso(), id],
+    );
+  }
+
+  async listTasks(
+    userId: string,
+    conversationId?: string,
+  ): Promise<
+    {
+      id: string;
+      title: string;
+      status: string;
+      result: string;
+      createdAt: string;
+    }[]
+  > {
+    const rows = conversationId
+      ? await this.sql.all<{
+          id: string;
+          title: string;
+          status: string;
+          result: string;
+          created_at: string;
+        }>(
+          'SELECT id, title, status, result, created_at FROM tasks WHERE user_id = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT 20',
+          [userId, conversationId],
+        )
+      : await this.sql.all<{
+          id: string;
+          title: string;
+          status: string;
+          result: string;
+          created_at: string;
+        }>(
+          'SELECT id, title, status, result, created_at FROM tasks WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
+          [userId],
+        );
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      result: row.result,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async addTodo(
+    userId: string,
+    agentId: string,
+    text: string,
+  ): Promise<string> {
+    const id = newId();
+    await this.sql.run(
+      `INSERT INTO todos (id, user_id, agent_id, text, done, created_at) VALUES (?, ?, ?, ?, 0, ?)`,
+      [id, userId, agentId, text, nowIso()],
+    );
+    return id;
+  }
+
+  async listTodos(
+    userId: string,
+    agentId: string,
+  ): Promise<{ id: string; text: string; done: boolean }[]> {
+    const rows = await this.sql.all<{ id: string; text: string; done: number }>(
+      'SELECT id, text, done FROM todos WHERE user_id = ? AND agent_id = ? ORDER BY created_at ASC',
+      [userId, agentId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      text: row.text,
+      done: row.done === 1,
+    }));
+  }
+
+  async setTodoDone(id: string, userId: string, done: boolean): Promise<void> {
+    await this.sql.run(
+      'UPDATE todos SET done = ? WHERE id = ? AND user_id = ?',
+      [done ? 1 : 0, id, userId],
+    );
+  }
+
+  async createPage(input: {
+    userId: string;
+    agentId: string | null;
+    title: string;
+    body: string;
+  }): Promise<{ id: string; shareToken: string }> {
+    const id = newId();
+    const shareToken = newId().replace(/-/g, '');
+    await this.sql.run(
+      `INSERT INTO pages (id, user_id, agent_id, title, body, share_token, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.userId,
+        input.agentId,
+        input.title,
+        input.body,
+        shareToken,
+        nowIso(),
+      ],
+    );
+    return { id, shareToken };
+  }
+
+  async listPages(
+    userId: string,
+  ): Promise<
+    { id: string; title: string; shareToken: string; createdAt: string }[]
+  > {
+    const rows = await this.sql.all<{
+      id: string;
+      title: string;
+      share_token: string;
+      created_at: string;
+    }>(
+      'SELECT id, title, share_token, created_at FROM pages WHERE user_id = ? ORDER BY created_at DESC',
+      [userId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      shareToken: row.share_token,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async getPageByToken(
+    token: string,
+  ): Promise<{ title: string; body: string } | undefined> {
+    const row = await this.sql.get<{ title: string; body: string }>(
+      'SELECT title, body FROM pages WHERE share_token = ?',
+      [token],
+    );
+    return row;
+  }
+
+  async insertUpload(input: {
+    userId: string;
+    conversationId: string | null;
+    name: string;
+    mime: string;
+    path: string;
+    text: string;
+  }): Promise<string> {
+    const id = newId();
+    await this.sql.run(
+      `INSERT INTO uploads (id, user_id, conversation_id, name, mime, path, text_content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.userId,
+        input.conversationId,
+        input.name,
+        input.mime,
+        input.path,
+        input.text,
+        nowIso(),
+      ],
+    );
+    return id;
+  }
+
+  async getUpload(
+    id: string,
+    userId?: string,
+  ): Promise<
+    | {
+        id: string;
+        userId: string;
+        name: string;
+        mime: string;
+        path: string;
+        text: string;
+      }
+    | undefined
+  > {
+    const row = await this.sql.get<{
+      id: string;
+      user_id: string;
+      name: string;
+      mime: string;
+      path: string;
+      text_content: string;
+    }>('SELECT * FROM uploads WHERE id = ?', [id]);
+    if (!row) return undefined;
+    if (userId && row.user_id !== userId) return undefined;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      name: row.name,
+      mime: row.mime,
+      path: row.path,
+      text: row.text_content,
+    };
+  }
+
+  async createApproval(input: {
+    userId: string;
+    conversationId: string;
+    toolName: string;
+    arguments: string;
+  }): Promise<string> {
+    const id = newId();
+    await this.sql.run(
+      `INSERT INTO approvals (id, user_id, conversation_id, tool_name, arguments, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      [
+        id,
+        input.userId,
+        input.conversationId,
+        input.toolName,
+        input.arguments,
+        nowIso(),
+      ],
+    );
+    return id;
+  }
+
+  async getApproval(id: string): Promise<
+    | {
+        id: string;
+        userId: string;
+        conversationId: string;
+        toolName: string;
+        arguments: string;
+        status: string;
+      }
+    | undefined
+  > {
+    const row = await this.sql.get<{
+      id: string;
+      user_id: string;
+      conversation_id: string;
+      tool_name: string;
+      arguments: string;
+      status: string;
+    }>('SELECT * FROM approvals WHERE id = ?', [id]);
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      conversationId: row.conversation_id,
+      toolName: row.tool_name,
+      arguments: row.arguments,
+      status: row.status,
+    };
+  }
+
+  async setApprovalStatus(id: string, status: string): Promise<void> {
+    await this.sql.run('UPDATE approvals SET status = ? WHERE id = ?', [
+      status,
+      id,
+    ]);
+  }
+
+  async setReaction(
+    messageId: string,
+    userId: string,
+    emoji: string,
+  ): Promise<void> {
+    await this.sql.run(
+      `INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)
+       ON CONFLICT(message_id, user_id, emoji) DO NOTHING`,
+      [messageId, userId, emoji],
+    );
+  }
+
+  async linkTelegram(
+    chatId: string,
+    userId: string,
+    agentId: string | null,
+  ): Promise<void> {
+    await this.sql.run(
+      `INSERT INTO telegram_links (telegram_chat_id, user_id, agent_id) VALUES (?, ?, ?)
+       ON CONFLICT(telegram_chat_id) DO UPDATE SET user_id = excluded.user_id, agent_id = excluded.agent_id`,
+      [chatId, userId, agentId],
+    );
+  }
+
+  async telegramLink(
+    chatId: string,
+  ): Promise<{ userId: string; agentId: string | null } | undefined> {
+    const row = await this.sql.get<{
+      user_id: string;
+      agent_id: string | null;
+    }>(
+      'SELECT user_id, agent_id FROM telegram_links WHERE telegram_chat_id = ?',
+      [chatId],
+    );
+    if (!row) return undefined;
+    return { userId: row.user_id, agentId: row.agent_id };
+  }
+
+  async telegramChats(userId: string): Promise<string[]> {
+    const rows = await this.sql.all<{ telegram_chat_id: string }>(
+      'SELECT telegram_chat_id FROM telegram_links WHERE user_id = ?',
+      [userId],
+    );
+    return rows.map((row) => row.telegram_chat_id);
   }
 }
 
