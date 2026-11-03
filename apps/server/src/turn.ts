@@ -14,6 +14,7 @@ import type {
   ModelMessage,
   ToolDefinition,
 } from './providers/types';
+import { readGithubToken, runGithubTool } from './github/tools';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
 
@@ -21,6 +22,7 @@ export interface TurnDeps {
   store: Store;
   mcp: McpManager;
   skills: SkillLibrary;
+  jwtSecret?: string;
 }
 
 interface ExposedTool {
@@ -253,6 +255,11 @@ async function exposeTools(
     'memory_read',
     'memory_write',
     'send_to_agent',
+    'github_list_repos',
+    'github_read_file',
+    'github_search_code',
+    'github_list_issues',
+    'github_list_pulls',
   ]);
   const allowedSkills = new Set(agent.skillNames);
   const tools: ExposedTool[] = [
@@ -330,6 +337,73 @@ async function exposeTools(
       },
     },
   ];
+
+  const githubToken =
+    deps.jwtSecret && agent.githubRepos.length > 0
+      ? await readGithubToken(deps.store, deps.jwtSecret)
+      : undefined;
+  if (githubToken) {
+    const context = { token: githubToken, allow: agent.githubRepos };
+    const repos = agent.githubRepos.join(', ');
+    const addGithub = (
+      name: string,
+      description: string,
+      properties: Record<string, unknown>,
+      required: string[],
+    ) => {
+      tools.push({
+        definition: {
+          name,
+          description,
+          inputSchema: { type: 'object', properties, required },
+        },
+        run: (args) => runGithubTool(name, args, context),
+      });
+    };
+    addGithub(
+      'github_list_repos',
+      `List repositories assigned to this agent: ${repos}. Список репозиториев агента.`,
+      {},
+      [],
+    );
+    addGithub(
+      'github_read_file',
+      'Read a text file from an assigned GitHub repository. Читает файл из подключённого репозитория.',
+      {
+        repo: { type: 'string', description: 'owner/name' },
+        path: { type: 'string' },
+        ref: { type: 'string', description: 'branch, tag, or commit' },
+      },
+      ['repo', 'path'],
+    );
+    addGithub(
+      'github_search_code',
+      'Search code in an assigned repository. Ищет код в подключённом репозитории.',
+      {
+        repo: { type: 'string' },
+        query: { type: 'string' },
+      },
+      ['repo', 'query'],
+    );
+    addGithub(
+      'github_list_issues',
+      'List issues in an assigned repository. Список задач.',
+      {
+        repo: { type: 'string' },
+        state: { type: 'string', description: 'open, closed, or all' },
+      },
+      ['repo'],
+    );
+    addGithub(
+      'github_list_pulls',
+      'List pull requests in an assigned repository. Список запросов на слияние.',
+      {
+        repo: { type: 'string' },
+        state: { type: 'string', description: 'open, closed, or all' },
+      },
+      ['repo'],
+    );
+  }
 
   if (depth === 0) {
     const names = (await deps.store.listAgents())

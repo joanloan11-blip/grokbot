@@ -90,6 +90,8 @@ export interface Agent {
   model: string | null;
   mcpServerIds: string[];
   skillNames: string[];
+  /** Репозитории owner/name, которые агент может читать через GitHub. */
+  githubRepos: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -103,6 +105,36 @@ export interface AgentInput {
   model?: string | null;
   mcpServerIds?: string[];
   skillNames?: string[];
+  githubRepos?: string[];
+}
+
+export interface GithubStatus {
+  connected: boolean;
+  login: string | null;
+  oauth: boolean;
+  error?: string;
+}
+
+export interface GithubRepoInfo {
+  fullName: string;
+  private: boolean;
+  description: string;
+  defaultBranch: string;
+}
+
+export interface GithubSkillPreview {
+  name: string;
+  description: string;
+}
+
+export interface GithubPreview {
+  id: string;
+  repo: string;
+  kind: 'node' | 'python' | 'docker' | 'config' | 'unknown';
+  summary: string;
+  command: string;
+  args: string[];
+  skills: GithubSkillPreview[];
 }
 
 export interface AgentTemplate {

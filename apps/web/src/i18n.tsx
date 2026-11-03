@@ -163,6 +163,21 @@ const ru = {
   youAre: 'Вы вошли как',
   shareModel: 'менеджерам',
   restrictModels: 'Только выбранные модели',
+  tabGithub: 'GitHub',
+  githubLead:
+    'Токен хранится на сервере в зашифрованном виде и в браузер больше не возвращается. Команды из репозитория не запускаются, пока вы их не подтвердите.',
+  githubToken: 'Personal access token',
+  githubSave: 'Сохранить токен',
+  githubDisconnect: 'Отключить',
+  githubOauth: 'Войти через GitHub',
+  githubRepo: 'Репозиторий',
+  githubPreview: 'Посмотреть',
+  githubConfirm: 'Добавить MCP-сервер',
+  githubEnable: 'Включить сразу и запустить команду',
+  githubOfficialHttp: 'Официальный GitHub MCP (удалённый)',
+  githubOfficialDocker: 'Официальный GitHub MCP (Docker)',
+  githubRepos: 'Репозитории GitHub',
+  githubConnected: 'Подключён как',
 };
 
 type Dictionary = { [K in keyof typeof ru]: string };
@@ -318,6 +333,21 @@ const en: Dictionary = {
   youAre: 'Signed in as',
   shareModel: 'for managers',
   restrictModels: 'Only selected models',
+  tabGithub: 'GitHub',
+  githubLead:
+    'The token is encrypted on the server and is never sent back to the browser. Repository commands do not run until you confirm them.',
+  githubToken: 'Personal access token',
+  githubSave: 'Save token',
+  githubDisconnect: 'Disconnect',
+  githubOauth: 'Sign in with GitHub',
+  githubRepo: 'Repository',
+  githubPreview: 'Inspect',
+  githubConfirm: 'Add MCP server',
+  githubEnable: 'Enable now and run the command',
+  githubOfficialHttp: 'Official GitHub MCP (remote)',
+  githubOfficialDocker: 'Official GitHub MCP (Docker)',
+  githubRepos: 'GitHub repositories',
+  githubConnected: 'Connected as',
 };
 
 const dictionaries: Record<Locale, Dictionary> = { ru, en };

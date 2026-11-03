@@ -333,6 +333,11 @@ export class Store {
         models_restricted INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS agent_repos (
+        agent_id TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        PRIMARY KEY (agent_id, full_name)
+      );
       CREATE TABLE IF NOT EXISTS model_access (
         provider_id TEXT NOT NULL,
         model TEXT NOT NULL,
@@ -747,14 +752,53 @@ export class Store {
       'SELECT * FROM agents ORDER BY created_at ASC',
       [],
     )) as unknown as AgentSql[];
-    return rows.map(mapAgent);
+    const links = await this.sql.all<{ agent_id: string; full_name: string }>(
+      'SELECT agent_id, full_name FROM agent_repos ORDER BY full_name',
+      [],
+    );
+    const byAgent = new Map<string, string[]>();
+    for (const link of links) {
+      const list = byAgent.get(link.agent_id) ?? [];
+      list.push(link.full_name);
+      byAgent.set(link.agent_id, list);
+    }
+    return rows.map((row) => ({
+      ...mapAgent(row),
+      githubRepos: byAgent.get(row.id) ?? [],
+    }));
   }
 
   async getAgent(id: string): Promise<Agent | undefined> {
     const row = (await this.sql.get('SELECT * FROM agents WHERE id = ?', [
       id,
     ])) as AgentSql | undefined;
-    return row ? mapAgent(row) : undefined;
+    if (!row) return undefined;
+    return {
+      ...mapAgent(row),
+      githubRepos: await this.listAgentRepos(id),
+    };
+  }
+
+  async listAgentRepos(agentId: string): Promise<string[]> {
+    const rows = await this.sql.all<{ full_name: string }>(
+      'SELECT full_name FROM agent_repos WHERE agent_id = ? ORDER BY full_name',
+      [agentId],
+    );
+    return rows.map((row) => row.full_name);
+  }
+
+  async setAgentRepos(agentId: string, repos: string[]): Promise<void> {
+    await this.sql.run('DELETE FROM agent_repos WHERE agent_id = ?', [agentId]);
+    const seen = new Set<string>();
+    for (const repo of repos) {
+      const fullName = repo.trim();
+      if (!fullName || seen.has(fullName)) continue;
+      seen.add(fullName);
+      await this.sql.run(
+        'INSERT INTO agent_repos (agent_id, full_name) VALUES (?, ?)',
+        [agentId, fullName],
+      );
+    }
   }
 
   async findAgentByName(name: string): Promise<Agent | undefined> {
@@ -776,6 +820,7 @@ export class Store {
       model: input.model ?? null,
       mcpServerIds: input.mcpServerIds ?? [],
       skillNames: input.skillNames ?? [],
+      githubRepos: input.githubRepos ?? [],
       createdAt: now,
       updatedAt: now,
     };
@@ -798,6 +843,9 @@ export class Store {
         row.updatedAt,
       ],
     );
+    if (row.githubRepos.length > 0) {
+      await this.setAgentRepos(row.id, row.githubRepos);
+    }
     return row;
   }
 
@@ -821,8 +869,12 @@ export class Store {
       model: patch.model === undefined ? current.model : patch.model,
       mcpServerIds: patch.mcpServerIds ?? current.mcpServerIds,
       skillNames: patch.skillNames ?? current.skillNames,
+      githubRepos: patch.githubRepos ?? current.githubRepos,
       updatedAt: nowIso(),
     };
+    if (patch.githubRepos !== undefined) {
+      await this.setAgentRepos(id, patch.githubRepos);
+    }
     await this.sql.run(
       `UPDATE agents SET
           name = ?, emoji = ?, description = ?, system_prompt = ?, provider_id = ?,
@@ -855,6 +907,7 @@ export class Store {
     await this.sql.run('DELETE FROM agent_memory WHERE agent_id = ?', [id]);
     await this.sql.run('DELETE FROM routines WHERE agent_id = ?', [id]);
     await this.sql.run('DELETE FROM user_agents WHERE agent_id = ?', [id]);
+    await this.sql.run('DELETE FROM agent_repos WHERE agent_id = ?', [id]);
     const result = await this.sql.run('DELETE FROM agents WHERE id = ?', [id]);
     return result.changes > 0;
   }
@@ -1394,6 +1447,7 @@ function mapAgent(row: AgentSql): Agent {
     model: row.model,
     mcpServerIds: parseStringArray(row.mcp_ids_json),
     skillNames: parseStringArray(row.skill_names_json),
+    githubRepos: [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

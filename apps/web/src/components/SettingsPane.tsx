@@ -12,9 +12,10 @@ import {
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n, useTheme } from '../i18n';
+import { GithubPane } from './GithubPane';
 import { IconMenu } from './icons';
 
-export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'general';
+export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'github' | 'general';
 
 const KINDS: ProviderKind[] = [
   'openai',
@@ -42,6 +43,7 @@ export function SettingsPane({
     { id: 'providers', label: t('tabProviders') },
     { id: 'mcp', label: t('tabMcp') },
     { id: 'skills', label: t('tabSkills') },
+    { id: 'github', label: t('tabGithub') },
     { id: 'general', label: t('tabGeneral') },
   ];
   return (
@@ -80,6 +82,7 @@ export function SettingsPane({
         )}
         {tab === 'mcp' && <McpPanel />}
         {tab === 'skills' && <SkillsPanel />}
+        {tab === 'github' && <GithubPane />}
         {tab === 'general' && <GeneralPanel />}
       </div>
     </section>

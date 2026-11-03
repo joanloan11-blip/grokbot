@@ -18,6 +18,9 @@ export interface AppConfig {
   authEnabled: boolean;
   jwtSecret: string;
   secureCookie: boolean;
+  githubClientId?: string;
+  githubClientSecret?: string;
+  publicUrl?: string;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -49,5 +52,12 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       process.env.JWT_SECRET ??
       'mayak-dev-secret-change-me',
     secureCookie: overrides.secureCookie ?? process.env.COOKIE_SECURE === '1',
+    githubClientId:
+      overrides.githubClientId ?? (process.env.GITHUB_CLIENT_ID || undefined),
+    githubClientSecret:
+      overrides.githubClientSecret ??
+      (process.env.GITHUB_CLIENT_SECRET || undefined),
+    publicUrl:
+      overrides.publicUrl ?? (process.env.MAYAK_PUBLIC_URL || undefined),
   };
 }

@@ -36,6 +36,7 @@ import type { AppConfig } from './config';
 import { isValidCron } from './cron';
 import { type McpRow, Store, type UserRecord, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
+import { registerGithubRoutes } from './github/routes';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
 import { runRoutineNow, startScheduler } from './scheduler';
@@ -877,7 +878,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       };
       try {
         await runTurn(
-          { store, mcp, skills },
+          { store, mcp, skills, jwtSecret: config.jwtSecret },
           {
             conversationId: c.req.param('id'),
             content,
@@ -899,6 +900,16 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     });
   });
 
+  registerGithubRoutes(app, {
+    store,
+    mcp,
+    skills,
+    config,
+    actor,
+    readBody,
+    present: (row) => presentMcp(row, mcp),
+  });
+
   if (config.staticDir) {
     const root = path.resolve(config.staticDir);
     app.get('*', (c) => serveSpa(c, root));
@@ -906,7 +917,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.notFound((c) => c.json({ error: 'Не найдено' }, 404));
 
-  const deps = { store, mcp, skills };
+  const deps = { store, mcp, skills, jwtSecret: config.jwtSecret };
   return {
     app,
     startScheduler: () => startScheduler(deps),
@@ -1173,6 +1184,13 @@ function parseAgentInput(
     body.mcpServerIds === undefined ? undefined : stringList(body.mcpServerIds);
   const skillNames =
     body.skillNames === undefined ? undefined : stringList(body.skillNames);
+  const githubRepos =
+    body.githubRepos === undefined
+      ? undefined
+      : stringList(body.githubRepos)
+          .map((item) => item.trim())
+          .filter((item) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(item))
+          .slice(0, 30);
   return {
     name,
     emoji,
@@ -1192,6 +1210,7 @@ function parseAgentInput(
           : undefined,
     mcpServerIds,
     skillNames,
+    githubRepos,
   };
 }
 

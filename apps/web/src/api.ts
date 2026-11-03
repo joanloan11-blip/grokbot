@@ -3,6 +3,9 @@ import type {
   ClientEvent,
   PublicUser,
   UsageRow,
+  GithubPreview,
+  GithubRepoInfo,
+  GithubStatus,
   Agent,
   AgentInput,
   AgentTemplate,
@@ -108,6 +111,39 @@ export const api = {
       body: JSON.stringify(body),
     }),
   usage: () => request<UsageRow[]>('/api/admin/usage'),
+  githubStatus: () => request<GithubStatus>('/api/github/status'),
+  saveGithubToken: (token: string) =>
+    request<GithubStatus>('/api/github/token', {
+      method: 'PUT',
+      body: JSON.stringify({ token }),
+    }),
+  disconnectGithub: () =>
+    request<GithubStatus>('/api/github/token', { method: 'DELETE' }),
+  githubOauthUrl: () => request<{ url: string }>('/api/github/oauth/start'),
+  githubRepos: () => request<GithubRepoInfo[]>('/api/github/repos'),
+  previewGithub: (repo: string) =>
+    request<GithubPreview>('/api/github/import/preview', {
+      method: 'POST',
+      body: JSON.stringify({ repo }),
+    }),
+  confirmGithub: (body: {
+    id: string;
+    confirm: true;
+    command: string;
+    args: string[];
+    name?: string;
+    enabled?: boolean;
+    skillNames?: string[];
+  }) =>
+    request<{ server: McpServerPublic; skills: string[] }>(
+      '/api/github/import/confirm',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  officialGithub: (mode: 'http' | 'docker') =>
+    request<McpServerPublic>('/api/github/mcp/official', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
   providers: () => request<ProviderPublic[]>('/api/providers'),
   createProvider: (input: ProviderInput) =>
     request<ProviderPublic>('/api/providers', {

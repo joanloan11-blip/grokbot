@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type {
   Agent,
+  GithubRepoInfo,
   MemoryNote,
   McpServerPublic,
   ProviderPublic,
@@ -28,6 +29,7 @@ export function AgentEditor({
   const [draft, setDraft] = useState(agent);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [servers, setServers] = useState<McpServerPublic[]>([]);
+  const [githubRepos, setGithubRepos] = useState<GithubRepoInfo[]>([]);
   const [notes, setNotes] = useState<MemoryNote[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [noteKey, setNoteKey] = useState('');
@@ -45,13 +47,21 @@ export function AgentEditor({
       api.mcp(),
       api.memory(agent.id),
       api.routines(agent.id),
+      api.githubStatus().catch(() => null),
     ])
-      .then(([nextSkills, nextServers, nextNotes, nextRoutines]) => {
-        setSkills(nextSkills.skills);
-        setServers(nextServers);
-        setNotes(nextNotes);
-        setRoutines(nextRoutines);
-      })
+      .then(
+        async ([nextSkills, nextServers, nextNotes, nextRoutines, github]) => {
+          setSkills(nextSkills.skills);
+          setServers(nextServers);
+          setNotes(nextNotes);
+          setRoutines(nextRoutines);
+          if (github?.connected) {
+            setGithubRepos(await api.githubRepos().catch(() => []));
+          } else {
+            setGithubRepos([]);
+          }
+        },
+      )
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : t('error')),
       );
@@ -69,6 +79,7 @@ export function AgentEditor({
         model: draft.model,
         skillNames: draft.skillNames,
         mcpServerIds: draft.mcpServerIds,
+        githubRepos: draft.githubRepos ?? [],
       });
       onSaved(saved);
     } catch (reason) {
@@ -209,7 +220,27 @@ export function AgentEditor({
                 MCP {server.name}
               </label>
             ))}
+            {githubRepos.map((item) => (
+              <label key={item.fullName} className="check">
+                <input
+                  type="checkbox"
+                  checked={(draft.githubRepos ?? []).includes(item.fullName)}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      githubRepos: event.target.checked
+                        ? [...(draft.githubRepos ?? []), item.fullName]
+                        : (draft.githubRepos ?? []).filter(
+                            (name) => name !== item.fullName,
+                          ),
+                    })
+                  }
+                />
+                {item.fullName}
+              </label>
+            ))}
           </div>
+          {githubRepos.length > 0 && <p className="hint">{t('githubRepos')}</p>}
           <div className="row-actions">
             <button className="primary-btn" type="submit">
               {t('save')}
