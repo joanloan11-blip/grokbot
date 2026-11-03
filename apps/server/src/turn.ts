@@ -1,7 +1,7 @@
 import type { Agent, ChatMessage, ClientEvent, Locale } from '@mayak/shared';
 import { runAgentLoop } from './agent/loop';
-import type { Store } from './db';
-import { badRequest } from './errors';
+import type { Store, UserRecord } from './db';
+import { HttpError, badRequest } from './errors';
 import {
   encodeMcpToolName,
   type LiveTool,
@@ -9,7 +9,11 @@ import {
 } from './mcp/manager';
 import { LOAD_SKILL_TOOL, buildSystemPrompt } from './prompt';
 import { createClient, providerNeedsKey } from './providers/index';
-import type { ModelMessage, ToolDefinition } from './providers/types';
+import type {
+  LLMClient,
+  ModelMessage,
+  ToolDefinition,
+} from './providers/types';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
 
@@ -28,6 +32,7 @@ export interface TurnInput {
   conversationId: string;
   content: string;
   locale: Locale;
+  userId?: string;
   providerId?: string;
   model?: string;
   depth?: number;
@@ -39,15 +44,23 @@ export async function runTurn(
   deps: TurnDeps,
   input: TurnInput,
 ): Promise<{ text: string }> {
-  const conversation = deps.store.getConversation(input.conversationId);
+  const conversation = await deps.store.getConversation(
+    input.conversationId,
+    input.userId,
+  );
   if (!conversation) throw badRequest('Чат не найден');
+  const userId = conversation.userId;
+  if (!userId) throw badRequest('Чат без владельца');
+  const owner = await deps.store.getUser(userId);
   const agent = conversation.agentId
-    ? deps.store.getAgent(conversation.agentId)
-    : deps.store.listAgents()[0];
+    ? await deps.store.getAgent(conversation.agentId)
+    : (await deps.store.listAgents())[0];
   if (!agent) throw badRequest('Агент не найден');
   const providerId =
     input.providerId ?? conversation.providerId ?? agent.providerId;
-  const provider = providerId ? deps.store.getProvider(providerId) : undefined;
+  const provider = providerId
+    ? await deps.store.getProvider(providerId)
+    : undefined;
   if (!provider?.enabled) throw badRequest('Выберите включённую модель');
   const requested = input.model ?? conversation.model ?? agent.model;
   const model =
@@ -59,17 +72,17 @@ export async function runTurn(
     throw badRequest('Сохраните API-ключ провайдера в настройках');
   }
 
-  deps.store.updateConversation(conversation.id, {
+  await deps.store.updateConversation(conversation.id, {
     providerId: provider.id,
     model,
   });
-  const freshTitle = maybeRetitle(
+  const freshTitle = await maybeRetitle(
     deps.store,
     conversation.title,
     input.content,
     conversation.id,
   );
-  const userMessage = deps.store.insertMessage({
+  const userMessage = await deps.store.insertMessage({
     conversationId: conversation.id,
     role: 'user',
     content: input.content,
@@ -79,18 +92,27 @@ export async function runTurn(
   if (freshTitle) await emit({ type: 'title', title: freshTitle });
 
   const depth = input.depth ?? 0;
-  const exposed = exposeTools(deps, agent, depth);
-  const peers = deps.store
-    .listAgents()
+  const exposed = await exposeTools(deps, agent, userId, depth);
+  const peers = (await deps.store.listAgents())
     .filter((item) => item.id !== agent.id)
     .map((item) => ({ name: item.name, description: item.description }));
-  const history = deps.store.listMessages(conversation.id).map(toModelMessage);
+  const history = (await deps.store.listMessages(conversation.id)).map(
+    toModelMessage,
+  );
   let pending = '';
   let pendingReasoning = '';
   let finalText = '';
   try {
+    await assertQuota(deps.store, owner);
     await runAgentLoop({
-      client: createClient(provider),
+      client: meteredClient(createClient(provider), async () => {
+        await assertQuota(deps.store, owner);
+        await deps.store.insertUsage({
+          userId,
+          providerId: provider.id,
+          model,
+        });
+      }),
       model,
       messages: [
         {
@@ -129,7 +151,7 @@ export async function runTurn(
           pending = '';
           pendingReasoning = '';
           finalText = event.content;
-          const saved = deps.store.insertMessage({
+          const saved = await deps.store.insertMessage({
             conversationId: conversation.id,
             role: 'assistant',
             content: event.content,
@@ -138,7 +160,7 @@ export async function runTurn(
           });
           await emit({ type: 'message', message: saved });
         } else if (event.type === 'tool_result') {
-          const saved = deps.store.insertMessage({
+          const saved = await deps.store.insertMessage({
             conversationId: conversation.id,
             role: 'tool',
             content: event.content,
@@ -153,7 +175,7 @@ export async function runTurn(
   } catch (error) {
     if (isAbort(error)) {
       if (pending.trim() || pendingReasoning.trim()) {
-        deps.store.insertMessage({
+        await deps.store.insertMessage({
           conversationId: conversation.id,
           role: 'assistant',
           content: pending,
@@ -170,6 +192,7 @@ export async function deliverToAgent(
   deps: TurnDeps,
   input: {
     from: Agent;
+    userId: string;
     targetName: string;
     message: string;
     depth: number;
@@ -178,10 +201,9 @@ export async function deliverToAgent(
   },
 ): Promise<string> {
   if (input.depth > 0) return 'Вложенная пересылка между агентами отключена.';
-  const target = deps.store.findAgentByName(input.targetName);
+  const target = await deps.store.findAgentByName(input.targetName);
   if (!target) {
-    const names = deps.store
-      .listAgents()
+    const names = (await deps.store.listAgents())
       .map((agent) => agent.name)
       .join(', ');
     return `Агент «${input.targetName}» не найден. Доступны: ${names || '—'}.`;
@@ -192,11 +214,16 @@ export async function deliverToAgent(
   if (!text) return 'Пустое сообщение.';
   if (text.length > 8_000) return 'Сообщение слишком длинное.';
   const title = `От: ${input.from.name}`;
-  let conversation = deps.store.findConversationByTitle(target.id, title);
+  let conversation = await deps.store.findConversationByTitle(
+    input.userId,
+    target.id,
+    title,
+  );
   if (!conversation) {
-    conversation = deps.store.insertConversation({
+    conversation = await deps.store.insertConversation({
       title,
       agentId: target.id,
+      userId: input.userId,
       providerId: target.providerId,
       model: target.model,
     });
@@ -205,17 +232,19 @@ export async function deliverToAgent(
     conversationId: conversation.id,
     content: `Сообщение от агента «${input.from.name}»:\n\n${text}`,
     locale: input.locale,
+    userId: input.userId,
     depth: input.depth + 1,
     signal: input.signal,
   });
   return result.text.trim() || '(пустой ответ)';
 }
 
-function exposeTools(
+async function exposeTools(
   deps: TurnDeps,
   agent: Agent,
+  userId: string,
   depth: number,
-): ExposedTool[] {
+): Promise<ExposedTool[]> {
   const used = new Set<string>([
     LOAD_SKILL_TOOL.name,
     'memory_read',
@@ -264,13 +293,13 @@ function exposeTools(
       run: async (args) => {
         const key = asString(args.key).trim();
         if (!key) {
-          const notes = deps.store.listMemory(agent.id);
+          const notes = await deps.store.listMemory(userId, agent.id);
           if (notes.length === 0) return 'Память пуста.';
           return notes
             .map((note) => `## ${note.key}\n${note.content}`)
             .join('\n\n');
         }
-        const note = deps.store.getMemory(agent.id, key);
+        const note = await deps.store.getMemory(userId, agent.id, key);
         return note ? note.content : `Заметки «${key}» нет.`;
       },
     },
@@ -293,15 +322,14 @@ function exposeTools(
         const content = asString(args.content);
         if (!key || key.length > 80) return 'Ключ заметки: 1–80 символов.';
         if (content.length > 20_000) return 'Заметка слишком длинная.';
-        deps.store.writeMemory(agent.id, key, content);
+        await deps.store.writeMemory(userId, agent.id, key, content);
         return `Запомнил «${key}».`;
       },
     },
   ];
 
   if (depth === 0) {
-    const names = deps.store
-      .listAgents()
+    const names = (await deps.store.listAgents())
       .filter((item) => item.id !== agent.id)
       .map((item) => item.name)
       .join(', ');
@@ -321,6 +349,7 @@ function exposeTools(
       run: (args) =>
         deliverToAgent(deps, {
           from: agent,
+          userId,
           targetName: asString(args.agent),
           message: asString(args.message),
           depth,
@@ -369,16 +398,47 @@ function toModelMessage(message: ChatMessage): ModelMessage {
   };
 }
 
-function maybeRetitle(
+async function maybeRetitle(
   store: Store,
   title: string,
   content: string,
   conversationId: string,
-): string | undefined {
+): Promise<string | undefined> {
   if (title !== 'Новый чат' && title !== 'New chat') return undefined;
   const next = clampText(content);
-  store.updateConversation(conversationId, { title: next });
+  await store.updateConversation(conversationId, { title: next });
   return next;
+}
+
+export function utcDayStart(now = new Date()): string {
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  ).toISOString();
+}
+
+export async function assertQuota(
+  store: Store,
+  user: UserRecord | undefined,
+): Promise<void> {
+  if (!user || user.dailyRequestLimit === null) return;
+  const used = await store.countUsageSince(user.id, utcDayStart());
+  if (used >= user.dailyRequestLimit) {
+    throw new HttpError(429, 'Дневной лимит запросов исчерпан');
+  }
+}
+
+function meteredClient(
+  client: LLMClient,
+  onCall: () => Promise<void>,
+): LLMClient {
+  return {
+    stream(input) {
+      return (async function* () {
+        await onCall();
+        yield* client.stream(input);
+      })();
+    },
+  };
 }
 
 function isAbort(error: unknown): boolean {

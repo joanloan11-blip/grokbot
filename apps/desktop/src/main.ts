@@ -44,6 +44,7 @@ async function createWindow(): Promise<void> {
           ELECTRON_RUN_AS_NODE: '1',
           HOST: '127.0.0.1',
           PORT: port,
+          MAYAK_SINGLE_USER: '1',
           DATA_DIR: path.join(app.getPath('userData'), 'data'),
           STATIC_DIR: path.join(resources, 'web'),
           MAYAK_DEMO_SERVER: path.join(

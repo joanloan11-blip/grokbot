@@ -1,6 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createPostgresSql, createSqliteSql, type Sql } from './sql';
 import type {
   Agent,
   AgentInput,
@@ -69,6 +67,7 @@ interface ConversationSql {
   id: string;
   title: string;
   agent_id: string | null;
+  user_id: string | null;
   provider_id: string | null;
   model: string | null;
   created_at: string;
@@ -90,6 +89,7 @@ interface AgentSql {
 }
 
 interface MemorySql {
+  user_id: string | null;
   agent_id: string;
   note_key: string;
   content: string;
@@ -99,6 +99,7 @@ interface MemorySql {
 interface RoutineSql {
   id: string;
   agent_id: string;
+  user_id: string | null;
   name: string;
   cron: string;
   prompt: string;
@@ -181,22 +182,26 @@ export function toPublicProvider(row: ProviderRow): ProviderPublic {
 }
 
 export class Store {
-  private db: DatabaseSync;
+  private constructor(private readonly sql: Sql) {}
 
-  constructor(dataDir: string) {
-    fs.mkdirSync(dataDir, { recursive: true });
-    this.db = new DatabaseSync(path.join(dataDir, 'mayak.sqlite'));
-    this.db.exec('PRAGMA journal_mode = WAL');
-    this.db.exec('PRAGMA foreign_keys = ON');
-    this.migrate();
+  static async open(config: {
+    dataDir: string;
+    databaseUrl?: string;
+  }): Promise<Store> {
+    const sql = config.databaseUrl
+      ? await createPostgresSql(config.databaseUrl)
+      : createSqliteSql(config.dataDir);
+    const store = new Store(sql);
+    await store.migrate();
+    return store;
   }
 
-  close(): void {
-    this.db.close();
+  async close(): Promise<void> {
+    await this.sql.close();
   }
 
-  private migrate(): void {
-    this.db.exec(`
+  private async migrate(): Promise<void> {
+    await this.sql.exec(`
       CREATE TABLE IF NOT EXISTS providers (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -236,16 +241,18 @@ export class Store {
       );
 
       CREATE TABLE IF NOT EXISTS agent_memory (
+        user_id TEXT NOT NULL DEFAULT '',
         agent_id TEXT NOT NULL,
         note_key TEXT NOT NULL,
         content TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY (agent_id, note_key)
+        PRIMARY KEY (user_id, agent_id, note_key)
       );
 
       CREATE TABLE IF NOT EXISTS routines (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
+        user_id TEXT,
         name TEXT NOT NULL,
         cron TEXT NOT NULL,
         prompt TEXT NOT NULL,
@@ -258,6 +265,7 @@ export class Store {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         agent_id TEXT,
+        user_id TEXT,
         provider_id TEXT,
         model TEXT,
         created_at TEXT NOT NULL,
@@ -283,37 +291,120 @@ export class Store {
         value TEXT NOT NULL
       );
     `);
-    const columns = this.db
-      .prepare('PRAGMA table_info(messages)')
-      .all() as unknown as {
-      name: string;
-    }[];
-    if (!columns.some((column) => column.name === 'reasoning')) {
-      this.db.exec('ALTER TABLE messages ADD COLUMN reasoning TEXT');
+    if (!(await this.hasColumn('messages', 'reasoning'))) {
+      await this.sql.exec('ALTER TABLE messages ADD COLUMN reasoning TEXT');
     }
-    const conversationColumns = this.db
-      .prepare('PRAGMA table_info(conversations)')
-      .all() as unknown as { name: string }[];
-    if (!conversationColumns.some((column) => column.name === 'agent_id')) {
-      this.db.exec('ALTER TABLE conversations ADD COLUMN agent_id TEXT');
+    if (!(await this.hasColumn('conversations', 'agent_id'))) {
+      await this.sql.exec('ALTER TABLE conversations ADD COLUMN agent_id TEXT');
     }
+    await this.ensureUserColumns();
   }
 
-  listProviders(): ProviderRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM providers ORDER BY created_at ASC')
-      .all() as unknown as ProviderSql[];
+  private async hasColumn(table: string, column: string): Promise<boolean> {
+    if (this.sql.dialect === 'postgres') {
+      const row = await this.sql.get<{ ok: number }>(
+        'SELECT 1 AS ok FROM information_schema.columns WHERE table_name = ? AND column_name = ?',
+        [table, column],
+      );
+      return Boolean(row);
+    }
+    const columns = await this.sql.all<{ name: string }>(
+      `PRAGMA table_info(${table})`,
+      [],
+    );
+    return columns.some((item) => item.name === column);
+  }
+
+  private async ensureUserColumns(): Promise<void> {
+    const add = async (table: string, column: string, ddl: string) => {
+      if (!(await this.hasColumn(table, column))) await this.sql.exec(ddl);
+    };
+    await this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        password_hash TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL,
+        status TEXT NOT NULL,
+        daily_request_limit INTEGER,
+        invite_token_hash TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_agents (
+        user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        PRIMARY KEY (user_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS usage_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        provider_id TEXT,
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_user_time ON usage_events(user_id, created_at);
+    `);
+    await add(
+      'conversations',
+      'user_id',
+      'ALTER TABLE conversations ADD COLUMN user_id TEXT',
+    );
+    await add(
+      'routines',
+      'user_id',
+      'ALTER TABLE routines ADD COLUMN user_id TEXT',
+    );
+    await add(
+      'users',
+      'invite_token_hash',
+      'ALTER TABLE users ADD COLUMN invite_token_hash TEXT',
+    );
+    await this.rebuildMemoryTable();
+  }
+
+  private async rebuildMemoryTable(): Promise<void> {
+    if (this.sql.dialect !== 'sqlite') return;
+    const info = await this.sql.all<{ name: string; pk: number }>(
+      'PRAGMA table_info(agent_memory)',
+      [],
+    );
+    if (info.some((column) => column.name === 'user_id' && column.pk > 0))
+      return;
+    await this.sql.exec(`
+      CREATE TABLE agent_memory_new (
+        user_id TEXT NOT NULL DEFAULT '',
+        agent_id TEXT NOT NULL,
+        note_key TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, agent_id, note_key)
+      );
+      INSERT INTO agent_memory_new (user_id, agent_id, note_key, content, updated_at)
+        SELECT '', agent_id, note_key, content, updated_at FROM agent_memory;
+      DROP TABLE agent_memory;
+      ALTER TABLE agent_memory_new RENAME TO agent_memory;
+    `);
+  }
+
+  async listProviders(): Promise<ProviderRow[]> {
+    const rows = (await this.sql.all(
+      'SELECT * FROM providers ORDER BY created_at ASC',
+      [],
+    )) as unknown as ProviderSql[];
     return rows.map(mapProvider);
   }
 
-  getProvider(id: string): ProviderRow | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM providers WHERE id = ?')
-      .get(id) as ProviderSql | undefined;
+  async getProvider(id: string): Promise<ProviderRow | undefined> {
+    const row = (await this.sql.get('SELECT * FROM providers WHERE id = ?', [
+      id,
+    ])) as ProviderSql | undefined;
     return row ? mapProvider(row) : undefined;
   }
 
-  insertProvider(input: ProviderInput & { apiKey?: string }): ProviderRow {
+  async insertProvider(
+    input: ProviderInput & { apiKey?: string },
+  ): Promise<ProviderRow> {
     const row: ProviderRow = {
       id: newId(),
       name: input.name.trim(),
@@ -324,12 +415,10 @@ export class Store {
       enabled: input.enabled !== false,
       createdAt: nowIso(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO providers (id, name, kind, base_url, api_key, models_json, enabled, created_at)
+    await this.sql.run(
+      `INSERT INTO providers (id, name, kind, base_url, api_key, models_json, enabled, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+      [
         row.id,
         row.name,
         row.kind,
@@ -338,15 +427,16 @@ export class Store {
         JSON.stringify(row.models),
         row.enabled ? 1 : 0,
         row.createdAt,
-      );
+      ],
+    );
     return row;
   }
 
-  updateProvider(
+  async updateProvider(
     id: string,
     patch: Partial<ProviderInput> & { apiKey?: string },
-  ): ProviderRow | undefined {
-    const current = this.getProvider(id);
+  ): Promise<ProviderRow | undefined> {
+    const current = await this.getProvider(id);
     if (!current) return undefined;
     const next: ProviderRow = {
       ...current,
@@ -364,11 +454,9 @@ export class Store {
           : current.models,
       enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
     };
-    this.db
-      .prepare(
-        `UPDATE providers SET name = ?, kind = ?, base_url = ?, api_key = ?, models_json = ?, enabled = ? WHERE id = ?`,
-      )
-      .run(
+    await this.sql.run(
+      `UPDATE providers SET name = ?, kind = ?, base_url = ?, api_key = ?, models_json = ?, enabled = ? WHERE id = ?`,
+      [
         next.name,
         next.kind,
         next.baseUrl,
@@ -376,43 +464,46 @@ export class Store {
         JSON.stringify(next.models),
         next.enabled ? 1 : 0,
         id,
-      );
+      ],
+    );
     return next;
   }
 
-  deleteProvider(id: string): boolean {
-    const result = this.db
-      .prepare('DELETE FROM providers WHERE id = ?')
-      .run(id);
+  async deleteProvider(id: string): Promise<boolean> {
+    const result = await this.sql.run('DELETE FROM providers WHERE id = ?', [
+      id,
+    ]);
     return result.changes > 0;
   }
 
-  listMcp(): McpRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM mcp_servers ORDER BY created_at ASC')
-      .all() as unknown as McpSql[];
+  async listMcp(): Promise<McpRow[]> {
+    const rows = (await this.sql.all(
+      'SELECT * FROM mcp_servers ORDER BY created_at ASC',
+      [],
+    )) as unknown as McpSql[];
     return rows.map(mapMcp);
   }
 
-  getMcp(id: string): McpRow | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM mcp_servers WHERE id = ?')
-      .get(id) as McpSql | undefined;
+  async getMcp(id: string): Promise<McpRow | undefined> {
+    const row = (await this.sql.get('SELECT * FROM mcp_servers WHERE id = ?', [
+      id,
+    ])) as McpSql | undefined;
     return row ? mapMcp(row) : undefined;
   }
 
-  getMcpByName(name: string): McpRow | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM mcp_servers WHERE name = ?')
-      .get(name) as McpSql | undefined;
+  async getMcpByName(name: string): Promise<McpRow | undefined> {
+    const row = (await this.sql.get(
+      'SELECT * FROM mcp_servers WHERE name = ?',
+      [name],
+    )) as McpSql | undefined;
     return row ? mapMcp(row) : undefined;
   }
 
-  upsertMcp(
+  async upsertMcp(
     input: McpServerInput,
     options: { keepEnv?: boolean; keepHeaders?: boolean } = {},
-  ): McpRow {
-    const existing = this.getMcpByName(input.name);
+  ): Promise<McpRow> {
+    const existing = await this.getMcpByName(input.name);
     const env =
       options.keepEnv && existing
         ? existing.env
@@ -433,9 +524,8 @@ export class Store {
       enabled: input.enabled ?? existing?.enabled ?? true,
       createdAt: existing?.createdAt ?? nowIso(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO mcp_servers (id, name, transport, command, args_json, env_json, url, headers_json, enabled, created_at)
+    await this.sql.run(
+      `INSERT INTO mcp_servers (id, name, transport, command, args_json, env_json, url, headers_json, enabled, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            transport = excluded.transport,
@@ -445,8 +535,7 @@ export class Store {
            url = excluded.url,
            headers_json = excluded.headers_json,
            enabled = excluded.enabled`,
-      )
-      .run(
+      [
         row.id,
         row.name,
         row.transport,
@@ -457,94 +546,105 @@ export class Store {
         JSON.stringify(row.headers),
         row.enabled ? 1 : 0,
         row.createdAt,
-      );
-    return this.getMcpByName(row.name) ?? row;
+      ],
+    );
+    return (await this.getMcpByName(row.name)) ?? row;
   }
 
-  deleteMcp(id: string): boolean {
-    const result = this.db
-      .prepare('DELETE FROM mcp_servers WHERE id = ?')
-      .run(id);
+  async deleteMcp(id: string): Promise<boolean> {
+    const result = await this.sql.run('DELETE FROM mcp_servers WHERE id = ?', [
+      id,
+    ]);
     return result.changes > 0;
   }
 
-  listConversations(agentId?: string): Conversation[] {
+  async listConversations(
+    userId: string,
+    agentId?: string,
+  ): Promise<Conversation[]> {
     const rows = (agentId
-      ? this.db
-          .prepare(
-            'SELECT * FROM conversations WHERE agent_id = ? ORDER BY updated_at DESC',
-          )
-          .all(agentId)
-      : this.db
-          .prepare('SELECT * FROM conversations ORDER BY updated_at DESC')
-          .all()) as unknown as ConversationSql[];
+      ? await this.sql.all(
+          'SELECT * FROM conversations WHERE user_id = ? AND agent_id = ? ORDER BY updated_at DESC',
+          [userId, agentId],
+        )
+      : await this.sql.all(
+          'SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC',
+          [userId],
+        )) as unknown as ConversationSql[];
     return rows.map(mapConversation);
   }
 
-  getConversation(id: string): Conversation | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM conversations WHERE id = ?')
-      .get(id) as ConversationSql | undefined;
-    return row ? mapConversation(row) : undefined;
+  async getConversation(
+    id: string,
+    userId?: string,
+  ): Promise<Conversation | undefined> {
+    const row = (await this.sql.get(
+      'SELECT * FROM conversations WHERE id = ?',
+      [id],
+    )) as ConversationSql | undefined;
+    if (!row) return undefined;
+    if (userId && row.user_id !== userId) return undefined;
+    return mapConversation(row);
   }
 
-  insertConversation(input: {
+  async insertConversation(input: {
     title: string;
     agentId: string | null;
+    userId: string;
     providerId: string | null;
     model: string | null;
-  }): Conversation {
+  }): Promise<Conversation> {
     const row: Conversation = {
       id: newId(),
       title: input.title,
       agentId: input.agentId,
+      userId: input.userId,
       providerId: input.providerId,
       model: input.model,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO conversations (id, title, agent_id, provider_id, model, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await this.sql.run(
+      `INSERT INTO conversations (id, title, agent_id, user_id, provider_id, model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
         row.id,
         row.title,
         row.agentId,
+        row.userId,
         row.providerId,
         row.model,
         row.createdAt,
         row.updatedAt,
-      );
+      ],
+    );
     return row;
   }
 
-  findConversationByTitle(
+  async findConversationByTitle(
+    userId: string,
     agentId: string,
     title: string,
-  ): Conversation | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT * FROM conversations WHERE agent_id = ? AND title = ? ORDER BY created_at ASC LIMIT 1',
-      )
-      .get(agentId, title) as ConversationSql | undefined;
+  ): Promise<Conversation | undefined> {
+    const row = (await this.sql.get(
+      'SELECT * FROM conversations WHERE user_id = ? AND agent_id = ? AND title = ? ORDER BY created_at ASC LIMIT 1',
+      [userId, agentId, title],
+    )) as ConversationSql | undefined;
     return row ? mapConversation(row) : undefined;
   }
 
-  assignOrphanConversations(agentId: string): void {
-    this.db
-      .prepare(
-        `UPDATE conversations SET agent_id = ? WHERE agent_id IS NULL OR agent_id = ''`,
-      )
-      .run(agentId);
+  async assignOrphanConversations(agentId: string): Promise<void> {
+    await this.sql.run(
+      `UPDATE conversations SET agent_id = ? WHERE agent_id IS NULL OR agent_id = ''`,
+      [agentId],
+    );
   }
 
-  updateConversation(
+  async updateConversation(
     id: string,
     patch: Partial<Pick<Conversation, 'title' | 'providerId' | 'model'>>,
-  ): Conversation | undefined {
-    const current = this.getConversation(id);
+  ): Promise<Conversation | undefined> {
+    const current = await this.getConversation(id);
     if (!current) return undefined;
     const next: Conversation = {
       ...current,
@@ -554,33 +654,32 @@ export class Store {
       model: patch.model === undefined ? current.model : patch.model,
       updatedAt: nowIso(),
     };
-    this.db
-      .prepare(
-        'UPDATE conversations SET title = ?, provider_id = ?, model = ?, updated_at = ? WHERE id = ?',
-      )
-      .run(next.title, next.providerId, next.model, next.updatedAt, id);
+    await this.sql.run(
+      'UPDATE conversations SET title = ?, provider_id = ?, model = ?, updated_at = ? WHERE id = ?',
+      [next.title, next.providerId, next.model, next.updatedAt, id],
+    );
     return next;
   }
 
-  deleteConversation(id: string): boolean {
-    const result = this.db
-      .prepare('DELETE FROM conversations WHERE id = ?')
-      .run(id);
+  async deleteConversation(id: string): Promise<boolean> {
+    const result = await this.sql.run(
+      'DELETE FROM conversations WHERE id = ?',
+      [id],
+    );
     return result.changes > 0;
   }
 
-  listMessages(conversationId: string): ChatMessage[] {
-    const rows = this.db
-      .prepare(
-        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC',
-      )
-      .all(conversationId) as unknown as MessageSql[];
+  async listMessages(conversationId: string): Promise<ChatMessage[]> {
+    const rows = (await this.sql.all(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC',
+      [conversationId],
+    )) as unknown as MessageSql[];
     return rows.map(mapMessage);
   }
 
-  insertMessage(
+  async insertMessage(
     input: Omit<ChatMessage, 'id' | 'createdAt'> & { id?: string },
-  ): ChatMessage {
+  ): Promise<ChatMessage> {
     const row: ChatMessage = {
       id: input.id ?? newId(),
       conversationId: input.conversationId,
@@ -592,12 +691,10 @@ export class Store {
       reasoning: input.reasoning?.trim() ? input.reasoning : undefined,
       createdAt: nowIso(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, created_at)
+    await this.sql.run(
+      `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+      [
         row.id,
         row.conversationId,
         row.role,
@@ -607,51 +704,54 @@ export class Store {
         row.toolName ?? null,
         row.reasoning ?? null,
         row.createdAt,
-      );
-    this.db
-      .prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
-      .run(row.createdAt, row.conversationId);
+      ],
+    );
+    await this.sql.run('UPDATE conversations SET updated_at = ? WHERE id = ?', [
+      row.createdAt,
+      row.conversationId,
+    ]);
     return row;
   }
 
-  getSetting(key: string): string | undefined {
-    const row = this.db
-      .prepare('SELECT value FROM settings WHERE key = ?')
-      .get(key) as { value: string } | undefined;
+  async getSetting(key: string): Promise<string | undefined> {
+    const row = (await this.sql.get(
+      'SELECT value FROM settings WHERE key = ?',
+      [key],
+    )) as { value: string } | undefined;
     return row?.value;
   }
 
-  setSetting(key: string, value: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO settings (key, value) VALUES (?, ?)
+  async setSetting(key: string, value: string): Promise<void> {
+    await this.sql.run(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      )
-      .run(key, value);
+      [key, value],
+    );
   }
 
-  listAgents(): Agent[] {
-    const rows = this.db
-      .prepare('SELECT * FROM agents ORDER BY created_at ASC')
-      .all() as unknown as AgentSql[];
+  async listAgents(): Promise<Agent[]> {
+    const rows = (await this.sql.all(
+      'SELECT * FROM agents ORDER BY created_at ASC',
+      [],
+    )) as unknown as AgentSql[];
     return rows.map(mapAgent);
   }
 
-  getAgent(id: string): Agent | undefined {
-    const row = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
-      | AgentSql
-      | undefined;
+  async getAgent(id: string): Promise<Agent | undefined> {
+    const row = (await this.sql.get('SELECT * FROM agents WHERE id = ?', [
+      id,
+    ])) as AgentSql | undefined;
     return row ? mapAgent(row) : undefined;
   }
 
-  findAgentByName(name: string): Agent | undefined {
+  async findAgentByName(name: string): Promise<Agent | undefined> {
     const needle = name.trim().toLowerCase();
-    return this.listAgents().find(
+    return (await this.listAgents()).find(
       (agent) => agent.name.toLowerCase() === needle || agent.id === name,
     );
   }
 
-  insertAgent(input: AgentInput & { name: string }): Agent {
+  async insertAgent(input: AgentInput & { name: string }): Promise<Agent> {
     const now = nowIso();
     const row: Agent = {
       id: newId(),
@@ -666,14 +766,12 @@ export class Store {
       createdAt: now,
       updatedAt: now,
     };
-    this.db
-      .prepare(
-        `INSERT INTO agents (
+    await this.sql.run(
+      `INSERT INTO agents (
           id, name, emoji, description, system_prompt, provider_id, model,
           mcp_ids_json, skill_names_json, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+      [
         row.id,
         row.name,
         row.emoji,
@@ -685,12 +783,13 @@ export class Store {
         JSON.stringify(row.skillNames),
         row.createdAt,
         row.updatedAt,
-      );
+      ],
+    );
     return row;
   }
 
-  updateAgent(id: string, patch: AgentInput): Agent | undefined {
-    const current = this.getAgent(id);
+  async updateAgent(id: string, patch: AgentInput): Promise<Agent | undefined> {
+    const current = await this.getAgent(id);
     if (!current) return undefined;
     const next: Agent = {
       ...current,
@@ -711,14 +810,12 @@ export class Store {
       skillNames: patch.skillNames ?? current.skillNames,
       updatedAt: nowIso(),
     };
-    this.db
-      .prepare(
-        `UPDATE agents SET
+    await this.sql.run(
+      `UPDATE agents SET
           name = ?, emoji = ?, description = ?, system_prompt = ?, provider_id = ?,
           model = ?, mcp_ids_json = ?, skill_names_json = ?, updated_at = ?
          WHERE id = ?`,
-      )
-      .run(
+      [
         next.name,
         next.emoji,
         next.description,
@@ -729,33 +826,31 @@ export class Store {
         JSON.stringify(next.skillNames),
         next.updatedAt,
         id,
-      );
+      ],
+    );
     return next;
   }
 
-  deleteAgent(id: string): boolean {
-    this.db.exec('BEGIN');
-    try {
-      for (const conversation of this.listConversations(id)) {
-        this.deleteConversation(conversation.id);
-      }
-      this.db.prepare('DELETE FROM agent_memory WHERE agent_id = ?').run(id);
-      this.db.prepare('DELETE FROM routines WHERE agent_id = ?').run(id);
-      const result = this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
-      this.db.exec('COMMIT');
-      return result.changes > 0;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
+  async deleteAgent(id: string): Promise<boolean> {
+    const conversations = await this.sql.all<{ id: string }>(
+      'SELECT id FROM conversations WHERE agent_id = ?',
+      [id],
+    );
+    for (const conversation of conversations) {
+      await this.deleteConversation(conversation.id);
     }
+    await this.sql.run('DELETE FROM agent_memory WHERE agent_id = ?', [id]);
+    await this.sql.run('DELETE FROM routines WHERE agent_id = ?', [id]);
+    await this.sql.run('DELETE FROM user_agents WHERE agent_id = ?', [id]);
+    const result = await this.sql.run('DELETE FROM agents WHERE id = ?', [id]);
+    return result.changes > 0;
   }
 
-  listMemory(agentId: string): MemoryNote[] {
-    const rows = this.db
-      .prepare(
-        'SELECT * FROM agent_memory WHERE agent_id = ? ORDER BY note_key ASC',
-      )
-      .all(agentId) as unknown as MemorySql[];
+  async listMemory(userId: string, agentId: string): Promise<MemoryNote[]> {
+    const rows = (await this.sql.all(
+      'SELECT * FROM agent_memory WHERE user_id = ? AND agent_id = ? ORDER BY note_key ASC',
+      [userId, agentId],
+    )) as unknown as MemorySql[];
     return rows.map((row) => ({
       agentId: row.agent_id,
       key: row.note_key,
@@ -764,10 +859,15 @@ export class Store {
     }));
   }
 
-  getMemory(agentId: string, key: string): MemoryNote | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM agent_memory WHERE agent_id = ? AND note_key = ?')
-      .get(agentId, key) as MemorySql | undefined;
+  async getMemory(
+    userId: string,
+    agentId: string,
+    key: string,
+  ): Promise<MemoryNote | undefined> {
+    const row = (await this.sql.get(
+      'SELECT * FROM agent_memory WHERE user_id = ? AND agent_id = ? AND note_key = ?',
+      [userId, agentId, key],
+    )) as MemorySql | undefined;
     return row
       ? {
           agentId: row.agent_id,
@@ -778,59 +878,78 @@ export class Store {
       : undefined;
   }
 
-  writeMemory(agentId: string, key: string, content: string): MemoryNote {
+  async writeMemory(
+    userId: string,
+    agentId: string,
+    key: string,
+    content: string,
+  ): Promise<MemoryNote> {
     const note: MemoryNote = {
       agentId,
       key,
       content,
       updatedAt: nowIso(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO agent_memory (agent_id, note_key, content, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(agent_id, note_key) DO UPDATE SET
+    await this.sql.run(
+      `INSERT INTO agent_memory (user_id, agent_id, note_key, content, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, agent_id, note_key) DO UPDATE SET
            content = excluded.content,
            updated_at = excluded.updated_at`,
-      )
-      .run(agentId, key, content, note.updatedAt);
+      [userId, agentId, key, content, note.updatedAt],
+    );
     return note;
   }
 
-  deleteMemory(agentId: string, key: string): boolean {
-    const result = this.db
-      .prepare('DELETE FROM agent_memory WHERE agent_id = ? AND note_key = ?')
-      .run(agentId, key);
+  async deleteMemory(
+    userId: string,
+    agentId: string,
+    key: string,
+  ): Promise<boolean> {
+    const result = await this.sql.run(
+      'DELETE FROM agent_memory WHERE user_id = ? AND agent_id = ? AND note_key = ?',
+      [userId, agentId, key],
+    );
     return result.changes > 0;
   }
 
-  listRoutines(agentId?: string): Routine[] {
+  async listRoutines(userId: string, agentId?: string): Promise<Routine[]> {
     const rows = (agentId
-      ? this.db
-          .prepare(
-            'SELECT * FROM routines WHERE agent_id = ? ORDER BY created_at ASC',
-          )
-          .all(agentId)
-      : this.db
-          .prepare('SELECT * FROM routines ORDER BY created_at ASC')
-          .all()) as unknown as RoutineSql[];
+      ? await this.sql.all(
+          'SELECT * FROM routines WHERE user_id = ? AND agent_id = ? ORDER BY created_at ASC',
+          [userId, agentId],
+        )
+      : await this.sql.all(
+          'SELECT * FROM routines WHERE user_id = ? ORDER BY created_at ASC',
+          [userId],
+        )) as unknown as RoutineSql[];
     return rows.map(mapRoutine);
   }
 
-  getRoutine(id: string): Routine | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM routines WHERE id = ?')
-      .get(id) as RoutineSql | undefined;
+  async listAllRoutines(): Promise<Routine[]> {
+    const rows = await this.sql.all<RoutineSql>(
+      'SELECT * FROM routines ORDER BY created_at ASC',
+      [],
+    );
+    return rows.map(mapRoutine);
+  }
+
+  async getRoutine(id: string): Promise<Routine | undefined> {
+    const row = (await this.sql.get('SELECT * FROM routines WHERE id = ?', [
+      id,
+    ])) as RoutineSql | undefined;
     return row ? mapRoutine(row) : undefined;
   }
 
-  insertRoutine(
+  async insertRoutine(
+    userId: string,
     agentId: string,
     input: RoutineInput & { name: string; cron: string; prompt: string },
-  ): Routine {
+  ): Promise<Routine> {
     const row: Routine = {
       id: newId(),
       agentId,
+      userId,
       name: input.name.trim(),
       cron: input.cron.trim(),
       prompt: input.prompt,
@@ -838,26 +957,29 @@ export class Store {
       lastRunAt: null,
       createdAt: nowIso(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO routines (id, agent_id, name, cron, prompt, enabled, last_run_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await this.sql.run(
+      `INSERT INTO routines (id, agent_id, user_id, name, cron, prompt, enabled, last_run_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
         row.id,
         row.agentId,
+        userId,
         row.name,
         row.cron,
         row.prompt,
         row.enabled ? 1 : 0,
         null,
         row.createdAt,
-      );
+      ],
+    );
     return row;
   }
 
-  updateRoutine(id: string, patch: RoutineInput): Routine | undefined {
-    const current = this.getRoutine(id);
+  async updateRoutine(
+    id: string,
+    patch: RoutineInput,
+  ): Promise<Routine | undefined> {
+    const current = await this.getRoutine(id);
     if (!current) return undefined;
     const next: Routine = {
       ...current,
@@ -866,24 +988,252 @@ export class Store {
       prompt: patch.prompt ?? current.prompt,
       enabled: patch.enabled ?? current.enabled,
     };
-    this.db
-      .prepare(
-        'UPDATE routines SET name = ?, cron = ?, prompt = ?, enabled = ? WHERE id = ?',
-      )
-      .run(next.name, next.cron, next.prompt, next.enabled ? 1 : 0, id);
+    await this.sql.run(
+      'UPDATE routines SET name = ?, cron = ?, prompt = ?, enabled = ? WHERE id = ?',
+      [next.name, next.cron, next.prompt, next.enabled ? 1 : 0, id],
+    );
     return next;
   }
 
-  markRoutineRan(id: string, at: string): void {
-    this.db
-      .prepare('UPDATE routines SET last_run_at = ? WHERE id = ?')
-      .run(at, id);
+  async markRoutineRan(id: string, at: string): Promise<void> {
+    await this.sql.run('UPDATE routines SET last_run_at = ? WHERE id = ?', [
+      at,
+      id,
+    ]);
   }
 
-  deleteRoutine(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM routines WHERE id = ?').run(id);
+  async deleteRoutine(id: string): Promise<boolean> {
+    const result = await this.sql.run('DELETE FROM routines WHERE id = ?', [
+      id,
+    ]);
     return result.changes > 0;
   }
+
+  async countUsers(): Promise<number> {
+    const row = await this.sql.get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM users',
+      [],
+    );
+    return Number(row?.n ?? 0);
+  }
+
+  async getUserByEmail(email: string): Promise<UserRecord | undefined> {
+    const row = await this.sql.get<UserSql>(
+      'SELECT * FROM users WHERE email = ?',
+      [email.toLowerCase()],
+    );
+    return row ? mapUser(row) : undefined;
+  }
+
+  async getUser(id: string): Promise<UserRecord | undefined> {
+    const row = await this.sql.get<UserSql>(
+      'SELECT * FROM users WHERE id = ?',
+      [id],
+    );
+    return row ? mapUser(row) : undefined;
+  }
+
+  async listUsers(): Promise<UserRecord[]> {
+    const rows = await this.sql.all<UserSql>(
+      'SELECT * FROM users ORDER BY created_at ASC',
+      [],
+    );
+    return rows.map(mapUser);
+  }
+
+  async insertUser(input: {
+    id?: string;
+    email: string;
+    name: string;
+    passwordHash: string;
+    role: 'admin' | 'manager';
+    status: 'active' | 'pending' | 'disabled';
+    dailyRequestLimit: number | null;
+  }): Promise<UserRecord> {
+    const row: UserRecord = {
+      id: input.id ?? newId(),
+      email: input.email.toLowerCase(),
+      name: input.name.trim(),
+      passwordHash: input.passwordHash,
+      role: input.role,
+      status: input.status,
+      dailyRequestLimit: input.dailyRequestLimit,
+      createdAt: nowIso(),
+    };
+    await this.sql.run(
+      `INSERT INTO users (id, email, name, password_hash, role, status, daily_request_limit, invite_token_hash, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        row.email,
+        row.name,
+        row.passwordHash,
+        row.role,
+        row.status,
+        row.dailyRequestLimit,
+        null,
+        row.createdAt,
+      ],
+    );
+    return row;
+  }
+
+  async updateUser(
+    id: string,
+    patch: Partial<
+      Pick<
+        UserRecord,
+        'name' | 'passwordHash' | 'role' | 'status' | 'dailyRequestLimit'
+      >
+    >,
+  ): Promise<UserRecord | undefined> {
+    const current = await this.getUser(id);
+    if (!current) return undefined;
+    const next = {
+      ...current,
+      name: patch.name ?? current.name,
+      passwordHash: patch.passwordHash ?? current.passwordHash,
+      role: patch.role ?? current.role,
+      status: patch.status ?? current.status,
+      dailyRequestLimit:
+        patch.dailyRequestLimit === undefined
+          ? current.dailyRequestLimit
+          : patch.dailyRequestLimit,
+    };
+    await this.sql.run(
+      `UPDATE users SET name = ?, password_hash = ?, role = ?, status = ?, daily_request_limit = ? WHERE id = ?`,
+      [
+        next.name,
+        next.passwordHash,
+        next.role,
+        next.status,
+        next.dailyRequestLimit,
+        id,
+      ],
+    );
+    return next;
+  }
+
+  async listUserAgentIds(userId: string): Promise<string[]> {
+    const rows = await this.sql.all<{ agent_id: string }>(
+      'SELECT agent_id FROM user_agents WHERE user_id = ? ORDER BY agent_id',
+      [userId],
+    );
+    return rows.map((row) => row.agent_id);
+  }
+
+  async setUserAgents(userId: string, agentIds: string[]): Promise<void> {
+    await this.sql.run('DELETE FROM user_agents WHERE user_id = ?', [userId]);
+    for (const agentId of agentIds) {
+      await this.sql.run(
+        'INSERT INTO user_agents (user_id, agent_id) VALUES (?, ?)',
+        [userId, agentId],
+      );
+    }
+  }
+
+  async countUsageSince(userId: string, sinceIso: string): Promise<number> {
+    const row = await this.sql.get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM usage_events WHERE user_id = ? AND created_at >= ?',
+      [userId, sinceIso],
+    );
+    return Number(row?.n ?? 0);
+  }
+
+  async insertUsage(input: {
+    userId: string;
+    providerId: string | null;
+    model: string;
+  }): Promise<void> {
+    await this.sql.run(
+      'INSERT INTO usage_events (id, user_id, provider_id, model, created_at) VALUES (?, ?, ?, ?, ?)',
+      [newId(), input.userId, input.providerId, input.model, nowIso()],
+    );
+  }
+
+  async usageSummary(
+    sinceIso: string,
+  ): Promise<{ userId: string; calls: number }[]> {
+    const rows = await this.sql.all<{ user_id: string; n: number }>(
+      'SELECT user_id, COUNT(*) AS n FROM usage_events WHERE created_at >= ? GROUP BY user_id',
+      [sinceIso],
+    );
+    return rows.map((row) => ({ userId: row.user_id, calls: Number(row.n) }));
+  }
+
+  async claimOrphans(userId: string): Promise<void> {
+    await this.sql.run(
+      `UPDATE conversations SET user_id = ? WHERE user_id IS NULL OR user_id = ''`,
+      [userId],
+    );
+    await this.sql.run(
+      `UPDATE routines SET user_id = ? WHERE user_id IS NULL OR user_id = ''`,
+      [userId],
+    );
+    await this.sql.run(
+      `UPDATE agent_memory SET user_id = ? WHERE user_id = ''`,
+      [userId],
+    );
+  }
+
+  async setInviteToken(
+    userId: string,
+    tokenHash: string | null,
+  ): Promise<void> {
+    await this.sql.run('UPDATE users SET invite_token_hash = ? WHERE id = ?', [
+      tokenHash,
+      userId,
+    ]);
+  }
+
+  async getUserByInviteToken(
+    tokenHash: string,
+  ): Promise<UserRecord | undefined> {
+    const row = await this.sql.get<UserSql>(
+      'SELECT * FROM users WHERE invite_token_hash = ?',
+      [tokenHash],
+    );
+    return row ? mapUser(row) : undefined;
+  }
+}
+
+export interface UserRecord {
+  id: string;
+  email: string;
+  name: string;
+  passwordHash: string;
+  role: 'admin' | 'manager';
+  status: 'active' | 'pending' | 'disabled';
+  dailyRequestLimit: number | null;
+  createdAt: string;
+}
+
+interface UserSql {
+  id: string;
+  email: string;
+  name: string;
+  password_hash: string;
+  role: string;
+  status: string;
+  daily_request_limit: number | null;
+  created_at: string;
+}
+
+function mapUser(row: UserSql): UserRecord {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    passwordHash: row.password_hash,
+    role: row.role === 'admin' ? 'admin' : 'manager',
+    status:
+      row.status === 'pending' || row.status === 'disabled'
+        ? row.status
+        : 'active',
+    dailyRequestLimit:
+      row.daily_request_limit === null ? null : Number(row.daily_request_limit),
+    createdAt: row.created_at,
+  };
 }
 
 function mapProvider(row: ProviderSql): ProviderRow {
@@ -920,6 +1270,7 @@ function mapConversation(row: ConversationSql): Conversation {
     id: row.id,
     title: row.title,
     agentId: row.agent_id,
+    userId: row.user_id,
     providerId: row.provider_id,
     model: row.model,
     createdAt: row.created_at,
@@ -947,6 +1298,7 @@ function mapRoutine(row: RoutineSql): Routine {
   return {
     id: row.id,
     agentId: row.agent_id,
+    userId: row.user_id ?? '',
     name: row.name,
     cron: row.cron,
     prompt: row.prompt,

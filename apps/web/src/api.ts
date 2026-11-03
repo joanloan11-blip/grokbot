@@ -1,6 +1,8 @@
 import type {
   ChatMessage,
   ClientEvent,
+  PublicUser,
+  UsageRow,
   Agent,
   AgentInput,
   AgentTemplate,
@@ -24,7 +26,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('content-type', 'application/json');
   let response: Response;
   try {
-    response = await fetch(path, { ...init, headers });
+    response = await fetch(path, { ...init, headers, credentials: 'include' });
   } catch {
     throw new Error('offline');
   }
@@ -32,13 +34,73 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const data = (await response.json().catch(() => ({}))) as {
       error?: string;
     };
-    throw new Error(data.error || `HTTP ${response.status}`);
+    throw new ApiError(
+      data.error || `HTTP ${response.status}`,
+      response.status,
+    );
   }
   return (await response.json()) as T;
 }
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 export const api = {
-  health: () => request<{ ok: boolean }>('/api/health'),
+  health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
+  authConfig: () => request<{ required: boolean }>('/api/auth/config'),
+  me: () => request<{ user: PublicUser }>('/api/auth/me'),
+  register: (body: { email: string; password: string; name?: string }) =>
+    request<{ user: PublicUser; pending: boolean }>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  login: (body: { email: string; password: string }) =>
+    request<{ user: PublicUser }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  acceptInvite: (body: { token: string; password: string; name?: string }) =>
+    request<{ user: PublicUser }>('/api/auth/accept', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  logout: () =>
+    request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  team: () => request<PublicUser[]>('/api/admin/users'),
+  inviteUser: (body: {
+    email: string;
+    name?: string;
+    agentIds?: string[];
+    dailyRequestLimit?: number | null;
+  }) =>
+    request<{ user: PublicUser; inviteToken: string }>(
+      '/api/admin/users/invite',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  updateUser: (
+    id: string,
+    body: {
+      name?: string;
+      status?: PublicUser['status'];
+      dailyRequestLimit?: number | null;
+      agentIds?: string[];
+    },
+  ) =>
+    request<PublicUser>(`/api/admin/users/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  usage: () => request<UsageRow[]>('/api/admin/usage'),
   providers: () => request<ProviderPublic[]>('/api/providers'),
   createProvider: (input: ProviderInput) =>
     request<ProviderPublic>('/api/providers', {
@@ -190,6 +252,7 @@ export async function streamMessage(
       'content-type': 'application/json',
       accept: 'text/event-stream',
     },
+    credentials: 'include',
     body: JSON.stringify(body),
     signal,
   });

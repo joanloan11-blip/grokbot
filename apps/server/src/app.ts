@@ -18,16 +18,30 @@ import {
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import {
+  LOCAL_USER_ID,
+  hashInviteToken,
+  hashPassword,
+  isPublicApi,
+  isSharedCatalogWrite,
+  newInviteToken,
+  setSessionCookie,
+  signSession,
+  toPublicUser,
+  clearSessionCookie,
+  userFromRequest,
+  verifyPassword,
+} from './auth';
 import type { AppConfig } from './config';
 import { isValidCron } from './cron';
-import { type McpRow, Store, toPublicProvider } from './db';
+import { type McpRow, Store, type UserRecord, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
 import { runRoutineNow, startScheduler } from './scheduler';
 import { SkillLibrary, seedSkills } from './skills';
 import { AGENT_TEMPLATES } from './templates';
-import { runTurn } from './turn';
+import { assertQuota, runTurn } from './turn';
 import { asString, isRecord } from './util';
 
 export interface AppHandle {
@@ -45,17 +59,38 @@ const KINDS: readonly ProviderKind[] = [
 ];
 
 export async function createApp(config: AppConfig): Promise<AppHandle> {
-  const store = new Store(config.dataDir);
+  const store = await Store.open({
+    dataDir: config.dataDir,
+    databaseUrl: config.databaseUrl,
+  });
   const skills = new SkillLibrary(path.join(config.dataDir, 'skills'));
   const mcp = new McpManager();
-  seed(store, skills, config);
-  ensureDeepSeek(store);
+  await seed(store, skills, config);
+  await ensureDeepSeek(store);
+  if (!config.authEnabled) await ensureLocalUser(store);
 
-  for (const row of store.listMcp()) {
+  for (const row of await store.listMcp()) {
     if (row.enabled) await mcp.connect(row);
   }
 
+  const auth = {
+    enabled: config.authEnabled,
+    jwtSecret: config.jwtSecret,
+    secureCookie: config.secureCookie,
+  };
+  if (auth.enabled && auth.jwtSecret === 'mayak-dev-secret-change-me') {
+    console.warn(
+      'MAYAK_AUTH включён с секретом по умолчанию. Задайте JWT_SECRET.',
+    );
+  }
+
   const app = new Hono();
+  const actor = (c: Context) => userFromRequest(c, store, auth, LOCAL_USER_ID);
+  const canUseAgent = async (user: UserRecord, agentId: string) => {
+    if (user.role === 'admin') return true;
+    const ids = await store.listUserAgentIds(user.id);
+    return ids.includes(agentId);
+  };
 
   app.use('*', async (c, next) => {
     await next();
@@ -65,29 +100,254 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.onError((error, c) => {
     if (error instanceof HttpError) {
-      return c.json({ error: error.message }, error.status as 400 | 404 | 500);
+      return c.json(
+        { error: error.message },
+        error.status as 400 | 401 | 403 | 404 | 429 | 500,
+      );
     }
     console.error(error);
     return c.json({ error: 'Внутренняя ошибка сервера' }, 500);
   });
 
   app.get('/api/health', (c) =>
-    c.json({ ok: true, name: 'mayak', version: '0.1.0' }),
+    c.json({
+      ok: true,
+      name: 'mayak',
+      version: '0.1.0',
+      auth: config.authEnabled,
+    }),
   );
 
-  app.get('/api/providers', (c) =>
-    c.json(store.listProviders().map(toPublicProvider)),
+  app.get('/api/auth/config', (c) => c.json({ required: config.authEnabled }));
+
+  app.post('/api/auth/register', async (c) => {
+    const body = await readBody(c);
+    const parsed = parseCredentials(body, true);
+    if (await store.getUserByEmail(parsed.email)) {
+      throw badRequest('Пользователь с такой почтой уже есть');
+    }
+    const humans = (await store.listUsers()).filter(
+      (item) => item.id !== LOCAL_USER_ID,
+    );
+    const first = humans.length === 0;
+    const user = await store.insertUser({
+      email: parsed.email,
+      name: parsed.name,
+      passwordHash: await hashPassword(parsed.password),
+      role: first ? 'admin' : 'manager',
+      status: first ? 'active' : 'pending',
+      dailyRequestLimit: null,
+    });
+    if (first) await store.claimOrphans(user.id);
+    if (user.status === 'active') {
+      setSessionCookie(
+        c,
+        signSession(user.id, auth.jwtSecret),
+        auth.secureCookie,
+      );
+    }
+    return c.json(
+      { user: toPublicUser(user, []), pending: user.status === 'pending' },
+      201,
+    );
+  });
+
+  app.post('/api/auth/login', async (c) => {
+    const body = await readBody(c);
+    const parsed = parseCredentials(body, false);
+    const user = await store.getUserByEmail(parsed.email);
+    const valid = user?.passwordHash
+      ? await verifyPassword(parsed.password, user.passwordHash)
+      : false;
+    if (!user || !valid) throw new HttpError(401, 'Неверная почта или пароль');
+    if (user.status === 'pending')
+      throw new HttpError(403, 'Учётная запись ждёт подтверждения');
+    if (user.status !== 'active')
+      throw new HttpError(403, 'Учётная запись отключена');
+    setSessionCookie(
+      c,
+      signSession(user.id, auth.jwtSecret),
+      auth.secureCookie,
+    );
+    const agentIds = await store.listUserAgentIds(user.id);
+    return c.json({ user: toPublicUser(user, agentIds) });
+  });
+
+  app.post('/api/auth/accept', async (c) => {
+    const body = await readBody(c);
+    if (!isRecord(body) || typeof body.token !== 'string')
+      throw badRequest('Нужен токен приглашения');
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (password.length < 8) throw badRequest('Пароль не короче 8 символов');
+    const user = await store.getUserByInviteToken(
+      hashInviteToken(body.token.trim()),
+    );
+    if (!user || user.status === 'disabled')
+      throw new HttpError(400, 'Приглашение недействительно');
+    const name =
+      typeof body.name === 'string' && body.name.trim()
+        ? body.name.trim()
+        : user.name;
+    const updated = await store.updateUser(user.id, {
+      name,
+      passwordHash: await hashPassword(password),
+      status: 'active',
+    });
+    if (!updated) throw new HttpError(400, 'Приглашение недействительно');
+    await store.setInviteToken(updated.id, null);
+    setSessionCookie(
+      c,
+      signSession(updated.id, auth.jwtSecret),
+      auth.secureCookie,
+    );
+    const agentIds = await store.listUserAgentIds(updated.id);
+    return c.json({ user: toPublicUser(updated, agentIds) });
+  });
+
+  app.post('/api/auth/logout', (c) => {
+    clearSessionCookie(c, auth.secureCookie);
+    return c.json({ ok: true });
+  });
+
+  app.use('/api/*', async (c, next) => {
+    if (isPublicApi(c.req.path)) {
+      await next();
+      return;
+    }
+    const user = await actor(c);
+    if (
+      isSharedCatalogWrite(c.req.method, c.req.path) &&
+      user.role !== 'admin'
+    ) {
+      throw new HttpError(403, 'Только для администратора');
+    }
+    await next();
+  });
+
+  app.get('/api/auth/me', async (c) => {
+    const user = await actor(c);
+    return c.json({
+      user: toPublicUser(user, await store.listUserAgentIds(user.id)),
+    });
+  });
+
+  app.get('/api/admin/users', async (c) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const users = await store.listUsers();
+    const result = [];
+    for (const item of users) {
+      result.push(toPublicUser(item, await store.listUserAgentIds(item.id)));
+    }
+    return c.json(result);
+  });
+
+  app.post('/api/admin/users/invite', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const email = normalizeEmail(body.email);
+    const name =
+      typeof body.name === 'string' && body.name.trim()
+        ? body.name.trim()
+        : (email.split('@')[0] ?? email);
+    if (await store.getUserByEmail(email))
+      throw badRequest('Пользователь с такой почтой уже есть');
+    const agentIds = Array.isArray(body.agentIds)
+      ? body.agentIds.filter((item): item is string => typeof item === 'string')
+      : [];
+    const limit = parseLimit(body.dailyRequestLimit);
+    const created = await store.insertUser({
+      email,
+      name,
+      passwordHash: '',
+      role: 'manager',
+      status: 'pending',
+      dailyRequestLimit: limit,
+    });
+    await store.setUserAgents(created.id, agentIds);
+    const token = newInviteToken();
+    await store.setInviteToken(created.id, hashInviteToken(token));
+    return c.json(
+      { user: toPublicUser(created, agentIds), inviteToken: token },
+      201,
+    );
+  });
+
+  app.patch('/api/admin/users/:id', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const current = await store.getUser(c.req.param('id'));
+    if (!current) return c.json({ error: 'Пользователь не найден' }, 404);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const patch: Partial<
+      Pick<UserRecord, 'name' | 'status' | 'dailyRequestLimit'>
+    > = {};
+    if (typeof body.name === 'string' && body.name.trim())
+      patch.name = body.name.trim();
+    if (
+      body.status === 'active' ||
+      body.status === 'pending' ||
+      body.status === 'disabled'
+    ) {
+      if (current.id === admin.id && body.status !== 'active') {
+        throw badRequest('Нельзя отключить свою учётную запись');
+      }
+      patch.status = body.status;
+    }
+    if ('dailyRequestLimit' in body)
+      patch.dailyRequestLimit = parseLimit(body.dailyRequestLimit);
+    const updated = await store.updateUser(current.id, patch);
+    if (!updated) return c.json({ error: 'Пользователь не найден' }, 404);
+    if (Array.isArray(body.agentIds)) {
+      const agentIds = body.agentIds.filter(
+        (item): item is string => typeof item === 'string',
+      );
+      await store.setUserAgents(updated.id, agentIds);
+    }
+    return c.json(
+      toPublicUser(updated, await store.listUserAgentIds(updated.id)),
+    );
+  });
+
+  app.get('/api/admin/usage', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    const summary = await store.usageSummary(since.toISOString());
+    const byUser = new Map(summary.map((row) => [row.userId, row.calls]));
+    const users = await store.listUsers();
+    return c.json(
+      users.map((item) => ({
+        userId: item.id,
+        email: item.email,
+        name: item.name,
+        calls: byUser.get(item.id) ?? 0,
+        limit: item.dailyRequestLimit,
+      })),
+    );
+  });
+
+  app.get('/api/providers', async (c) =>
+    c.json((await store.listProviders()).map(toPublicProvider)),
   );
 
   app.post('/api/providers', async (c) => {
     const input = parseProviderInput(await readBody(c));
     if (input.apiKey === SECRET_MASK) input.apiKey = undefined;
-    const row = store.insertProvider(input);
+    const row = await store.insertProvider(input);
     return c.json(toPublicProvider(row), 201);
   });
 
   app.patch('/api/providers/:id', async (c) => {
-    const current = store.getProvider(c.req.param('id'));
+    const current = await store.getProvider(c.req.param('id'));
     if (!current) return c.json({ error: 'Провайдер не найден' }, 404);
     const body = await readBody(c);
     const record = isRecord(body) ? body : {};
@@ -100,19 +360,19 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       true,
     );
     if (!input.apiKey || input.apiKey === SECRET_MASK) input.apiKey = undefined;
-    const row = store.updateProvider(current.id, input);
+    const row = await store.updateProvider(current.id, input);
     if (!row) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json(toPublicProvider(row));
   });
 
-  app.delete('/api/providers/:id', (c) => {
-    const ok = store.deleteProvider(c.req.param('id'));
+  app.delete('/api/providers/:id', async (c) => {
+    const ok = await store.deleteProvider(c.req.param('id'));
     if (!ok) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json({ ok: true });
   });
 
   app.post('/api/providers/:id/test', async (c) => {
-    const provider = store.getProvider(c.req.param('id'));
+    const provider = await store.getProvider(c.req.param('id'));
     if (!provider) return c.json({ error: 'Провайдер не найден' }, 404);
     if (providerNeedsKey(provider.kind) && !provider.apiKey)
       return c.json({ error: 'Сначала сохраните API-ключ' }, 400);
@@ -145,32 +405,34 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true, preview: preview.slice(0, 180) });
   });
 
-  app.get('/api/mcp', (c) =>
-    c.json(store.listMcp().map((row) => presentMcp(row, mcp))),
+  app.get('/api/mcp', async (c) =>
+    c.json((await store.listMcp()).map((row) => presentMcp(row, mcp))),
   );
 
-  app.get('/api/mcp/config', (c) => c.json(toMcpFile(store.listMcp())));
+  app.get('/api/mcp/config', async (c) =>
+    c.json(toMcpFile(await store.listMcp())),
+  );
 
   app.post('/api/mcp/import', async (c) => {
     const file = parseMcpFile(await readBody(c));
     for (const [name, entry] of Object.entries(file.mcpServers)) {
-      const input = entryToInput(name, entry, store.getMcpByName(name));
-      const saved = store.upsertMcp(input);
+      const input = entryToInput(name, entry, await store.getMcpByName(name));
+      const saved = await store.upsertMcp(input);
       if (saved.enabled) await mcp.connect(saved);
       else await mcp.disconnect(saved.id);
     }
-    return c.json(store.listMcp().map((row) => presentMcp(row, mcp)));
+    return c.json((await store.listMcp()).map((row) => presentMcp(row, mcp)));
   });
 
   app.post('/api/mcp', async (c) => {
     const input = parseMcpInput(await readBody(c));
-    const saved = store.upsertMcp(input);
+    const saved = await store.upsertMcp(input);
     if (saved.enabled) await mcp.connect(saved);
     return c.json(presentMcp(saved, mcp), 201);
   });
 
   app.patch('/api/mcp/:id', async (c) => {
-    const current = store.getMcp(c.req.param('id'));
+    const current = await store.getMcp(c.req.param('id'));
     if (!current) return c.json({ error: 'MCP-сервер не найден' }, 404);
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
@@ -179,17 +441,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         'Переименование MCP-сервера не поддерживается — удалите его и создайте заново.',
       );
     }
-    const saved = store.upsertMcp(mergeMcp(current, body));
+    const saved = await store.upsertMcp(mergeMcp(current, body));
     if (saved.enabled) await mcp.connect(saved);
     else await mcp.disconnect(saved.id);
     return c.json(presentMcp(saved, mcp));
   });
 
   app.delete('/api/mcp/:id', async (c) => {
-    const current = store.getMcp(c.req.param('id'));
+    const current = await store.getMcp(c.req.param('id'));
     if (!current) return c.json({ error: 'MCP-сервер не найден' }, 404);
     await mcp.disconnect(current.id);
-    store.deleteMcp(current.id);
+    await store.deleteMcp(current.id);
     return c.json({ ok: true });
   });
 
@@ -223,16 +485,22 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.get('/api/agent-templates', (c) => c.json(AGENT_TEMPLATES));
 
-  app.get('/api/agents', (c) => c.json(store.listAgents()));
+  app.get('/api/agents', async (c) => {
+    const user = await actor(c);
+    const all = await store.listAgents();
+    if (user.role === 'admin') return c.json(all);
+    const allowed = new Set(await store.listUserAgentIds(user.id));
+    return c.json(all.filter((agent) => allowed.has(agent.id)));
+  });
 
   app.post('/api/agents', async (c) => {
     const input = parseAgentInput(await readBody(c), false);
-    if (store.findAgentByName(input.name ?? '')) {
+    if (await store.findAgentByName(input.name ?? '')) {
       throw badRequest('Агент с таким именем уже есть');
     }
-    const defaults = defaultSelection(store);
+    const defaults = await defaultSelection(store);
     return c.json(
-      store.insertAgent({
+      await store.insertAgent({
         ...input,
         name: input.name ?? 'Агент',
         providerId:
@@ -245,47 +513,55 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     );
   });
 
-  app.get('/api/agents/:id', (c) => {
-    const agent = store.getAgent(c.req.param('id'));
-    if (!agent) return c.json({ error: 'Агент не найден' }, 404);
+  app.get('/api/agents/:id', async (c) => {
+    const user = await actor(c);
+    const agent = await store.getAgent(c.req.param('id'));
+    if (!agent || !(await canUseAgent(user, agent.id))) {
+      return c.json({ error: 'Агент не найден' }, 404);
+    }
     return c.json(agent);
   });
 
   app.patch('/api/agents/:id', async (c) => {
-    const current = store.getAgent(c.req.param('id'));
+    const current = await store.getAgent(c.req.param('id'));
     if (!current) return c.json({ error: 'Агент не найден' }, 404);
     const input = parseAgentInput(await readBody(c), true);
     if (input.name && input.name.toLowerCase() !== current.name.toLowerCase()) {
-      const taken = store.findAgentByName(input.name);
+      const taken = await store.findAgentByName(input.name);
       if (taken && taken.id !== current.id)
         throw badRequest('Агент с таким именем уже есть');
     }
-    const updated = store.updateAgent(current.id, input);
+    const updated = await store.updateAgent(current.id, input);
     return c.json(updated);
   });
 
-  app.delete('/api/agents/:id', (c) => {
-    if (store.listAgents().length <= 1) {
+  app.delete('/api/agents/:id', async (c) => {
+    if ((await store.listAgents()).length <= 1) {
       return c.json({ error: 'Нельзя удалить последнего агента' }, 400);
     }
-    const ok = store.deleteAgent(c.req.param('id'));
+    const ok = await store.deleteAgent(c.req.param('id'));
     if (!ok) return c.json({ error: 'Агент не найден' }, 404);
     return c.json({ ok: true });
   });
 
-  app.get('/api/agents/:id/memory', (c) => {
-    if (!store.getAgent(c.req.param('id')))
+  app.get('/api/agents/:id/memory', async (c) => {
+    const user = await actor(c);
+    if (!(await canUseAgent(user, c.req.param('id')))) {
       return c.json({ error: 'Агент не найден' }, 404);
-    return c.json(store.listMemory(c.req.param('id')));
+    }
+    return c.json(await store.listMemory(user.id, c.req.param('id')));
   });
 
   app.put('/api/agents/:id/memory/:key', async (c) => {
-    if (!store.getAgent(c.req.param('id')))
+    const user = await actor(c);
+    if (!(await canUseAgent(user, c.req.param('id')))) {
       return c.json({ error: 'Агент не найден' }, 404);
+    }
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
     return c.json(
-      store.writeMemory(
+      await store.writeMemory(
+        user.id,
         c.req.param('id'),
         decodeURIComponent(c.req.param('key')),
         asString(body.content),
@@ -293,8 +569,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     );
   });
 
-  app.delete('/api/agents/:id/memory/:key', (c) => {
-    const ok = store.deleteMemory(
+  app.delete('/api/agents/:id/memory/:key', async (c) => {
+    const user = await actor(c);
+    const ok = await store.deleteMemory(
+      user.id,
       c.req.param('id'),
       decodeURIComponent(c.req.param('key')),
     );
@@ -302,21 +580,25 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
-  app.get('/api/agents/:id/routines', (c) => {
-    if (!store.getAgent(c.req.param('id')))
+  app.get('/api/agents/:id/routines', async (c) => {
+    const user = await actor(c);
+    if (!(await canUseAgent(user, c.req.param('id')))) {
       return c.json({ error: 'Агент не найден' }, 404);
-    return c.json(store.listRoutines(c.req.param('id')));
+    }
+    return c.json(await store.listRoutines(user.id, c.req.param('id')));
   });
 
   app.post('/api/agents/:id/routines', async (c) => {
-    if (!store.getAgent(c.req.param('id')))
+    const user = await actor(c);
+    if (!(await canUseAgent(user, c.req.param('id')))) {
       return c.json({ error: 'Агент не найден' }, 404);
+    }
     const input = parseRoutineInput(await readBody(c), false);
     if (!input.name || !input.cron || !input.prompt) {
       throw badRequest('Укажите название, cron и промпт');
     }
     return c.json(
-      store.insertRoutine(c.req.param('id'), {
+      await store.insertRoutine(user.id, c.req.param('id'), {
         name: input.name,
         cron: input.cron,
         prompt: input.prompt,
@@ -327,35 +609,53 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   });
 
   app.patch('/api/agents/:id/routines/:routineId', async (c) => {
-    const current = store.getRoutine(c.req.param('routineId'));
-    if (!current || current.agentId !== c.req.param('id')) {
+    const user = await actor(c);
+    const current = await store.getRoutine(c.req.param('routineId'));
+    if (
+      !current ||
+      current.agentId !== c.req.param('id') ||
+      current.userId !== user.id
+    ) {
       return c.json({ error: 'Расписание не найдено' }, 404);
     }
     const input = parseRoutineInput(await readBody(c), true);
-    return c.json(store.updateRoutine(current.id, input));
+    return c.json(await store.updateRoutine(current.id, input));
   });
 
-  app.delete('/api/agents/:id/routines/:routineId', (c) => {
-    const current = store.getRoutine(c.req.param('routineId'));
-    if (!current || current.agentId !== c.req.param('id')) {
+  app.delete('/api/agents/:id/routines/:routineId', async (c) => {
+    const user = await actor(c);
+    const current = await store.getRoutine(c.req.param('routineId'));
+    if (
+      !current ||
+      current.agentId !== c.req.param('id') ||
+      current.userId !== user.id
+    ) {
       return c.json({ error: 'Расписание не найдено' }, 404);
     }
-    store.deleteRoutine(current.id);
+    await store.deleteRoutine(current.id);
     return c.json({ ok: true });
   });
 
   app.post('/api/agents/:id/routines/:routineId/run', async (c) => {
-    const current = store.getRoutine(c.req.param('routineId'));
-    if (!current || current.agentId !== c.req.param('id')) {
+    const user = await actor(c);
+    const current = await store.getRoutine(c.req.param('routineId'));
+    if (
+      !current ||
+      current.agentId !== c.req.param('id') ||
+      current.userId !== user.id
+    ) {
       return c.json({ error: 'Расписание не найдено' }, 404);
     }
     await runRoutineNow({ store, mcp, skills }, current.id);
     return c.json({ ok: true });
   });
 
-  app.get('/api/conversations', (c) =>
-    c.json(store.listConversations(c.req.query('agentId') || undefined)),
-  );
+  app.get('/api/conversations', async (c) => {
+    const user = await actor(c);
+    const agentId = c.req.query('agentId') || undefined;
+    if (agentId && !(await canUseAgent(user, agentId))) return c.json([]);
+    return c.json(await store.listConversations(user.id, agentId));
+  });
 
   app.post('/api/conversations', async (c) => {
     const body = await readBody(c).catch(() => ({}));
@@ -364,10 +664,14 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const requestedAgent =
       typeof record.agentId === 'string'
         ? record.agentId
-        : store.listAgents()[0]?.id;
-    const agent = requestedAgent ? store.getAgent(requestedAgent) : undefined;
-    if (!agent) throw badRequest('Агент не найден');
-    const defaults = defaultSelection(store);
+        : (await store.listAgents())[0]?.id;
+    const user = await actor(c);
+    const agent = requestedAgent
+      ? await store.getAgent(requestedAgent)
+      : undefined;
+    if (!agent || !(await canUseAgent(user, agent.id)))
+      throw badRequest('Агент не найден');
+    const defaults = await defaultSelection(store);
     const providerId =
       typeof record.providerId === 'string'
         ? record.providerId
@@ -376,26 +680,32 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       typeof record.model === 'string'
         ? record.model
         : (agent.model ?? defaults.model);
-    const created = store.insertConversation({
+    const created = await store.insertConversation({
       title: locale === 'en' ? 'New chat' : 'Новый чат',
       agentId: agent.id,
+      userId: user.id,
       providerId,
       model,
     });
     return c.json(created, 201);
   });
 
-  app.get('/api/conversations/:id', (c) => {
-    const conversation = store.getConversation(c.req.param('id'));
+  app.get('/api/conversations/:id', async (c) => {
+    const user = await actor(c);
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
     if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
     return c.json({
       conversation,
-      messages: store.listMessages(conversation.id),
+      messages: await store.listMessages(conversation.id),
     });
   });
 
   app.patch('/api/conversations/:id', async (c) => {
-    const current = store.getConversation(c.req.param('id'));
+    const user = await actor(c);
+    const current = await store.getConversation(c.req.param('id'), user.id);
     if (!current) return c.json({ error: 'Чат не найден' }, 404);
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
@@ -406,7 +716,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const providerId =
       typeof body.providerId === 'string' ? body.providerId : undefined;
     const model = typeof body.model === 'string' ? body.model : undefined;
-    const updated = store.updateConversation(current.id, {
+    const updated = await store.updateConversation(current.id, {
       title: title || undefined,
       providerId,
       model,
@@ -414,14 +724,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json(updated);
   });
 
-  app.delete('/api/conversations/:id', (c) => {
-    const ok = store.deleteConversation(c.req.param('id'));
+  app.delete('/api/conversations/:id', async (c) => {
+    const user = await actor(c);
+    const current = await store.getConversation(c.req.param('id'), user.id);
+    const ok = current ? await store.deleteConversation(current.id) : false;
     if (!ok) return c.json({ error: 'Чат не найден' }, 404);
     return c.json({ ok: true });
   });
 
   app.post('/api/conversations/:id/messages', async (c) => {
-    if (!store.getConversation(c.req.param('id'))) {
+    const user = await actor(c);
+    if (!(await store.getConversation(c.req.param('id'), user.id))) {
       return c.json({ error: 'Чат не найден' }, 404);
     }
     const body = await readBody(c);
@@ -434,6 +747,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     }
     const content = body.content.trim();
     if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
+    await assertQuota(store, user);
     const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
     return streamSSE(c, async (stream) => {
       const write = async (event: ClientEvent) => {
@@ -446,6 +760,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
             conversationId: c.req.param('id'),
             content,
             locale,
+            userId: user.id,
             providerId:
               typeof body.providerId === 'string' ? body.providerId : undefined,
             model: typeof body.model === 'string' ? body.model : undefined,
@@ -476,15 +791,19 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     startScheduler: () => startScheduler(deps),
     close: async () => {
       await mcp.disconnectAll();
-      store.close();
+      await store.close();
     },
   };
 }
 
-function seed(store: Store, skills: SkillLibrary, config: AppConfig): void {
-  if (!store.getSetting('seeded')) {
-    if (store.listProviders().length === 0) {
-      store.insertProvider({
+async function seed(
+  store: Store,
+  skills: SkillLibrary,
+  config: AppConfig,
+): Promise<void> {
+  if (!(await store.getSetting('seeded'))) {
+    if ((await store.listProviders()).length === 0) {
+      await store.insertProvider({
         name: 'Демо',
         kind: 'mock',
         models: ['mock'],
@@ -495,7 +814,7 @@ function seed(store: Store, skills: SkillLibrary, config: AppConfig): void {
       const apiKey = process.env.MAYAK_OPENAI_API_KEY;
       const model = process.env.MAYAK_OPENAI_MODEL;
       if (baseUrl && apiKey && model) {
-        store.insertProvider({
+        await store.insertProvider({
           name: process.env.MAYAK_OPENAI_NAME || 'OpenAI-compatible',
           kind: 'openai',
           baseUrl,
@@ -505,8 +824,11 @@ function seed(store: Store, skills: SkillLibrary, config: AppConfig): void {
         });
       }
     }
-    if (store.listMcp().length === 0 && fs.existsSync(config.demoServerPath)) {
-      store.upsertMcp({
+    if (
+      (await store.listMcp()).length === 0 &&
+      fs.existsSync(config.demoServerPath)
+    ) {
+      await store.upsertMcp({
         name: 'demo',
         transport: 'stdio',
         command: process.execPath,
@@ -514,16 +836,34 @@ function seed(store: Store, skills: SkillLibrary, config: AppConfig): void {
         enabled: false,
       });
     }
-    store.setSetting('seeded', '1');
+    await store.setSetting('seeded', '1');
   }
   seedSkills(skills.directory, config.examplesSkillsDir);
-  ensureDefaultAgent(store, skills);
+  await ensureDefaultAgent(store, skills);
 }
 
-function ensureDefaultAgent(store: Store, skills: SkillLibrary): void {
-  if (store.listAgents().length === 0) {
-    const defaults = defaultSelection(store);
-    store.insertAgent({
+async function ensureLocalUser(store: Store): Promise<void> {
+  if (!(await store.getUser(LOCAL_USER_ID))) {
+    await store.insertUser({
+      id: LOCAL_USER_ID,
+      email: 'local@localhost',
+      name: 'Локальный',
+      passwordHash: '',
+      role: 'admin',
+      status: 'active',
+      dailyRequestLimit: null,
+    });
+  }
+  await store.claimOrphans(LOCAL_USER_ID);
+}
+
+async function ensureDefaultAgent(
+  store: Store,
+  skills: SkillLibrary,
+): Promise<void> {
+  if ((await store.listAgents()).length === 0) {
+    const defaults = await defaultSelection(store);
+    await store.insertAgent({
       name: 'Маяк',
       emoji: '🏮',
       description: 'Основной локальный ассистент',
@@ -531,25 +871,25 @@ function ensureDefaultAgent(store: Store, skills: SkillLibrary): void {
         'Ты — Маяк, локальный ассистент на компьютере пользователя. Отвечай на языке пользователя, коротко и по делу.',
       providerId: defaults.providerId,
       model: defaults.model,
-      mcpServerIds: store.listMcp().map((item) => item.id),
+      mcpServerIds: (await store.listMcp()).map((item) => item.id),
       skillNames: skills.listEnabled().map((item) => item.name),
     });
   }
-  const first = store.listAgents()[0];
-  if (first) store.assignOrphanConversations(first.id);
+  const first = (await store.listAgents())[0];
+  if (first) await store.assignOrphanConversations(first.id);
 }
 
-function ensureDeepSeek(store: Store): void {
+async function ensureDeepSeek(store: Store): Promise<void> {
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return;
-  const existing = store
-    .listProviders()
-    .find((item) => item.kind === 'deepseek');
+  const existing = (await store.listProviders()).find(
+    (item) => item.kind === 'deepseek',
+  );
   if (existing) {
-    if (!existing.apiKey) store.updateProvider(existing.id, { apiKey });
+    if (!existing.apiKey) await store.updateProvider(existing.id, { apiKey });
     return;
   }
-  const created = store.insertProvider({
+  const created = await store.insertProvider({
     name: 'DeepSeek',
     kind: 'deepseek',
     baseUrl: DEEPSEEK_BASE_URL,
@@ -557,22 +897,22 @@ function ensureDeepSeek(store: Store): void {
     models: [...DEEPSEEK_MODELS],
     enabled: true,
   });
-  const agent = store.listAgents()[0];
+  const agent = (await store.listAgents())[0];
   if (agent) {
-    store.updateAgent(agent.id, {
+    await store.updateAgent(agent.id, {
       providerId: created.id,
       model: 'deepseek-chat',
     });
   }
 }
 
-function defaultSelection(store: Store): {
+async function defaultSelection(store: Store): Promise<{
   providerId: string | null;
   model: string | null;
-} {
-  const enabled = store
-    .listProviders()
-    .filter((item) => item.enabled && item.models.length > 0);
+}> {
+  const enabled = (await store.listProviders()).filter(
+    (item) => item.enabled && item.models.length > 0,
+  );
   const provider =
     enabled.find((item) => item.kind === 'deepseek') ?? enabled[0];
   if (!provider) return { providerId: null, model: null };
@@ -628,6 +968,39 @@ function toMcpFile(rows: McpRow[]): McpServersFile {
     mcpServers[row.name] = entry;
   }
   return { mcpServers };
+}
+
+function normalizeEmail(value: unknown): string {
+  if (typeof value !== 'string') throw badRequest('Укажите почту');
+  const email = value.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    throw badRequest('Некорректная почта');
+  return email;
+}
+
+function parseLimit(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const limit = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(limit) || limit < 0)
+    throw badRequest('Лимит — целое число или пусто');
+  return limit;
+}
+
+function parseCredentials(
+  body: unknown,
+  named: boolean,
+): { email: string; password: string; name: string } {
+  if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+  const email = normalizeEmail(body.email);
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (password.length < 8) throw badRequest('Пароль не короче 8 символов');
+  const name =
+    typeof body.name === 'string' && body.name.trim()
+      ? body.name.trim()
+      : named
+        ? (email.split('@')[0] ?? email)
+        : '';
+  return { email, password, name };
 }
 
 async function readBody(c: Context): Promise<unknown> {

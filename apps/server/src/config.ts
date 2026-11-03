@@ -14,6 +14,10 @@ export interface AppConfig {
   staticDir?: string;
   demoServerPath: string;
   examplesSkillsDir: string;
+  databaseUrl?: string;
+  authEnabled: boolean;
+  jwtSecret: string;
+  secureCookie: boolean;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -33,5 +37,17 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       path.join(repoRoot, 'examples/demo-mcp-server/server.mjs'),
     examplesSkillsDir:
       overrides.examplesSkillsDir ?? path.join(repoRoot, 'examples/skills'),
+    databaseUrl:
+      overrides.databaseUrl ?? (process.env.DATABASE_URL || undefined),
+    authEnabled:
+      overrides.authEnabled ??
+      (process.env.MAYAK_SINGLE_USER === '1'
+        ? false
+        : process.env.MAYAK_AUTH === '1'),
+    jwtSecret:
+      overrides.jwtSecret ??
+      process.env.JWT_SECRET ??
+      'mayak-dev-secret-change-me',
+    secureCookie: overrides.secureCookie ?? process.env.COOKIE_SECURE === '1',
   };
 }

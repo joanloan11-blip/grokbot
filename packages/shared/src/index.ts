@@ -35,10 +35,33 @@ export interface Conversation {
   id: string;
   title: string;
   agentId: string | null;
+  userId: string | null;
   providerId: string | null;
   model: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type UserRole = 'admin' | 'manager';
+export type UserStatus = 'active' | 'pending' | 'disabled';
+
+export interface PublicUser {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  status: UserStatus;
+  dailyRequestLimit: number | null;
+  agentIds: string[];
+  createdAt: string;
+}
+
+export interface UsageRow {
+  userId: string;
+  email: string;
+  name: string;
+  calls: number;
+  limit: number | null;
 }
 
 export interface Agent {
@@ -84,6 +107,7 @@ export interface MemoryNote {
 export interface Routine {
   id: string;
   agentId: string;
+  userId: string;
   name: string;
   cron: string;
   prompt: string;

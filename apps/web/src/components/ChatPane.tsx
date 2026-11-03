@@ -166,6 +166,7 @@ export function ChatPane({
               id: id as string,
               title: event.title,
               agentId,
+              userId: null,
               providerId: selected.providerId,
               model: selected.model,
               createdAt: '',

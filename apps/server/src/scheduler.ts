@@ -8,13 +8,13 @@ export async function runDueRoutines(
   now = new Date(),
 ): Promise<number> {
   let started = 0;
-  for (const routine of deps.store.listRoutines()) {
+  for (const routine of await deps.store.listAllRoutines()) {
     if (!routine.enabled || running.has(routine.id)) continue;
     if (!cronMatches(routine.cron, now)) continue;
     if (routine.lastRunAt && sameMinute(routine.lastRunAt, now)) continue;
     running.add(routine.id);
     started += 1;
-    deps.store.markRoutineRan(routine.id, now.toISOString());
+    await deps.store.markRoutineRan(routine.id, now.toISOString());
     void runRoutine(
       deps,
       routine.id,
@@ -32,9 +32,9 @@ export async function runRoutineNow(
   deps: TurnDeps,
   routineId: string,
 ): Promise<void> {
-  const routine = deps.store.getRoutine(routineId);
+  const routine = await deps.store.getRoutine(routineId);
   if (!routine) throw new Error('Расписание не найдено');
-  deps.store.markRoutineRan(routine.id, new Date().toISOString());
+  await deps.store.markRoutineRan(routine.id, new Date().toISOString());
   await runRoutine(
     deps,
     routine.id,
@@ -59,19 +59,25 @@ export function startScheduler(deps: TurnDeps): () => void {
 
 async function runRoutine(
   deps: TurnDeps,
-  _routineId: string,
+  routineId: string,
   agentId: string,
   name: string,
   prompt: string,
 ): Promise<void> {
-  const agent = deps.store.getAgent(agentId);
-  if (!agent) return;
+  const routine = await deps.store.getRoutine(routineId);
+  const agent = await deps.store.getAgent(agentId);
+  if (!agent || !routine?.userId) return;
   const title = `Расписание: ${name}`;
-  let conversation = deps.store.findConversationByTitle(agent.id, title);
+  let conversation = await deps.store.findConversationByTitle(
+    routine.userId,
+    agent.id,
+    title,
+  );
   if (!conversation) {
-    conversation = deps.store.insertConversation({
+    conversation = await deps.store.insertConversation({
       title,
       agentId: agent.id,
+      userId: routine.userId,
       providerId: agent.providerId,
       model: agent.model,
     });
@@ -80,6 +86,7 @@ async function runRoutine(
     conversationId: conversation.id,
     content: prompt,
     locale: 'ru',
+    userId: routine.userId,
     depth: 0,
   });
 }

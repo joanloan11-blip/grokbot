@@ -300,6 +300,7 @@ code {
 .side-foot {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .side-foot .ghost {
   flex: 1;
@@ -783,6 +784,25 @@ input[type="checkbox"]:checked::after {
   background: transparent;
   color: var(--text);
   padding: 6px 10px;
+}
+.auth-wrap {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.auth-card {
+  width: min(440px, 100%);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+.team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .scrim {
   display: none;
