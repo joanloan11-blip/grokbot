@@ -140,7 +140,17 @@ function toAnthropicMessages(messages: ModelMessage[]): {
     if (message.role === 'user') {
       out.push({
         role: 'user',
-        content: [{ type: 'text', text: message.content }],
+        content: [
+          ...(message.images ?? []).map((image) => ({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: image.mime,
+              data: image.data,
+            },
+          })),
+          { type: 'text', text: message.content },
+        ],
       });
       continue;
     }

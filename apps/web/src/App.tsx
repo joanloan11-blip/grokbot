@@ -4,6 +4,7 @@ import type {
   Conversation,
   ProviderPublic,
   PublicUser,
+  SearchHit,
 } from '@mayak/shared';
 import { ApiError, api } from './api';
 import { AgentEditor } from './components/AgentEditor';
@@ -113,6 +114,29 @@ function Shell({
     else toggleSidebar(false);
   };
   const [chatQuery, setChatQuery] = useState('');
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  useEffect(() => {
+    const query = chatQuery.trim();
+    if (query.length < 2) {
+      setHits(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api
+        .search(query)
+        .then((next) => {
+          if (!cancelled) setHits(next);
+        })
+        .catch(() => {
+          if (!cancelled) setHits([]);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [chatQuery]);
   const [wizard, setWizard] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -248,7 +272,34 @@ function Shell({
           </button>
         )}
         <p className="side-label">{t('chats')}</p>
-        <nav className="conv-list">
+        {hits && (
+          <div className="search-hits">
+            <p className="side-label">{t('searchResults')}</p>
+            {hits.length === 0 && (
+              <p className="muted empty-side">{t('noResults')}</p>
+            )}
+            {hits.map((hit) => (
+              <button
+                key={hit.conversationId}
+                type="button"
+                className={
+                  hit.conversationId === activeId
+                    ? 'conv hit active'
+                    : 'conv hit'
+                }
+                onClick={() => {
+                  if (hit.agentId && hit.agentId !== agentId)
+                    setAgentId(hit.agentId);
+                  openChat(hit.conversationId);
+                }}
+              >
+                <span>{hit.title}</span>
+                <small>{hit.snippet}</small>
+              </button>
+            ))}
+          </div>
+        )}
+        <nav className="conv-list" hidden={hits !== null}>
           {conversations.length === 0 && (
             <p className="muted empty-side">{t('noChats')}</p>
           )}

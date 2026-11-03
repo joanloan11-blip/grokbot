@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import type { Context, Hono } from 'hono';
 import type { AppConfig } from './config';
 import type { Store, UserRecord } from './db';
@@ -29,6 +30,69 @@ export function registerExtraRoutes(
       throw new HttpError(403, 'Только для администратора');
     return user;
   };
+
+  app.get('/api/search', async (c) => {
+    const user = await deps.actor(c);
+    const query = (c.req.query('q') ?? '').trim();
+    return c.json(await deps.store.searchMessages(user.id, query));
+  });
+
+  app.post('/api/transcribe', async (c) => {
+    await deps.actor(c);
+    const base = (process.env.WHISPER_URL ?? '').replace(/\/$/, '');
+    if (!base)
+      return c.json(
+        { error: 'Распознавание речи не настроено (WHISPER_URL)' },
+        503,
+      );
+    const body = await c.req.parseBody();
+    const file = body.file;
+    if (
+      !file ||
+      typeof file === 'string' ||
+      typeof file.arrayBuffer !== 'function'
+    )
+      throw badRequest('Приложите аудио в поле file');
+    if (file.size > 20_000_000) throw badRequest('Аудио больше 20 МБ');
+    const raw = Buffer.from(await file.arrayBuffer());
+    const wav = await toWav(raw).catch(() => undefined);
+    const form = new FormData();
+    const language = c.req.query('lang') === 'en' ? 'en' : 'ru';
+    let url = `${base}/inference`;
+    const headers: Record<string, string> = {};
+    if (base.endsWith('/v1')) {
+      // OpenAI-совместимый Whisper API.
+      url = `${base}/audio/transcriptions`;
+      form.append('model', process.env.WHISPER_MODEL || 'whisper-1');
+      if (process.env.WHISPER_API_KEY)
+        headers.authorization = `Bearer ${process.env.WHISPER_API_KEY}`;
+    }
+    form.append(
+      'file',
+      new Blob([wav ?? raw], {
+        type: wav ? 'audio/wav' : file.type || 'audio/webm',
+      }),
+      wav ? 'voice.wav' : file.name || 'voice.webm',
+    );
+    form.append('response_format', 'json');
+    form.append('language', language);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(180_000),
+    }).catch(() => undefined);
+    if (!response?.ok)
+      return c.json({ error: 'Сервис распознавания не ответил' }, 502);
+    const data = (await response.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    const text =
+      typeof data.text === 'string'
+        ? data.text.replace(/\[[^\]]*\]/g, '').trim()
+        : '';
+    return c.json({ text });
+  });
 
   app.get('/api/tasks', async (c) => {
     const user = await deps.actor(c);
@@ -62,6 +126,7 @@ export function registerExtraRoutes(
       headers: {
         'content-type': file.mime || 'application/octet-stream',
         'content-disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
+        'x-content-type-options': 'nosniff',
       },
     });
   });
@@ -102,7 +167,15 @@ export function registerExtraRoutes(
       path: stored,
       text,
     });
-    return c.json({ id, name: file.name, text: text.slice(0, 4000) }, 201);
+    return c.json(
+      {
+        id,
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        text: text.slice(0, 4000),
+      },
+      201,
+    );
   });
 
   app.post('/api/messages/:id/reactions', async (c) => {
@@ -282,4 +355,43 @@ function escapeHtml(value: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/** Перекодирует запись браузера (webm/ogg) в WAV 16 кГц mono для whisper.cpp. */
+function toWav(input: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'ffmpeg',
+      [
+        '-loglevel',
+        'error',
+        '-i',
+        'pipe:0',
+        '-ar',
+        '16000',
+        '-ac',
+        '1',
+        '-c:a',
+        'pcm_s16le',
+        '-f',
+        'wav',
+        'pipe:1',
+      ],
+      { stdio: ['pipe', 'pipe', 'ignore'] },
+    );
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && chunks.length) resolve(Buffer.concat(chunks));
+      else reject(new Error('ffmpeg failed'));
+    });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(input);
+  });
 }

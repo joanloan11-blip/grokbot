@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   SECRET_MASK,
+  type Attachment,
   type ClientEvent,
   type Locale,
   type McpServerConfigEntry,
@@ -878,14 +879,24 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       return c.json({ error: 'Чат не найден' }, 404);
     }
     const body = await readBody(c);
-    if (
-      !isRecord(body) ||
-      typeof body.content !== 'string' ||
-      !body.content.trim()
-    ) {
-      throw badRequest('Пустое сообщение');
+    if (!isRecord(body)) throw badRequest('Пустое сообщение');
+    const attachments: Attachment[] = [];
+    if (Array.isArray(body.attachments)) {
+      for (const raw of body.attachments.slice(0, 10)) {
+        const id =
+          typeof raw === 'string' ? raw : isRecord(raw) ? raw.id : undefined;
+        if (typeof id !== 'string') continue;
+        const file = await store.getUpload(id, user.id);
+        if (!file) throw badRequest('Вложение не найдено');
+        attachments.push({ id: file.id, name: file.name, mime: file.mime });
+      }
     }
-    const content = body.content.trim();
+    const typed = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!typed && attachments.length === 0)
+      throw badRequest('Пустое сообщение');
+    const content =
+      typed ||
+      (body.locale === 'en' ? 'See the attached files.' : 'Посмотри вложения.');
     if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
     await assertQuota(store, user);
     const agent = conversation.agentId
@@ -913,6 +924,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
           {
             conversationId: c.req.param('id'),
             content,
+            attachments,
             locale,
             userId: user.id,
             providerId: selection.providerId,

@@ -16,6 +16,8 @@ export interface ModelMessage {
   toolCalls?: ModelToolCall[];
   toolCallId?: string;
   name?: string;
+  /** Картинки для моделей с поддержкой зрения (base64 без префикса data:). */
+  images?: { mime: string; data: string }[];
 }
 
 export type ProviderEvent =

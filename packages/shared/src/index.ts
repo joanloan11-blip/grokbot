@@ -190,6 +190,20 @@ export interface ToolCall {
   arguments: string;
 }
 
+export interface Attachment {
+  id: string;
+  name: string;
+  mime: string;
+}
+
+export interface SearchHit {
+  conversationId: string;
+  title: string;
+  agentId: string | null;
+  snippet: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   conversationId: string;
@@ -200,6 +214,8 @@ export interface ChatMessage {
   toolName?: string;
   /** Текст рассуждения (DeepSeek reasoner, поле `reasoning_content`). Не уходит обратно в API. */
   reasoning?: string;
+  /** Файлы, приложенные к сообщению пользователя. */
+  attachments?: Attachment[];
   createdAt: string;
 }
 

@@ -11,6 +11,10 @@ import { MarkdownView } from './MarkdownView';
 import {
   BeaconMark,
   IconArrowUp,
+  IconClose,
+  IconFile,
+  IconMic,
+  IconPaperclip,
   IconSidebar,
   IconStop,
   IconTrash,
@@ -56,14 +60,22 @@ export function ChatPane({
   const [choice, setChoice] = useState('');
   const [editingTitle, setEditingTitle] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const skipReload = useRef(false);
+  const createdRef = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
 
   const choices = useMemo(() => flattenChoices(providers), [providers]);
 
   useEffect(() => {
+    if (conversationId) createdRef.current = null;
     if (skipReload.current) {
       skipReload.current = false;
       return;
@@ -75,6 +87,7 @@ export function ChatPane({
     setBusy(false);
     setError('');
     setConfirmDelete(false);
+    if (!skipReload.current) setFiles([]);
     if (!conversationId) {
       setMessages([]);
       setTitle('');
@@ -125,9 +138,104 @@ export function ChatPane({
     onConversation(updated);
   }
 
+  async function ensureConversation(): Promise<string> {
+    if (conversationId) return conversationId;
+    if (createdRef.current) return createdRef.current;
+    const created = await api.createConversation({
+      locale,
+      agentId,
+      providerId: selected?.providerId,
+      model: selected?.model,
+    });
+    createdRef.current = created.id;
+    setTitle(created.title);
+    skipReload.current = true;
+    onConversation(created);
+    return created.id;
+  }
+
+  async function attach(list: FileList | null) {
+    if (!list?.length) return;
+    if (!selected) {
+      setError(t('noProviders'));
+      return;
+    }
+    setError('');
+    setUploading(true);
+    try {
+      const id = await ensureConversation();
+      for (const file of Array.from(list).slice(0, 10)) {
+        if (file.size > 8_000_000) {
+          setError(`${file.name}: > 8 MB`);
+          continue;
+        }
+        const saved = await api.uploadFile(id, file);
+        setFiles((current) => [
+          ...current,
+          {
+            ...saved,
+            preview: file.type.startsWith('image/')
+              ? URL.createObjectURL(file)
+              : undefined,
+          },
+        ]);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('error'));
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data);
+      };
+      recorder.onstop = async () => {
+        for (const track of stream.getTracks()) track.stop();
+        setRecording(false);
+        recorderRef.current = null;
+        if (!chunks.length) return;
+        setTranscribing(true);
+        try {
+          const text = await api.transcribe(
+            new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }),
+            locale,
+          );
+          if (text) {
+            setDraft((current) =>
+              current.trim() ? `${current.trim()} ${text}` : text,
+            );
+            box.current?.focus();
+          }
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : t('error'));
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch {
+      setError(t('micDenied'));
+    }
+  }
+
   async function send(text: string) {
-    const content = text.trim();
-    if (!content || busy) return;
+    const typed = text.trim();
+    const pendingFiles = files;
+    if ((!typed && pendingFiles.length === 0) || busy || uploading) return;
+    const content = typed;
     if (!selected) {
       setError(t('noProviders'));
       return;
@@ -135,20 +243,10 @@ export function ChatPane({
     setError('');
     setBusy(true);
     setDraft('');
+    setFiles([]);
     let id = conversationId;
     try {
-      if (!id) {
-        const created = await api.createConversation({
-          locale,
-          agentId,
-          providerId: selected.providerId,
-          model: selected.model,
-        });
-        id = created.id;
-        setTitle(created.title);
-        skipReload.current = true;
-        onConversation(created);
-      }
+      if (!id) id = await ensureConversation();
       const controller = new AbortController();
       abortRef.current = controller;
       setStreaming('');
@@ -161,6 +259,7 @@ export function ChatPane({
           providerId: selected.providerId,
           model: selected.model,
           locale,
+          attachments: pendingFiles.map((file) => file.id),
         },
         (event) => {
           if (event.type === 'text')
@@ -252,10 +351,37 @@ export function ChatPane({
         void send(draft);
       }}
     >
+      {files.length > 0 && (
+        <div className="attach-list">
+          {files.map((file) => (
+            <span key={file.id} className="attach-chip">
+              {file.preview ? <img src={file.preview} alt="" /> : <IconFile />}
+              <span>{file.name}</span>
+              <button
+                type="button"
+                aria-label={t('removeFile')}
+                onClick={() =>
+                  setFiles((current) =>
+                    current.filter((item) => item.id !== file.id),
+                  )
+                }
+              >
+                <IconClose />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         ref={box}
         value={draft}
-        placeholder={t('chatPlaceholder')}
+        placeholder={
+          recording
+            ? t('stopRecording')
+            : transcribing
+              ? t('transcribing')
+              : t('chatPlaceholder')
+        }
         rows={1}
         onChange={(event) => {
           setDraft(event.target.value);
@@ -270,6 +396,24 @@ export function ChatPane({
         }}
       />
       <div className="composer-row">
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          hidden
+          accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.csv,.docx,.xlsx"
+          onChange={(event) => void attach(event.target.files)}
+        />
+        <button
+          type="button"
+          className="icon-btn quiet"
+          aria-label={t('attach')}
+          title={uploading ? t('uploading') : t('attach')}
+          disabled={uploading}
+          onClick={() => fileInput.current?.click()}
+        >
+          <IconPaperclip />
+        </button>
         <ModelSelect
           providers={providers}
           value={choice}
@@ -277,6 +421,19 @@ export function ChatPane({
           className="composer-model"
           onChange={(next) => void persistChoice(next, conversationId)}
         />
+        <span className="composer-spacer" />
+        <button
+          type="button"
+          className={
+            recording ? 'icon-btn mic recording' : 'icon-btn quiet mic'
+          }
+          aria-label={recording ? t('stopRecording') : t('voiceInput')}
+          title={recording ? t('stopRecording') : t('voiceInput')}
+          disabled={transcribing}
+          onClick={() => void toggleRecording()}
+        >
+          <IconMic />
+        </button>
         {busy ? (
           <button
             className="send stop"
@@ -290,7 +447,7 @@ export function ChatPane({
           <button
             className="send"
             type="submit"
-            disabled={!draft.trim()}
+            disabled={(!draft.trim() && files.length === 0) || uploading}
             aria-label={t('send')}
           >
             <IconArrowUp />
@@ -484,6 +641,35 @@ function renderMessages(
       nodes.push(
         <article key={message.id} className="bubble user">
           <span className="who">{t('you')}</span>
+          {message.attachments?.length ? (
+            <div className="msg-files">
+              {message.attachments.map((file) =>
+                file.mime.startsWith('image/') ? (
+                  <a
+                    key={file.id}
+                    href={`/api/files/${file.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <img
+                      src={`/api/files/${file.id}`}
+                      alt={file.name}
+                      loading="lazy"
+                    />
+                  </a>
+                ) : (
+                  <a
+                    key={file.id}
+                    className="attach-chip"
+                    href={`/api/files/${file.id}`}
+                  >
+                    <IconFile />
+                    <span>{file.name}</span>
+                  </a>
+                ),
+              )}
+            </div>
+          ) : null}
           <MarkdownView text={message.content} />
         </article>,
       );
@@ -561,9 +747,11 @@ function ToolCard({
         <AskChoices raw={result.slice(4)} onSend={onSend} />
       )}
       {result?.startsWith('APPROVAL:') && <ApprovalCard raw={result} />}
+      {result?.startsWith('DIFF:') && <DiffView raw={result.slice(5)} />}
       {result !== undefined &&
         !result.startsWith('ASK:') &&
-        !result.startsWith('APPROVAL:') && (
+        !result.startsWith('APPROVAL:') &&
+        !result.startsWith('DIFF:') && (
           <div className="tool-result">{result}</div>
         )}
     </div>
@@ -703,4 +891,57 @@ function choiceFor(
 
 function keyOf(choice: Choice): string {
   return `${choice.providerId}:${choice.model}`;
+}
+
+interface PendingFile {
+  id: string;
+  name: string;
+  mime: string;
+  preview?: string;
+}
+
+function DiffView({ raw }: { raw: string }) {
+  const { t } = useI18n();
+  let diff: {
+    file: string;
+    created: boolean;
+    added: number;
+    removed: number;
+    lines: string[];
+  };
+  try {
+    diff = JSON.parse(raw);
+  } catch {
+    return <div className="tool-result">{raw}</div>;
+  }
+  return (
+    <div className="diff">
+      <header>
+        <code>{diff.file}</code>
+        {diff.created && <em>{t('diffNew')}</em>}
+        <span className="plus">+{diff.added}</span>
+        <span className="minus">−{diff.removed}</span>
+      </header>
+      <pre>
+        {diff.lines.map((line, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: строки диффа не имеют id
+            key={index}
+            className={
+              line === '@@'
+                ? 'gap'
+                : line.startsWith('+')
+                  ? 'add'
+                  : line.startsWith('-')
+                    ? 'del'
+                    : 'ctx'
+            }
+          >
+            {line === '@@' ? '⋯' : line}
+            {'\n'}
+          </span>
+        ))}
+      </pre>
+    </div>
+  );
 }

@@ -128,7 +128,15 @@ function toGeminiContents(messages: ModelMessage[]): {
   for (const message of messages) {
     if (message.role === 'system') continue;
     if (message.role === 'user') {
-      contents.push({ role: 'user', parts: [{ text: message.content }] });
+      contents.push({
+        role: 'user',
+        parts: [
+          ...(message.images ?? []).map((image) => ({
+            inlineData: { mimeType: image.mime, data: image.data },
+          })),
+          { text: message.content },
+        ],
+      });
       continue;
     }
     if (message.role === 'assistant') {

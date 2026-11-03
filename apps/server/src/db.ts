@@ -2,6 +2,7 @@ import { createPostgresSql, createSqliteSql, type Sql } from './sql';
 import type {
   Agent,
   AgentInput,
+  Attachment,
   ChatMessage,
   Conversation,
   McpServerInput,
@@ -11,9 +12,10 @@ import type {
   ProviderPublic,
   Routine,
   RoutineInput,
+  SearchHit,
   ToolCall,
 } from '@mayak/shared';
-import { newId, nowIso } from './util';
+import { isRecord, newId, nowIso } from './util';
 
 export interface ProviderRow {
   id: string;
@@ -118,6 +120,7 @@ interface MessageSql {
   tool_call_id: string | null;
   tool_name: string | null;
   reasoning: string | null;
+  attachments_json?: string | null;
   created_at: string;
 }
 
@@ -326,6 +329,11 @@ export class Store {
       'users',
       'daily_token_limit',
       'ALTER TABLE users ADD COLUMN daily_token_limit INTEGER',
+    );
+    await add(
+      'messages',
+      'attachments_json',
+      'ALTER TABLE messages ADD COLUMN attachments_json TEXT',
     );
     await this.sql.exec(`
       CREATE TABLE IF NOT EXISTS routine_runs (
@@ -795,6 +803,46 @@ export class Store {
     return result.changes > 0;
   }
 
+  /** Полнотекстовый поиск по сообщениям и названиям чатов пользователя. */
+  async searchMessages(
+    userId: string,
+    query: string,
+    limit = 30,
+  ): Promise<SearchHit[]> {
+    const needle = query.trim().toLowerCase().slice(0, 200);
+    if (needle.length < 2) return [];
+    const like = `%${needle.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    const rows = (await this.sql.all(
+      `SELECT c.id AS conversation_id, c.title, c.agent_id, c.updated_at,
+              (SELECT m.content FROM messages m
+                 WHERE m.conversation_id = c.id AND m.role <> 'tool'
+                   AND LOWER(m.content) LIKE ? ESCAPE '\\'
+                 ORDER BY m.created_at DESC LIMIT 1) AS hit
+         FROM conversations c
+        WHERE c.user_id = ?
+          AND (LOWER(c.title) LIKE ? ESCAPE '\\' OR EXISTS (
+                SELECT 1 FROM messages m
+                 WHERE m.conversation_id = c.id AND m.role <> 'tool'
+                   AND LOWER(m.content) LIKE ? ESCAPE '\\'))
+        ORDER BY c.updated_at DESC
+        LIMIT ?`,
+      [like, userId, like, like, limit],
+    )) as unknown as {
+      conversation_id: string;
+      title: string;
+      agent_id: string | null;
+      updated_at: string;
+      hit: string | null;
+    }[];
+    return rows.map((row) => ({
+      conversationId: row.conversation_id,
+      title: row.title,
+      agentId: row.agent_id,
+      updatedAt: row.updated_at,
+      snippet: snippetAround(row.hit ?? row.title, needle),
+    }));
+  }
+
   async listMessages(conversationId: string): Promise<ChatMessage[]> {
     const rows = (await this.sql.all(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC',
@@ -815,11 +863,12 @@ export class Store {
       toolCallId: input.toolCallId,
       toolName: input.toolName,
       reasoning: input.reasoning?.trim() ? input.reasoning : undefined,
+      attachments: input.attachments?.length ? input.attachments : undefined,
       createdAt: nowIso(),
     };
     await this.sql.run(
-      `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, attachments_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.conversationId,
@@ -829,6 +878,7 @@ export class Store {
         row.toolCallId ?? null,
         row.toolName ?? null,
         row.reasoning ?? null,
+        row.attachments ? JSON.stringify(row.attachments) : null,
         row.createdAt,
       ],
     );
@@ -2091,8 +2141,29 @@ function mapMessage(row: MessageSql): ChatMessage {
     toolCallId: row.tool_call_id ?? undefined,
     toolName: row.tool_name ?? undefined,
     reasoning: row.reasoning?.trim() ? row.reasoning : undefined,
+    attachments: parseAttachments(row.attachments_json),
     createdAt: row.created_at,
   };
+}
+
+function parseAttachments(
+  json: string | null | undefined,
+): Attachment[] | undefined {
+  if (!json) return undefined;
+  try {
+    const value = JSON.parse(json) as unknown;
+    if (!Array.isArray(value)) return undefined;
+    const items = value.filter(
+      (item): item is Attachment =>
+        isRecord(item) &&
+        typeof item.id === 'string' &&
+        typeof item.name === 'string' &&
+        typeof item.mime === 'string',
+    );
+    return items.length ? items : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeModels(
@@ -2104,4 +2175,17 @@ function normalizeModels(
   if (kind === 'mock') return ['mock'];
   if (kind === 'deepseek') return ['deepseek-chat', 'deepseek-reasoner'];
   return [];
+}
+
+export function snippetAround(
+  text: string,
+  needle: string,
+  radius = 60,
+): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const at = flat.toLowerCase().indexOf(needle.toLowerCase());
+  if (at < 0) return flat.slice(0, radius * 2);
+  const start = Math.max(0, at - radius);
+  const end = Math.min(flat.length, at + needle.length + radius);
+  return `${start > 0 ? '…' : ''}${flat.slice(start, end)}${end < flat.length ? '…' : ''}`;
 }

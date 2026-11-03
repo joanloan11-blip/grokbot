@@ -1,4 +1,13 @@
-import type { Agent, ChatMessage, ClientEvent, Locale } from '@mayak/shared';
+import fs from 'node:fs';
+import path from 'node:path';
+import type {
+  Agent,
+  Attachment,
+  ChatMessage,
+  ClientEvent,
+  Locale,
+  ProviderKind,
+} from '@mayak/shared';
 import { runAgentLoop } from './agent/loop';
 import type { Store, UserRecord } from './db';
 import { isValidCron } from './cron';
@@ -21,6 +30,15 @@ import { webFetch, webSearch } from './webtools';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
+import {
+  deleteWorkspaceFile,
+  editWorkspaceFile,
+  listWorkspace,
+  readWorkspaceFile,
+  runWorkspaceShell,
+  workspaceRoot,
+  writeWorkspaceFile,
+} from './workspace';
 
 export interface TurnDeps {
   store: Store;
@@ -49,6 +67,8 @@ export interface TurnInput {
   depth?: number;
   signal?: AbortSignal;
   onEvent?: (event: ClientEvent) => Promise<void>;
+  /** Файлы из /api/conversations/:id/files, приложенные к сообщению. */
+  attachments?: Attachment[];
 }
 
 export async function runTurn(
@@ -100,6 +120,7 @@ export async function runTurn(
     conversationId: conversation.id,
     role: 'user',
     content: input.content,
+    attachments: input.attachments,
   });
   const emit = input.onEvent ?? (async () => undefined);
   await emit({ type: 'message', message: userMessage });
@@ -116,8 +137,10 @@ export async function runTurn(
   const peers = (await deps.store.listAgents())
     .filter((item) => item.id !== agent.id)
     .map((item) => ({ name: item.name, description: item.description }));
-  const history = (await deps.store.listMessages(conversation.id)).map(
-    toModelMessage,
+  const history = await buildHistory(
+    deps.store,
+    await deps.store.listMessages(conversation.id),
+    provider.kind,
   );
   let pending = '';
   let pendingReasoning = '';
@@ -752,6 +775,210 @@ async function exposeTools(
     });
   }
 
+  for (const name of [
+    'skill_manage',
+    'workspace_list',
+    'workspace_read',
+    'workspace_write',
+    'workspace_edit',
+    'workspace_delete',
+    'shell',
+  ])
+    used.add(name);
+  const dataDir = path.dirname(deps.skills.directory);
+  const root = () => workspaceRoot(dataDir, userId, agent.id);
+  const guard = (run: () => string) => {
+    try {
+      return run();
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Ошибка рабочей папки';
+    }
+  };
+  tools.push(
+    {
+      definition: {
+        name: 'skill_manage',
+        description:
+          'Create, update or list reusable skills (SKILL.md). After solving a repeatable task, save the procedure as a skill so it can be reused with load_skill. Создаёт и улучшает навыки агента.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['list', 'create', 'update'] },
+            name: {
+              type: 'string',
+              description: 'latin, digits, - and _, e.g. weekly-report',
+            },
+            description: {
+              type: 'string',
+              description: 'One line: when to use the skill',
+            },
+            body: {
+              type: 'string',
+              description: 'Markdown instructions: steps, checks, examples',
+            },
+          },
+          required: ['action'],
+        },
+      },
+      run: async (args) => {
+        const action = asString(args.action).trim();
+        if (action === 'list') {
+          const list = deps.skills.list();
+          return list.length
+            ? list
+                .map(
+                  (skill) =>
+                    `${skill.name}${agent.skillNames.includes(skill.name) ? ' (подключён)' : ''} — ${skill.description}`,
+                )
+                .join('\n')
+            : 'Навыков пока нет.';
+        }
+        if (action !== 'create' && action !== 'update')
+          return 'action: list, create или update.';
+        const owner = await deps.store.getUser(userId);
+        if (owner && owner.role !== 'admin')
+          return 'Создавать и менять навыки может только администратор.';
+        const name = asString(args.name).trim().toLowerCase();
+        const body = asString(args.body).trim();
+        if (!name || !body) return 'Нужны name и body.';
+        let existing: ReturnType<SkillLibrary['get']>;
+        try {
+          existing = deps.skills.get(name);
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Некорректное имя';
+        }
+        if (action === 'create' && existing)
+          return `Навык «${name}» уже есть — используйте action=update.`;
+        if (action === 'update' && !existing)
+          return `Навыка «${name}» нет — используйте action=create.`;
+        try {
+          const saved = deps.skills.save({
+            name,
+            description:
+              asString(args.description).trim() || existing?.description || '',
+            enabled: existing?.enabled ?? true,
+            body,
+          });
+          if (!agent.skillNames.includes(saved.name)) {
+            const skillNames = [...agent.skillNames, saved.name];
+            await deps.store.updateAgent(agent.id, { skillNames });
+            agent.skillNames = skillNames;
+            allowedSkills.add(saved.name);
+          }
+          return `Навык «${saved.name}» ${action === 'create' ? 'создан' : 'обновлён'} и подключён к агенту.`;
+        } catch (error) {
+          return error instanceof Error
+            ? error.message
+            : 'Не удалось сохранить';
+        }
+      },
+    },
+    {
+      definition: {
+        name: 'workspace_list',
+        description:
+          'List files in the agent workspace folder. Список файлов рабочей папки.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Folder, default .' },
+          },
+        },
+      },
+      run: async (args) =>
+        guard(() => listWorkspace(root(), asString(args.path) || '.')),
+    },
+    {
+      definition: {
+        name: 'workspace_read',
+        description: 'Read a text file from the workspace. Читает файл.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+        },
+      },
+      run: async (args) =>
+        guard(() => readWorkspaceFile(root(), asString(args.path))),
+    },
+    {
+      definition: {
+        name: 'workspace_write',
+        description:
+          'Create or overwrite a file in the workspace. Returns a diff. Создаёт или перезаписывает файл.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' }, content: { type: 'string' } },
+          required: ['path', 'content'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          writeWorkspaceFile(
+            root(),
+            asString(args.path),
+            asString(args.content),
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_edit',
+        description:
+          'Replace one unique fragment `old` with `new` in a workspace file. Returns a diff. Точечная правка файла.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            old: { type: 'string' },
+            new: { type: 'string' },
+          },
+          required: ['path', 'old', 'new'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          editWorkspaceFile(
+            root(),
+            asString(args.path),
+            asString(args.old),
+            asString(args.new),
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_delete',
+        description: 'Delete a file or folder in the workspace. Удаляет файл.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+        },
+      },
+      run: async (args) =>
+        guard(() => deleteWorkspaceFile(root(), asString(args.path))),
+    },
+    {
+      definition: {
+        name: 'shell',
+        description:
+          'Run a shell command in a sandbox with the workspace mounted at /work (no network, 60 s). Disabled until an admin enables the code sandbox. Терминал в песочнице.',
+        inputSchema: {
+          type: 'object',
+          properties: { command: { type: 'string' } },
+          required: ['command'],
+        },
+      },
+      run: async (args) =>
+        runWorkspaceShell({
+          enabled: (await deps.store.getSetting('code_sandbox')) === '1',
+          root: root(),
+          command: asString(args.command),
+        }),
+    },
+  );
+
   const allowedMcp = new Set(agent.mcpServerIds);
   for (const server of deps.mcp.listConnected()) {
     if (!allowedMcp.has(server.id)) continue;
@@ -793,7 +1020,12 @@ export async function toolNeedsApproval(
     .filter(Boolean);
   if (auto.includes('*') || auto.includes(name)) return false;
   return (
-    name === 'send_to_agent' || name === 'run_code' || name.startsWith('mcp__')
+    name === 'send_to_agent' ||
+    name === 'run_code' ||
+    name === 'shell' ||
+    name === 'workspace_delete' ||
+    name === 'skill_manage' ||
+    name.startsWith('mcp__')
   );
 }
 
@@ -853,6 +1085,88 @@ function toModelMessage(message: ChatMessage): ModelMessage {
     toolCallId: message.toolCallId,
     name: message.toolName,
   };
+}
+
+/** Провайдеры, которые принимают картинки. DeepSeek и демо — только текст. */
+export function supportsVision(kind: ProviderKind): boolean {
+  return kind === 'openai' || kind === 'anthropic' || kind === 'gemini';
+}
+
+const IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+const MAX_IMAGES = 6;
+const MAX_IMAGE_BYTES = 5_000_000;
+
+/**
+ * История для модели. Вложения пользователя раскрываются: текст документов
+ * дописывается к сообщению, картинки уходят как image parts (самые свежие, до 6).
+ */
+export async function buildHistory(
+  store: Store,
+  messages: ChatMessage[],
+  kind: ProviderKind,
+): Promise<ModelMessage[]> {
+  const vision = supportsVision(kind);
+  let imageBudget = MAX_IMAGES;
+  const out: ModelMessage[] = [];
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    const model = toModelMessage(message);
+    if (message.role === 'user' && message.attachments?.length) {
+      const notes: string[] = [];
+      for (const attachment of message.attachments) {
+        const file = await store.getUpload(attachment.id);
+        if (!file) {
+          notes.push(`[Файл ${attachment.name} недоступен]`);
+          continue;
+        }
+        if (IMAGE_MIMES.has(file.mime)) {
+          if (!vision) {
+            notes.push(
+              `[Изображение ${file.name}: выбранная модель не видит картинки. Чтобы модель её разобрала, выберите OpenAI, Anthropic или Gemini.]`,
+            );
+            continue;
+          }
+          if (imageBudget <= 0) {
+            notes.push(
+              `[Изображение ${file.name} пропущено: лимит картинок в истории]`,
+            );
+            continue;
+          }
+          try {
+            const bytes = fs.readFileSync(file.path);
+            if (bytes.length > MAX_IMAGE_BYTES) {
+              notes.push(`[Изображение ${file.name} больше 5 МБ]`);
+              continue;
+            }
+            model.images = [
+              ...(model.images ?? []),
+              { mime: file.mime, data: bytes.toString('base64') },
+            ];
+            imageBudget--;
+            notes.push(`[Изображение ${file.name}]`);
+          } catch {
+            notes.push(`[Изображение ${file.name} не прочитано]`);
+          }
+          continue;
+        }
+        const text = file.text?.trim();
+        notes.push(
+          text
+            ? `[Файл ${file.name}]\n${text.slice(0, 20_000)}`
+            : `[Файл ${file.name}: текст не извлечён]`,
+        );
+      }
+      if (notes.length)
+        model.content = `${model.content}\n\n${notes.join('\n\n')}`;
+    }
+    out.push(model);
+  }
+  return out.reverse();
 }
 
 async function maybeRetitle(

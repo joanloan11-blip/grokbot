@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   ChatMessage,
   ClientEvent,
   PublicUser,
@@ -19,13 +20,18 @@ import type {
   McpServersFile,
   ProviderInput,
   ProviderPublic,
+  SearchHit,
   Skill,
   SkillSummary,
 } from '@mayak/shared';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has('content-type'))
+  if (
+    init?.body &&
+    !(init.body instanceof FormData) &&
+    !headers.has('content-type')
+  )
     headers.set('content-type', 'application/json');
   let response: Response;
   try {
@@ -280,6 +286,31 @@ export const api = {
     }),
   deleteConversation: (id: string) =>
     request<{ ok: boolean }>(`/api/conversations/${id}`, { method: 'DELETE' }),
+  uploadFile: async (
+    conversationId: string,
+    file: File,
+  ): Promise<Attachment> => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return request<Attachment>(`/api/conversations/${conversationId}/files`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+  search: (query: string) =>
+    request<SearchHit[]>(`/api/search?q=${encodeURIComponent(query)}`),
+  transcribe: async (audio: Blob, locale: Locale): Promise<string> => {
+    const form = new FormData();
+    form.append('file', audio, 'voice.webm');
+    const data = await request<{ text: string }>(
+      `/api/transcribe?lang=${locale}`,
+      {
+        method: 'POST',
+        body: form,
+      },
+    );
+    return data.text;
+  },
 };
 
 export async function streamMessage(
@@ -289,6 +320,7 @@ export async function streamMessage(
     providerId?: string | null;
     model?: string | null;
     locale: Locale;
+    attachments?: string[];
   },
   onEvent: (event: ClientEvent) => void,
   signal: AbortSignal,
