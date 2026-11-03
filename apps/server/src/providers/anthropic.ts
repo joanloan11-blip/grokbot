@@ -1,3 +1,4 @@
+import { llmFetch } from './http';
 import { isRecord, jsonObject } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -47,7 +48,7 @@ export async function* streamAnthropic(options: {
     }));
   }
 
-  const response = await fetch(anthropicMessagesUrl(options.baseUrl), {
+  const response = await llmFetch(anthropicMessagesUrl(options.baseUrl), {
     method: 'POST',
     headers: {
       'x-api-key': options.apiKey,

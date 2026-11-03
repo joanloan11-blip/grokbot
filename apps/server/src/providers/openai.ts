@@ -1,3 +1,4 @@
+import { llmFetch } from './http';
 import { isRecord } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -46,7 +47,7 @@ export async function* streamOpenAI(options: {
     }));
   }
 
-  const response = await fetch(openAiChatUrl(options.baseUrl), {
+  const response = await llmFetch(openAiChatUrl(options.baseUrl), {
     method: 'POST',
     headers: {
       authorization: `Bearer ${options.apiKey}`,

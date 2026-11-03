@@ -40,7 +40,11 @@ function cookieOf(response: Response): string {
 function send(pathname: string, body: unknown, cookie?: string) {
   const headers = new Headers({ 'content-type': 'application/json' });
   if (cookie) headers.set('cookie', cookie);
-  return handle.app.request(pathname, { method: 'POST', headers, body: JSON.stringify(body) });
+  return handle.app.request(pathname, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
 }
 
 describe('password reset', () => {
@@ -63,39 +67,67 @@ describe('password reset', () => {
   });
 
   it('answers forgot the same way for known and unknown emails', async () => {
-    const known = await (await send('/api/auth/forgot', { email: 'boss@example.com' })).json();
-    const unknown = await (await send('/api/auth/forgot', { email: 'nobody@example.com' })).json();
+    const known = await (
+      await send('/api/auth/forgot', { email: 'boss@example.com' })
+    ).json();
+    const unknown = await (
+      await send('/api/auth/forgot', { email: 'nobody@example.com' })
+    ).json();
     expect(known).toEqual(unknown);
     expect(known).toEqual({ ok: true, mail: false });
   });
 
   it('lets an admin issue a link that resets the password once', async () => {
-    const issued = await send(`/api/admin/users/${managerId}/reset-link`, {}, adminCookie);
+    const issued = await send(
+      `/api/admin/users/${managerId}/reset-link`,
+      {},
+      adminCookie,
+    );
     expect(issued.status).toBe(200);
     const { link } = (await issued.json()) as { link: string };
     expect(link.startsWith('https://mayak.test/?reset=')).toBe(true);
     const token = new URL(link).searchParams.get('reset') ?? '';
 
-    expect((await send('/api/auth/reset', { token, password: 'short' })).status).toBe(400);
-    const ok = await send('/api/auth/reset', { token, password: 'new-worker-pass' });
+    expect(
+      (await send('/api/auth/reset', { token, password: 'short' })).status,
+    ).toBe(400);
+    const ok = await send('/api/auth/reset', {
+      token,
+      password: 'new-worker-pass',
+    });
     expect(ok.status).toBe(200);
     // Ссылка одноразовая.
-    expect((await send('/api/auth/reset', { token, password: 'another-pass-1' })).status).toBe(400);
+    expect(
+      (await send('/api/auth/reset', { token, password: 'another-pass-1' }))
+        .status,
+    ).toBe(400);
   });
 
   it('managers cannot issue links', async () => {
-    const login = await send('/api/auth/login', { email: 'boss@example.com', password: 'old-password-1' });
+    const login = await send('/api/auth/login', {
+      email: 'boss@example.com',
+      password: 'old-password-1',
+    });
     expect(login.status).toBe(200);
-    const unknown = await send('/api/admin/users/nope/reset-link', {}, adminCookie);
+    const unknown = await send(
+      '/api/admin/users/nope/reset-link',
+      {},
+      adminCookie,
+    );
     expect(unknown.status).toBe(404);
-    const anonymous = await send(`/api/admin/users/${managerId}/reset-link`, {});
+    const anonymous = await send(
+      `/api/admin/users/${managerId}/reset-link`,
+      {},
+    );
     expect(anonymous.status).toBe(401);
   });
 
   it('signs out old sessions after the password changes', async () => {
-    const before = await handle.app.request('/api/auth/me', { headers: { cookie: adminCookie } });
+    const before = await handle.app.request('/api/auth/me', {
+      headers: { cookie: adminCookie },
+    });
     expect(before.status).toBe(200);
-    const admin = (await (await before.json()) as { user: PublicUser }).user;
+    const admin = ((await await before.json()) as { user: PublicUser }).user;
     const { link } = (await (
       await send(`/api/admin/users/${admin.id}/reset-link`, {}, adminCookie)
     ).json()) as { link: string };
@@ -107,13 +139,43 @@ describe('password reset', () => {
     });
     expect(reset.status).toBe(200);
     const fresh = cookieOf(reset);
-    expect((await handle.app.request('/api/auth/me', { headers: { cookie: adminCookie } })).status).toBe(401);
-    expect((await handle.app.request('/api/auth/me', { headers: { cookie: fresh } })).status).toBe(200);
-    expect((await send('/api/auth/login', { email: 'boss@example.com', password: 'old-password-1' })).status).toBe(401);
-    expect((await send('/api/auth/login', { email: 'boss@example.com', password: 'brand-new-pass' })).status).toBe(200);
+    expect(
+      (
+        await handle.app.request('/api/auth/me', {
+          headers: { cookie: adminCookie },
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (await handle.app.request('/api/auth/me', { headers: { cookie: fresh } }))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await send('/api/auth/login', {
+          email: 'boss@example.com',
+          password: 'old-password-1',
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await send('/api/auth/login', {
+          email: 'boss@example.com',
+          password: 'brand-new-pass',
+        })
+      ).status,
+    ).toBe(200);
   });
 
   it('rejects garbage tokens', async () => {
-    expect((await send('/api/auth/reset', { token: 'garbage', password: 'whatever-123' })).status).toBe(400);
+    expect(
+      (
+        await send('/api/auth/reset', {
+          token: 'garbage',
+          password: 'whatever-123',
+        })
+      ).status,
+    ).toBe(400);
   });
 });

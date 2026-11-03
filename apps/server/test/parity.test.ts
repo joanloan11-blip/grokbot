@@ -257,19 +257,32 @@ describe('voice input', () => {
       });
       req.on('end', () => {
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ text: ' купил рейку за 1250 рублей [музыка]' }));
+        res.end(
+          JSON.stringify({ text: ' купил рейку за 1250 рублей [музыка]' }),
+        );
       });
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
     const address = server.address();
     const port = typeof address === 'object' && address ? address.port : 0;
     process.env.WHISPER_URL = `http://127.0.0.1:${port}`;
     try {
       const form = new FormData();
-      form.append('file', new Blob([Buffer.alloc(2048, 1)], { type: 'audio/webm' }), 'voice.webm');
-      const response = await handle.app.request('/api/transcribe?lang=ru', { method: 'POST', body: form });
+      form.append(
+        'file',
+        new Blob([Buffer.alloc(2048, 1)], { type: 'audio/webm' }),
+        'voice.webm',
+      );
+      const response = await handle.app.request('/api/transcribe?lang=ru', {
+        method: 'POST',
+        body: form,
+      });
       expect(response.status).toBe(200);
-      expect(((await response.json()) as { text: string }).text).toBe('купил рейку за 1250 рублей');
+      expect(((await response.json()) as { text: string }).text).toBe(
+        'купил рейку за 1250 рублей',
+      );
       expect(received).toBeGreaterThan(1000);
     } finally {
       delete process.env.WHISPER_URL;
@@ -279,8 +292,15 @@ describe('voice input', () => {
 
   it('reports when whisper is not configured', async () => {
     const form = new FormData();
-    form.append('file', new Blob([Buffer.alloc(10)], { type: 'audio/webm' }), 'voice.webm');
-    const response = await handle.app.request('/api/transcribe', { method: 'POST', body: form });
+    form.append(
+      'file',
+      new Blob([Buffer.alloc(10)], { type: 'audio/webm' }),
+      'voice.webm',
+    );
+    const response = await handle.app.request('/api/transcribe', {
+      method: 'POST',
+      body: form,
+    });
     expect(response.status).toBe(503);
   });
 });

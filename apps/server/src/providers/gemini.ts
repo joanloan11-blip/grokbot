@@ -1,3 +1,4 @@
+import { llmFetch } from './http';
 import { isRecord, jsonObject } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -46,7 +47,7 @@ export async function* streamGemini(options: {
     ];
   }
 
-  const response = await fetch(
+  const response = await llmFetch(
     geminiStreamUrl(options.baseUrl, options.model),
     {
       method: 'POST',

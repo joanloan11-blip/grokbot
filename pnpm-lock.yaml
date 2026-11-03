@@ -47,6 +47,9 @@ importers:
       pg:
         specifier: 8.16.3
         version: 8.16.3
+      undici:
+        specifier: ^7.30.1
+        version: 7.30.1
     devDependencies:
       '@types/node':
         specifier: ^22.18.0
@@ -2527,6 +2530,10 @@ packages:
   undici@6.29.1:
     resolution: {integrity: sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==}
     engines: {node: '>=18.17'}
+
+  undici@7.30.1:
+    resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
+    engines: {node: '>=20.18.1'}
 
   unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
@@ -5439,6 +5446,8 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici@6.29.1: {}
+
+  undici@7.30.1: {}
 
   unified@11.0.5:
     dependencies:
