@@ -39,7 +39,7 @@ import { HttpError, badRequest } from './errors';
 import { registerGithubRoutes } from './github/routes';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
-import { runRoutineNow, startScheduler } from './scheduler';
+import { runRoutineNow, startScheduler, triggerWebhook } from './scheduler';
 import { SkillLibrary, seedSkills } from './skills';
 import { AGENT_TEMPLATES } from './templates';
 import { assertQuota, runTurn } from './turn';
@@ -666,6 +666,22 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  app.post('/api/hooks/:token', async (c) => {
+    const extra = await c.req.text().catch(() => '');
+    const ok = await triggerWebhook({ store, mcp, skills, jwtSecret: config.jwtSecret }, c.req.param('token'), extra);
+    if (!ok) return c.json({ error: 'Вебхук не найден' }, 404);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/agents/:id/routines/:routineId/runs', async (c) => {
+    const user = await actor(c);
+    const routine = await store.getRoutine(c.req.param('routineId'));
+    if (!routine || routine.userId !== user.id || routine.agentId !== c.req.param('id')) {
+      return c.json({ error: 'Расписание не найдено' }, 404);
+    }
+    return c.json(await store.listRoutineRuns(routine.id));
+  });
+
   app.get('/api/agents/:id/routines', async (c) => {
     const user = await actor(c);
     if (!(await canUseAgent(user, c.req.param('id')))) {
@@ -680,8 +696,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       return c.json({ error: 'Агент не найден' }, 404);
     }
     const input = parseRoutineInput(await readBody(c), false);
-    if (!input.name || !input.cron || !input.prompt) {
-      throw badRequest('Укажите название, cron и промпт');
+    if (!input.name || !input.prompt) {
+      throw badRequest('Укажите название и промпт');
     }
     return c.json(
       await store.insertRoutine(user.id, c.req.param('id'), {
@@ -1222,12 +1238,10 @@ function parseRoutineInput(body: unknown, partial: boolean): RoutineInput {
   if (!partial || body.name !== undefined) {
     if (!name) throw badRequest('Укажите название расписания');
   }
-  if (!partial || body.cron !== undefined) {
-    if (!cron || !isValidCron(cron)) {
-      throw badRequest(
-        'Нужно пять полей cron: минута час день месяц день-недели',
-      );
-    }
+  if (cron && !isValidCron(cron)) {
+    throw badRequest(
+      'Нужно пять полей cron: минута час день месяц день-недели. Пустой cron — только вебхук.',
+    );
   }
   if (!partial || body.prompt !== undefined) {
     if (!prompt?.trim()) throw badRequest('Укажите промпт расписания');

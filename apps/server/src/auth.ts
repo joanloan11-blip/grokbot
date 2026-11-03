@@ -163,7 +163,11 @@ const PUBLIC_API = new Set([
 ]);
 
 export function isPublicApi(pathname: string): boolean {
-  return PUBLIC_API.has(pathname);
+  return (
+    PUBLIC_API.has(pathname) ||
+    pathname.startsWith('/api/hooks/') ||
+    pathname.startsWith('/api/public/')
+  );
 }
 
 /** Managers may read the shared catalog. Writes stay with the admin. */

@@ -334,7 +334,10 @@ export function AgentEditor({
                 <div>
                   <strong>{routine.name}</strong>
                   <p className="muted">
-                    <code>{routine.cron}</code>
+                    <code>{routine.cron || 'webhook'}</code>
+                    {routine.webhookToken
+                      ? ` · /api/hooks/${routine.webhookToken}`
+                      : ''}
                     {routine.lastRunAt ? ` · ${routine.lastRunAt}` : ''}
                   </p>
                   <p>{routine.prompt}</p>

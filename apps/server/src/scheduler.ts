@@ -28,6 +28,21 @@ export async function runDueRoutines(
   return started;
 }
 
+export async function triggerWebhook(
+  deps: TurnDeps,
+  token: string,
+  extra = '',
+): Promise<boolean> {
+  const routine = await deps.store.getRoutineByWebhook(token);
+  if (!routine?.enabled || !routine.userId) return false;
+  const prompt = extra.trim()
+    ? `${routine.prompt}\n\nДанные вебхука:\n${extra.trim().slice(0, 4_000)}`
+    : routine.prompt;
+  await deps.store.markRoutineRan(routine.id, new Date().toISOString());
+  await runRoutine(deps, routine.id, routine.agentId, routine.name, prompt);
+  return true;
+}
+
 export async function runRoutineNow(
   deps: TurnDeps,
   routineId: string,
@@ -67,6 +82,7 @@ async function runRoutine(
   const routine = await deps.store.getRoutine(routineId);
   const agent = await deps.store.getAgent(agentId);
   if (!agent || !routine?.userId) return;
+  const runId = await deps.store.startRoutineRun(routine.id);
   const title = `Расписание: ${name}`;
   let conversation = await deps.store.findConversationByTitle(
     routine.userId,
@@ -82,13 +98,31 @@ async function runRoutine(
       model: agent.model,
     });
   }
-  await runTurn(deps, {
-    conversationId: conversation.id,
-    content: prompt,
-    locale: 'ru',
-    userId: routine.userId,
-    depth: 0,
-  });
+  try {
+    const result = await runTurn(deps, {
+      conversationId: conversation.id,
+      content: prompt,
+      locale: 'ru',
+      userId: routine.userId,
+      depth: 0,
+    });
+    await deps.store.finishRoutineRun(runId, 'ok', result.text, null);
+    await notifyRoutine(deps, routine.userId, name, result.text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'ошибка';
+    await deps.store.finishRoutineRun(runId, 'error', '', message);
+  }
+}
+
+async function notifyRoutine(
+  deps: TurnDeps,
+  userId: string,
+  name: string,
+  text: string,
+): Promise<void> {
+  const notify = deps.onRoutineFinished;
+  if (!notify) return;
+  await notify(userId, name, text).catch(() => undefined);
 }
 
 function sameMinute(iso: string, date: Date): boolean {

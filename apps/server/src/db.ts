@@ -106,6 +106,7 @@ interface RoutineSql {
   enabled: number;
   last_run_at: string | null;
   created_at: string;
+  webhook_token?: string | null;
 }
 
 interface MessageSql {
@@ -299,6 +300,108 @@ export class Store {
       await this.sql.exec('ALTER TABLE conversations ADD COLUMN agent_id TEXT');
     }
     await this.ensureUserColumns();
+    await this.ensurePlatform();
+  }
+
+  private async ensurePlatform(): Promise<void> {
+    const add = async (table: string, column: string, ddl: string) => {
+      if (!(await this.hasColumn(table, column))) await this.sql.exec(ddl);
+    };
+    await add(
+      'routines',
+      'webhook_token',
+      'ALTER TABLE routines ADD COLUMN webhook_token TEXT',
+    );
+    await add(
+      'usage_events',
+      'input_tokens',
+      'ALTER TABLE usage_events ADD COLUMN input_tokens INTEGER',
+    );
+    await add(
+      'usage_events',
+      'output_tokens',
+      'ALTER TABLE usage_events ADD COLUMN output_tokens INTEGER',
+    );
+    await this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS routine_runs (
+        id TEXT PRIMARY KEY,
+        routine_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        output TEXT NOT NULL DEFAULT '',
+        error TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS memory_entries (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        note_key TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_user ON memory_entries(user_id, kind);
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        conversation_id TEXT,
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL,
+        result TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        done INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pages (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent_id TEXT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        share_token TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS uploads (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        conversation_id TEXT,
+        name TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        path TEXT NOT NULL,
+        text_content TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        arguments TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS message_reactions (
+        message_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        emoji TEXT NOT NULL,
+        PRIMARY KEY (message_id, user_id, emoji)
+      );
+      CREATE TABLE IF NOT EXISTS telegram_links (
+        telegram_chat_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent_id TEXT
+      );
+    `);
   }
 
   private async hasColumn(table: string, column: string): Promise<boolean> {
@@ -1004,7 +1107,79 @@ export class Store {
     const row = (await this.sql.get('SELECT * FROM routines WHERE id = ?', [
       id,
     ])) as RoutineSql | undefined;
+    if (!row) return undefined;
+    if (!row.webhook_token) {
+      row.webhook_token = newId().replace(/-/g, '');
+      await this.sql.run('UPDATE routines SET webhook_token = ? WHERE id = ?', [
+        row.webhook_token,
+        id,
+      ]);
+    }
+    return mapRoutine(row);
+  }
+
+  async getRoutineByWebhook(token: string): Promise<Routine | undefined> {
+    const row = (await this.sql.get(
+      'SELECT * FROM routines WHERE webhook_token = ?',
+      [token],
+    )) as RoutineSql | undefined;
     return row ? mapRoutine(row) : undefined;
+  }
+
+  async startRoutineRun(routineId: string): Promise<string> {
+    const id = newId();
+    await this.sql.run(
+      `INSERT INTO routine_runs (id, routine_id, status, output, error, started_at, finished_at)
+       VALUES (?, ?, 'running', '', NULL, ?, NULL)`,
+      [id, routineId, nowIso()],
+    );
+    return id;
+  }
+
+  async finishRoutineRun(
+    id: string,
+    status: 'ok' | 'error',
+    output: string,
+    error: string | null,
+  ): Promise<void> {
+    await this.sql.run(
+      `UPDATE routine_runs SET status = ?, output = ?, error = ?, finished_at = ? WHERE id = ?`,
+      [status, output.slice(0, 20_000), error, nowIso(), id],
+    );
+  }
+
+  async listRoutineRuns(routineId: string): Promise<
+    {
+      id: string;
+      routineId: string;
+      status: 'running' | 'ok' | 'error';
+      output: string;
+      error: string | null;
+      startedAt: string;
+      finishedAt: string | null;
+    }[]
+  > {
+    const rows = await this.sql.all<{
+      id: string;
+      routine_id: string;
+      status: string;
+      output: string;
+      error: string | null;
+      started_at: string;
+      finished_at: string | null;
+    }>(
+      'SELECT * FROM routine_runs WHERE routine_id = ? ORDER BY started_at DESC LIMIT 20',
+      [routineId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      routineId: row.routine_id,
+      status: row.status === 'ok' || row.status === 'error' ? row.status : 'running',
+      output: row.output,
+      error: row.error,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+    }));
   }
 
   async insertRoutine(
@@ -1022,10 +1197,11 @@ export class Store {
       enabled: input.enabled !== false,
       lastRunAt: null,
       createdAt: nowIso(),
+      webhookToken: newId().replace(/-/g, ''),
     };
     await this.sql.run(
-      `INSERT INTO routines (id, agent_id, user_id, name, cron, prompt, enabled, last_run_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO routines (id, agent_id, user_id, name, cron, prompt, enabled, last_run_at, created_at, webhook_token)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.agentId,
@@ -1036,6 +1212,7 @@ export class Store {
         row.enabled ? 1 : 0,
         null,
         row.createdAt,
+        row.webhookToken,
       ],
     );
     return row;
@@ -1464,6 +1641,7 @@ function mapRoutine(row: RoutineSql): Routine {
     enabled: row.enabled === 1,
     lastRunAt: row.last_run_at,
     createdAt: row.created_at,
+    webhookToken: row.webhook_token ?? null,
   };
 }
 

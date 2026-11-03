@@ -1,6 +1,7 @@
 import type { Agent, ChatMessage, ClientEvent, Locale } from '@mayak/shared';
 import { runAgentLoop } from './agent/loop';
 import type { Store, UserRecord } from './db';
+import { isValidCron } from './cron';
 import { HttpError, badRequest } from './errors';
 import {
   encodeMcpToolName,
@@ -23,6 +24,7 @@ export interface TurnDeps {
   mcp: McpManager;
   skills: SkillLibrary;
   jwtSecret?: string;
+  onRoutineFinished?: (userId: string, name: string, text: string) => Promise<void>;
 }
 
 interface ExposedTool {
@@ -260,6 +262,7 @@ async function exposeTools(
     'github_search_code',
     'github_list_issues',
     'github_list_pulls',
+    'create_routine',
   ]);
   const allowedSkills = new Set(agent.skillNames);
   const tools: ExposedTool[] = [
@@ -342,6 +345,39 @@ async function exposeTools(
     deps.jwtSecret && agent.githubRepos.length > 0
       ? await readGithubToken(deps.store, deps.jwtSecret)
       : undefined;
+  tools.push({
+    definition: {
+      name: 'create_routine',
+      description:
+        'Create a routine for this agent. Leave cron empty for a webhook-only trigger. Создаёт расписание или вебхук.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          cron: { type: 'string', description: 'Five-field cron, or empty' },
+          prompt: { type: 'string' },
+        },
+        required: ['name', 'prompt'],
+      },
+    },
+    run: async (args) => {
+      const name = asString(args.name).trim();
+      const cron = asString(args.cron).trim();
+      const prompt = asString(args.prompt).trim();
+      if (!name || !prompt) return 'Нужны name и prompt.';
+      if (name.length > 80) return 'Слишком длинное имя.';
+      if (cron && !isValidCron(cron)) return 'Некорректный cron из пяти полей.';
+      if (prompt.length > 8_000) return 'Промпт слишком длинный.';
+      const routine = await deps.store.insertRoutine(userId, agent.id, {
+        name,
+        cron,
+        prompt,
+        enabled: true,
+      });
+      return `Рутина «${routine.name}» создана. Вебхук: /api/hooks/${routine.webhookToken ?? ''}`;
+    },
+  });
+
   if (githubToken) {
     const context = { token: githubToken, allow: agent.githubRepos };
     const repos = agent.githubRepos.join(', ');
