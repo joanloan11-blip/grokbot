@@ -47,3 +47,38 @@ export function IconMenu() {
     </svg>
   );
 }
+
+export function IconSidebar() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+      <path d="M9.5 4.5v15" />
+    </svg>
+  );
+}
+
+export function IconSearch() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4 4" />
+    </svg>
+  );
+}
+
+export function IconTrash() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" />
+    </svg>
+  );
+}
+
+export function IconArrowUp() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 19V6" />
+      <path d="m6 11 6-6 6 6" />
+    </svg>
+  );
+}

@@ -8,7 +8,13 @@ import type {
 import { api, streamMessage } from '../api';
 import { useI18n } from '../i18n';
 import { MarkdownView } from './MarkdownView';
-import { IconMenu, IconSend, IconStop } from './icons';
+import {
+  BeaconMark,
+  IconArrowUp,
+  IconSidebar,
+  IconStop,
+  IconTrash,
+} from './icons';
 
 interface Props {
   conversationId: string | null;
@@ -34,7 +40,6 @@ export function ChatPane({
   defaultProviderId,
   defaultModel,
   providers,
-  barPicker = false,
   onMenu,
   onConversation,
   onDeleted,
@@ -232,161 +237,46 @@ export function ChatPane({
   }
 
   const hints = [
-    { label: t('hintSkill'), text: 'skill summary' },
-    { label: t('hintEcho'), text: 'echo привет из Маяка' },
-    { label: t('hintAdd'), text: 'add 2 3' },
+    { label: t('hintSearchLabel'), text: t('hintSearchText') },
+    { label: t('hintPlanLabel'), text: t('hintPlanText') },
+    { label: t('hintRoutineLabel'), text: t('hintRoutineText') },
+    { label: t('hintCodeLabel'), text: t('hintCodeText') },
   ];
+  const isEmpty = messages.length === 0 && !streaming && !reasoning && !busy;
 
-  return (
-    <section className="chat">
-      <header className="topbar">
-        <button
-          className="icon-btn menu-btn"
-          type="button"
-          onClick={onMenu}
-          aria-label={t('menu')}
-        >
-          <IconMenu />
-        </button>
-        <div className="title-block">
-          {conversationId && editingTitle ? (
-            <input
-              className="title-input"
-              defaultValue={title}
-              ref={(node) => node?.focus()}
-              aria-label={t('edit')}
-              onBlur={(event) => void rename(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter')
-                  void rename((event.target as HTMLInputElement).value);
-                if (event.key === 'Escape') setEditingTitle(false);
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              className="title-btn"
-              onClick={() => conversationId && setEditingTitle(true)}
-            >
-              {conversationId ? title || t('newChat') : t('newChat')}
-            </button>
-          )}
-        </div>
-        {!barPicker && (
-          <div className="model-pick">
-            <span>{t('modelLabel')}</span>
-            <ModelSelect
-              providers={providers}
-              value={choice}
-              label={t('modelLabel')}
-              onChange={(next) => void persistChoice(next, conversationId)}
-            />
-          </div>
-        )}
-        {conversationId && (
-          <button
-            type="button"
-            className={confirmDelete ? 'danger' : 'ghost slim'}
-            onClick={() => {
-              if (!confirmDelete) {
-                setConfirmDelete(true);
-                return;
-              }
-              void api
-                .deleteConversation(conversationId)
-                .then(() => onDeleted(conversationId));
-            }}
-          >
-            {confirmDelete ? t('confirmDelete') : t('delete')}
-          </button>
-        )}
-      </header>
-      <div className="transcript" ref={scroller}>
-        {messages.length === 0 && !streaming && (
-          <div className="welcome">
-            <p className="eyebrow">{t('brand')}</p>
-            <h1>{t('emptyTitle')}</h1>
-            <p>{t('emptyBody')}</p>
-            <div className="hints">
-              {hints.map((hint) => (
-                <button
-                  key={hint.text}
-                  type="button"
-                  onClick={() => setDraft(hint.text)}
-                >
-                  <strong>{hint.label}</strong>
-                  <code>{hint.text}</code>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {renderMessages(messages, t, (text) => void send(text))}
-        {(reasoning || streaming) && (
-          <article className="bubble assistant">
-            <span className="who">{t('assistant')}</span>
-            {reasoning && (
-              <ReasoningBlock text={reasoning} label={t('reasoning')} open />
-            )}
-            {streaming && <MarkdownView text={streaming} />}
-          </article>
-        )}
-        {pendingTools.map((call) => (
-          <ToolCard
-            key={call.id}
-            name={call.name}
-            args={call.arguments}
-            running
-            labelRunning={t('toolRunning')}
-            labelArgs={t('toolArgs')}
-            labelDone={t('toolDone')}
-          />
-        ))}
-        {busy && !streaming && !reasoning && pendingTools.length === 0 && (
-          <p className="thinking">
-            <i />
-            {t('thinking')}
-          </p>
-        )}
-        {error && (
-          <p className="error-line">
-            {error === 'offline' ? t('serverDown') : error}
-          </p>
-        )}
-      </div>
-      <form
-        className="composer"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send(draft);
+  const composer = (
+    <form
+      className="composer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void send(draft);
+      }}
+    >
+      <textarea
+        ref={box}
+        value={draft}
+        placeholder={t('chatPlaceholder')}
+        rows={1}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          event.target.style.height = 'auto';
+          event.target.style.height = `${Math.min(event.target.scrollHeight, 220)}px`;
         }}
-      >
-        <textarea
-          ref={box}
-          value={draft}
-          placeholder={t('chatPlaceholder')}
-          rows={1}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            event.target.style.height = 'auto';
-            event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`;
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void send(draft);
-            }
-          }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            void send(draft);
+          }
+        }}
+      />
+      <div className="composer-row">
+        <ModelSelect
+          providers={providers}
+          value={choice}
+          label={t('modelLabel')}
+          className="composer-model"
+          onChange={(next) => void persistChoice(next, conversationId)}
         />
-        {barPicker && (
-          <ModelSelect
-            providers={providers}
-            value={choice}
-            label={t('modelLabel')}
-            className="composer-model"
-            onChange={(next) => void persistChoice(next, conversationId)}
-          />
-        )}
         {busy ? (
           <button
             className="send stop"
@@ -403,10 +293,143 @@ export function ChatPane({
             disabled={!draft.trim()}
             aria-label={t('send')}
           >
-            <IconSend />
+            <IconArrowUp />
           </button>
         )}
-      </form>
+      </div>
+    </form>
+  );
+
+  return (
+    <section className={isEmpty ? 'chat empty' : 'chat'}>
+      <header className="topbar">
+        <button
+          className="icon-btn menu-btn"
+          type="button"
+          onClick={onMenu}
+          aria-label={t('showSidebar')}
+          title={t('showSidebar')}
+        >
+          <IconSidebar />
+        </button>
+        <div className="title-block">
+          {conversationId && editingTitle ? (
+            <input
+              className="title-input"
+              defaultValue={title}
+              ref={(node) => node?.focus()}
+              aria-label={t('edit')}
+              onBlur={(event) => void rename(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter')
+                  void rename((event.target as HTMLInputElement).value);
+                if (event.key === 'Escape') setEditingTitle(false);
+              }}
+            />
+          ) : conversationId ? (
+            <button
+              type="button"
+              className="title-btn"
+              onClick={() => setEditingTitle(true)}
+            >
+              {title || t('newChat')}
+            </button>
+          ) : null}
+        </div>
+        {conversationId && (
+          <button
+            type="button"
+            className={confirmDelete ? 'danger slim' : 'icon-btn quiet'}
+            aria-label={t('delete')}
+            title={t('delete')}
+            onClick={() => {
+              if (!confirmDelete) {
+                setConfirmDelete(true);
+                return;
+              }
+              void api
+                .deleteConversation(conversationId)
+                .then(() => onDeleted(conversationId));
+            }}
+          >
+            {confirmDelete ? t('confirmDelete') : <IconTrash />}
+          </button>
+        )}
+      </header>
+      {isEmpty ? (
+        <div className="hero">
+          <div className="welcome">
+            <BeaconMark />
+            <h1>{t('emptyTitle')}</h1>
+          </div>
+          {composer}
+          <div className="hints">
+            {hints.map((hint) => (
+              <button
+                key={hint.label}
+                type="button"
+                onClick={() => {
+                  setDraft(hint.text);
+                  box.current?.focus();
+                }}
+              >
+                {hint.label}
+              </button>
+            ))}
+          </div>
+          {error && (
+            <p className="error-line">
+              {error === 'offline' ? t('serverDown') : error}
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="transcript" ref={scroller}>
+            <div className="thread">
+              {renderMessages(messages, t, (text) => void send(text))}
+              {(reasoning || streaming) && (
+                <article className="bubble assistant">
+                  {reasoning && (
+                    <ReasoningBlock
+                      text={reasoning}
+                      label={t('reasoning')}
+                      open
+                    />
+                  )}
+                  {streaming && <MarkdownView text={streaming} />}
+                </article>
+              )}
+              {pendingTools.map((call) => (
+                <ToolCard
+                  key={call.id}
+                  name={call.name}
+                  args={call.arguments}
+                  running
+                  labelRunning={t('toolRunning')}
+                  labelArgs={t('toolArgs')}
+                  labelDone={t('toolDone')}
+                />
+              ))}
+              {busy &&
+                !streaming &&
+                !reasoning &&
+                pendingTools.length === 0 && (
+                  <p className="thinking">
+                    <i />
+                    {t('thinking')}
+                  </p>
+                )}
+              {error && (
+                <p className="error-line">
+                  {error === 'offline' ? t('serverDown') : error}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="composer-dock">{composer}</div>
+        </>
+      )}
     </section>
   );
 }
