@@ -1,6 +1,7 @@
 import type { Agent, ChatMessage, ClientEvent, Locale } from '@mayak/shared';
 import { runAgentLoop } from './agent/loop';
 import type { Store, UserRecord } from './db';
+import { isValidCron } from './cron';
 import { HttpError, badRequest } from './errors';
 import {
   encodeMcpToolName,
@@ -15,6 +16,9 @@ import type {
   ToolDefinition,
 } from './providers/types';
 import { readGithubToken, runGithubTool } from './github/tools';
+import { runSandboxed } from './sandbox';
+import { webFetch, webSearch } from './webtools';
+import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
 
@@ -23,6 +27,11 @@ export interface TurnDeps {
   mcp: McpManager;
   skills: SkillLibrary;
   jwtSecret?: string;
+  onRoutineFinished?: (
+    userId: string,
+    name: string,
+    text: string,
+  ) => Promise<void>;
 }
 
 interface ExposedTool {
@@ -97,7 +106,13 @@ export async function runTurn(
   if (freshTitle) await emit({ type: 'title', title: freshTitle });
 
   const depth = input.depth ?? 0;
-  const exposed = await exposeTools(deps, agent, userId, depth);
+  const exposed = await exposeTools(
+    deps,
+    agent,
+    userId,
+    depth,
+    conversation.id,
+  );
   const peers = (await deps.store.listAgents())
     .filter((item) => item.id !== agent.id)
     .map((item) => ({ name: item.name, description: item.description }));
@@ -112,10 +127,22 @@ export async function runTurn(
     await runAgentLoop({
       client: meteredClient(createClient(provider), async () => {
         await assertQuota(deps.store, owner);
+        const cap = await deps.store.getSetting(`token_limit:${userId}`);
+        if (cap && Number(cap) > 0) {
+          const used = await deps.store.tokenSumSince(userId, utcDayStart());
+          if (used >= Number(cap)) {
+            throw new HttpError(429, 'Дневной лимит токенов исчерпан');
+          }
+        }
         await deps.store.insertUsage({
           userId,
           providerId: provider.id,
           model,
+          inputTokens: Math.ceil(
+            history.reduce((sum, message) => sum + message.content.length, 0) /
+              4,
+          ),
+          outputTokens: 0,
         });
       }),
       model,
@@ -141,6 +168,15 @@ export async function runTurn(
       executeTool: async (call) => {
         const tool = exposed.find((item) => item.definition.name === call.name);
         if (!tool) return `Неизвестный инструмент ${call.name}`;
+        if (await toolNeedsApproval(deps.store, call.name)) {
+          const approvalId = await deps.store.createApproval({
+            userId,
+            conversationId: conversation.id,
+            toolName: call.name,
+            arguments: call.arguments,
+          });
+          return `APPROVAL:${approvalId}:${call.name}`;
+        }
         return tool.run(jsonObject(call.arguments));
       },
       onEvent: async (event) => {
@@ -249,6 +285,7 @@ async function exposeTools(
   agent: Agent,
   userId: string,
   depth: number,
+  conversationId: string,
 ): Promise<ExposedTool[]> {
   const used = new Set<string>([
     LOAD_SKILL_TOOL.name,
@@ -260,6 +297,7 @@ async function exposeTools(
     'github_search_code',
     'github_list_issues',
     'github_list_pulls',
+    'create_routine',
   ]);
   const allowedSkills = new Set(agent.skillNames);
   const tools: ExposedTool[] = [
@@ -342,6 +380,285 @@ async function exposeTools(
     deps.jwtSecret && agent.githubRepos.length > 0
       ? await readGithubToken(deps.store, deps.jwtSecret)
       : undefined;
+  tools.push({
+    definition: {
+      name: 'create_routine',
+      description:
+        'Create a routine for this agent. Leave cron empty for a webhook-only trigger. Создаёт расписание или вебхук.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          cron: { type: 'string', description: 'Five-field cron, or empty' },
+          prompt: { type: 'string' },
+        },
+        required: ['name', 'prompt'],
+      },
+    },
+    run: async (args) => {
+      const name = asString(args.name).trim();
+      const cron = asString(args.cron).trim();
+      const prompt = asString(args.prompt).trim();
+      if (!name || !prompt) return 'Нужны name и prompt.';
+      if (name.length > 80) return 'Слишком длинное имя.';
+      if (cron && !isValidCron(cron)) return 'Некорректный cron из пяти полей.';
+      if (prompt.length > 8_000) return 'Промпт слишком длинный.';
+      const routine = await deps.store.insertRoutine(userId, agent.id, {
+        name,
+        cron,
+        prompt,
+        enabled: true,
+      });
+      return `Рутина «${routine.name}» создана. Вебхук: /api/hooks/${routine.webhookToken ?? ''}`;
+    },
+  });
+
+  tools.push(
+    {
+      definition: {
+        name: 'remember',
+        description:
+          'Save long-term memory. kind: profile, journal, or shared (visible to every agent of this user). Запоминает надолго.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string' },
+            key: { type: 'string' },
+            content: { type: 'string' },
+          },
+          required: ['content'],
+        },
+      },
+      run: async (args) => {
+        const content = asString(args.content).trim();
+        if (!content) return 'Пусто.';
+        const kind = asString(args.kind).trim() || 'journal';
+        const key = asString(args.key).trim() || new Date().toISOString();
+        await deps.store.remember({
+          userId,
+          agentId: agent.id,
+          kind,
+          key,
+          content,
+        });
+        return `Запомнил (${kind}/${key}).`;
+      },
+    },
+    {
+      definition: {
+        name: 'recall',
+        description:
+          'Search long-term memory, including notes shared between agents. Ищет в памяти.',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+        },
+      },
+      run: async (args) => {
+        const notes = await deps.store.recall(
+          userId,
+          agent.id,
+          asString(args.query),
+        );
+        if (notes.length === 0) return 'Ничего не найдено.';
+        return notes
+          .map((note) => `[${note.kind}] ${note.key}: ${note.content}`)
+          .join('\n');
+      },
+    },
+    {
+      definition: {
+        name: 'web_search',
+        description:
+          'Search the web via the admin-configured provider. Ищет в интернете.',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+        },
+      },
+      run: async (args) => {
+        try {
+          const hits = await webSearch({
+            query: asString(args.query),
+            provider:
+              (await deps.store.getSetting('search_provider')) || 'searxng',
+            searxngUrl:
+              (await deps.store.getSetting('search_url')) ||
+              process.env.SEARXNG_URL,
+            apiKey: await searchKey(deps),
+          });
+          if (hits.length === 0) return 'Ничего не найдено.';
+          return hits
+            .map((hit) => `- ${hit.title}\n  ${hit.url}\n  ${hit.snippet}`)
+            .join('\n');
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Ошибка поиска';
+        }
+      },
+    },
+    {
+      definition: {
+        name: 'web_fetch',
+        description:
+          'Fetch a public http(s) page and return markdown. Private networks are blocked.',
+        inputSchema: {
+          type: 'object',
+          properties: { url: { type: 'string' } },
+          required: ['url'],
+        },
+      },
+      run: async (args) => {
+        try {
+          return await webFetch(asString(args.url));
+        } catch (error) {
+          return error instanceof Error
+            ? error.message
+            : 'Не удалось открыть страницу';
+        }
+      },
+    },
+    {
+      definition: {
+        name: 'run_code',
+        description:
+          'Run Python or Node in a Docker sandbox. Disabled until an admin enables it. Запускает код в песочнице.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            language: { type: 'string' },
+            code: { type: 'string' },
+          },
+          required: ['language', 'code'],
+        },
+      },
+      run: async (args) =>
+        runSandboxed({
+          enabled: (await deps.store.getSetting('code_sandbox')) === '1',
+          language: asString(args.language).trim(),
+          code: asString(args.code),
+        }),
+    },
+    {
+      definition: {
+        name: 'ask_user',
+        description:
+          'Ask the user to pick one option. Спрашивает пользователя с вариантами ответа.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            question: { type: 'string' },
+            options: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['question', 'options'],
+        },
+      },
+      run: async (args) => {
+        const options = Array.isArray(args.options)
+          ? args.options
+              .filter((item): item is string => typeof item === 'string')
+              .slice(0, 6)
+          : [];
+        return `ASK:${JSON.stringify({ question: asString(args.question), options })}`;
+      },
+    },
+    {
+      definition: {
+        name: 'todo_write',
+        description:
+          'Add a todo for this agent or list them when text is empty. Список дел агента.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string' },
+            doneId: { type: 'string' },
+          },
+        },
+      },
+      run: async (args) => {
+        const doneId = asString(args.doneId).trim();
+        if (doneId) await deps.store.setTodoDone(doneId, userId, true);
+        const text = asString(args.text).trim();
+        if (text)
+          await deps.store.addTodo(userId, agent.id, text.slice(0, 200));
+        const items = await deps.store.listTodos(userId, agent.id);
+        if (items.length === 0) return 'Список пуст.';
+        return items
+          .map(
+            (item) => `- [${item.done ? 'x' : ' '}] ${item.text} (${item.id})`,
+          )
+          .join('\n');
+      },
+    },
+    {
+      definition: {
+        name: 'create_page',
+        description:
+          'Create a shareable markdown page (report or dashboard). Создаёт страницу со ссылкой.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            body: { type: 'string' },
+          },
+          required: ['title', 'body'],
+        },
+      },
+      run: async (args) => {
+        const title = asString(args.title).trim().slice(0, 120);
+        const body = asString(args.body).slice(0, 100_000);
+        if (!title || !body) return 'Нужны title и body.';
+        const page = await deps.store.createPage({
+          userId,
+          agentId: agent.id,
+          title,
+          body,
+        });
+        return `Страница «${title}»: /api/public/pages/${page.shareToken}`;
+      },
+    },
+  );
+
+  if (depth === 0) {
+    tools.push({
+      definition: {
+        name: 'task',
+        description:
+          'Start a background sub-agent task. The result is posted back into this chat. Фоновая подзадача.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            prompt: { type: 'string' },
+          },
+          required: ['prompt'],
+        },
+      },
+      run: async (args) => {
+        const title = asString(args.title).trim().slice(0, 80) || 'Задача';
+        const prompt = asString(args.prompt).trim();
+        if (!prompt) return 'Нужен prompt.';
+        const taskId = await deps.store.createTask({
+          userId,
+          agentId: agent.id,
+          conversationId,
+          title,
+          prompt,
+        });
+        void runBackgroundTask(deps, {
+          taskId,
+          title,
+          prompt,
+          userId,
+          agent,
+          conversationId,
+        });
+        return `Задача «${title}» запущена. Результат появится в этом чате.`;
+      },
+    });
+  }
+
   if (githubToken) {
     const context = { token: githubToken, allow: agent.githubRepos };
     const repos = agent.githubRepos.join(', ');
@@ -453,6 +770,69 @@ async function exposeTools(
     }
   }
   return tools;
+}
+
+async function searchKey(deps: TurnDeps): Promise<string | undefined> {
+  const stored = await deps.store.getSetting('search_key');
+  if (!stored || !deps.jwtSecret) return undefined;
+  try {
+    return decryptSecret(stored, deps.jwtSecret);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function toolNeedsApproval(
+  store: Store,
+  name: string,
+): Promise<boolean> {
+  if ((await store.getSetting('approvals_enabled')) !== '1') return false;
+  const auto = ((await store.getSetting('approval_auto')) ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (auto.includes('*') || auto.includes(name)) return false;
+  return (
+    name === 'send_to_agent' || name === 'run_code' || name.startsWith('mcp__')
+  );
+}
+
+async function runBackgroundTask(
+  deps: TurnDeps,
+  input: {
+    taskId: string;
+    title: string;
+    prompt: string;
+    userId: string;
+    agent: Agent;
+    conversationId: string;
+  },
+): Promise<void> {
+  try {
+    const chat = await deps.store.insertConversation({
+      title: `Задача: ${input.title}`,
+      agentId: input.agent.id,
+      userId: input.userId,
+      providerId: input.agent.providerId,
+      model: input.agent.model,
+    });
+    const result = await runTurn(deps, {
+      conversationId: chat.id,
+      content: input.prompt,
+      locale: 'ru',
+      userId: input.userId,
+      depth: 1,
+    });
+    await deps.store.finishTask(input.taskId, 'done', result.text);
+    await deps.store.insertMessage({
+      conversationId: input.conversationId,
+      role: 'assistant',
+      content: `Результат задачи «${input.title}»:\n\n${result.text.slice(0, 4_000)}`,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'ошибка';
+    await deps.store.finishTask(input.taskId, 'error', message);
+  }
 }
 
 function normalizeSchema(tool: LiveTool): Record<string, unknown> {

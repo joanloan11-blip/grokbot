@@ -77,6 +77,8 @@ export interface UsageRow {
   name: string;
   calls: number;
   limit: number | null;
+  tokens?: number;
+  costUsd?: number;
   models: UsageModelCount[];
 }
 
@@ -162,6 +164,17 @@ export interface Routine {
   enabled: boolean;
   lastRunAt: string | null;
   createdAt: string;
+  webhookToken: string | null;
+}
+
+export interface RoutineRun {
+  id: string;
+  routineId: string;
+  status: 'running' | 'ok' | 'error';
+  output: string;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 }
 
 export interface RoutineInput {

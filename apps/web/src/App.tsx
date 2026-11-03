@@ -88,6 +88,7 @@ function Shell({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [online, setOnline] = useState(true);
   const [navOpen, setNavOpen] = useState(false);
+  const [chatQuery, setChatQuery] = useState('');
   const [wizard, setWizard] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -206,27 +207,39 @@ function Shell({
           {t('newChat')}
         </button>
         <p className="side-label">{t('chats')}</p>
+        <input
+          className="chat-search"
+          value={chatQuery}
+          placeholder={t('searchChats')}
+          onChange={(event) => setChatQuery(event.target.value)}
+        />
         <nav className="conv-list">
           {conversations.length === 0 && (
             <p className="muted empty-side">{t('noChats')}</p>
           )}
-          {conversations.map((conversation) => (
-            <button
-              key={conversation.id}
-              type="button"
-              className={
-                view.name === 'chat' && conversation.id === activeId
-                  ? 'conv active'
-                  : 'conv'
-              }
-              onClick={() => openChat(conversation.id)}
-            >
-              <span>{conversation.title}</span>
-              <time dateTime={conversation.updatedAt}>
-                {formatWhen(conversation.updatedAt, locale)}
-              </time>
-            </button>
-          ))}
+          {conversations
+            .filter((conversation) =>
+              conversation.title
+                .toLowerCase()
+                .includes(chatQuery.trim().toLowerCase()),
+            )
+            .map((conversation) => (
+              <button
+                key={conversation.id}
+                type="button"
+                className={
+                  view.name === 'chat' && conversation.id === activeId
+                    ? 'conv active'
+                    : 'conv'
+                }
+                onClick={() => openChat(conversation.id)}
+              >
+                <span>{conversation.title}</span>
+                <time dateTime={conversation.updatedAt}>
+                  {formatWhen(conversation.updatedAt, locale)}
+                </time>
+              </button>
+            ))}
         </nav>
         <div className="side-foot">
           {user?.role === 'admin' && (

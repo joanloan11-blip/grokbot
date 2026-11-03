@@ -241,6 +241,10 @@ export const api = {
     request<{ ok: boolean }>(`/api/agents/${agentId}/routines/${id}`, {
       method: 'DELETE',
     }),
+  routineRuns: (agentId: string, id: string) =>
+    request<import('@mayak/shared').RoutineRun[]>(
+      `/api/agents/${agentId}/routines/${id}/runs`,
+    ),
   runRoutine: (agentId: string, id: string) =>
     request<{ ok: boolean }>(`/api/agents/${agentId}/routines/${id}/run`, {
       method: 'POST',
