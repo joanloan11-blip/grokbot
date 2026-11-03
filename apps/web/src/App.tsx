@@ -143,6 +143,7 @@ function Shell({
     };
   }, [chatQuery]);
   const [wizard, setWizard] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(() => {
     try {
@@ -286,204 +287,260 @@ function Shell({
             onChange={(event) => setChatQuery(event.target.value)}
           />
         </label>
-        <div className="side-head">
-          <p className="side-label">{t('projects')}</p>
-          <button
-            type="button"
-            className="icon-btn quiet tiny"
-            aria-label={t('projectNew')}
-            title={t('projectNew')}
-            onClick={() => setProjectDialog('new')}
-          >
-            <IconPlus />
-          </button>
-        </div>
-        <nav className="project-list">
-          {projects.length === 0 && (
+        <div className="side-scroll">
+          <div className="side-head">
+            <p className="side-label">{t('projects')}</p>
             <button
               type="button"
-              className="conv hint-row"
+              className="icon-btn quiet tiny"
+              aria-label={t('projectNew')}
+              title={t('projectNew')}
               onClick={() => setProjectDialog('new')}
             >
-              <span>{t('projectEmpty')}</span>
+              <IconPlus />
             </button>
-          )}
-          {projects
-            .filter((item) => !item.archived)
-            .map((item) => (
-              <div
-                key={item.id}
-                className={item.id === projectId ? 'project active' : 'project'}
+          </div>
+          <nav className="project-list">
+            {projects.length === 0 && (
+              <button
+                type="button"
+                className="conv hint-row"
+                onClick={() => setProjectDialog('new')}
               >
-                <button
-                  type="button"
-                  className="project-open"
-                  onClick={() =>
-                    selectProject(item.id === projectId ? null : item.id)
+                <span>{t('projectEmpty')}</span>
+              </button>
+            )}
+            {projects
+              .filter((item) => !item.archived)
+              .map((item) => (
+                <div
+                  key={item.id}
+                  className={
+                    item.id === projectId ? 'project active' : 'project'
                   }
                 >
-                  <IconFolder />
-                  <span>
-                    {item.name}
-                    {item.client && <small>{item.client}</small>}
-                  </span>
-                </button>
-                {item.id === projectId && (
                   <button
                     type="button"
-                    className="icon-btn quiet tiny"
-                    aria-label={t('projectEdit')}
-                    title={t('projectEdit')}
-                    onClick={() => setProjectDialog(item)}
+                    className="project-open"
+                    onClick={() =>
+                      selectProject(item.id === projectId ? null : item.id)
+                    }
                   >
-                    <IconEdit />
+                    <IconFolder />
+                    <span>
+                      {item.name}
+                      {item.client && <small>{item.client}</small>}
+                    </span>
                   </button>
-                )}
-              </div>
-            ))}
-        </nav>
-        <p className="side-label">{t('agents')}</p>
-        <div className="agent-row">
-          {agents.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={
-                item.id === agent?.id ? 'agent-pill active' : 'agent-pill'
-              }
-              onClick={() => {
-                setAgentId(item.id);
-                setActiveId(null);
-                setView({ name: 'chat' });
-              }}
-            >
-              {item.emoji} {item.name}
-              {item.ownerId && <em className="own-mark">{t('personal')}</em>}
-            </button>
-          ))}
-        </div>
-        <button className="ghost" type="button" onClick={() => setWizard(true)}>
-          <IconPlus />
-          {t('newAgent')}
-        </button>
-        {agent && (isAdmin || (user && agent.ownerId === user.id)) && (
-          <button
-            className="ghost slim"
-            type="button"
-            onClick={() => setView({ name: 'agent' })}
-          >
-            {t('configureAgent')}
-          </button>
-        )}
-        <p className="side-label">
-          {project ? `${t('chats')} · ${project.name}` : t('chats')}
-        </p>
-        {hits && (
-          <div className="search-hits">
-            <p className="side-label">{t('searchResults')}</p>
-            {hits.length === 0 && (
-              <p className="muted empty-side">{t('noResults')}</p>
-            )}
-            {hits.map((hit) => (
+                  {item.id === projectId && (
+                    <button
+                      type="button"
+                      className="icon-btn quiet tiny"
+                      aria-label={t('projectEdit')}
+                      title={t('projectEdit')}
+                      onClick={() => setProjectDialog(item)}
+                    >
+                      <IconEdit />
+                    </button>
+                  )}
+                </div>
+              ))}
+          </nav>
+          <div className="side-head">
+            <p className="side-label">{t('agents')}</p>
+            <span className="side-actions">
+              {agent && (isAdmin || (user && agent.ownerId === user.id)) && (
+                <button
+                  type="button"
+                  className="icon-btn quiet tiny"
+                  aria-label={t('configureAgent')}
+                  title={t('configureAgent')}
+                  onClick={() => {
+                    setView({ name: 'agent' });
+                    setNavOpen(false);
+                  }}
+                >
+                  <IconEdit />
+                </button>
+              )}
               <button
-                key={hit.conversationId}
+                type="button"
+                className="icon-btn quiet tiny"
+                aria-label={t('newAgent')}
+                title={t('newAgent')}
+                onClick={() => setWizard(true)}
+              >
+                <IconPlus />
+              </button>
+            </span>
+          </div>
+          <div className="agent-row">
+            {agents.map((item) => (
+              <button
+                key={item.id}
                 type="button"
                 className={
-                  hit.conversationId === activeId
-                    ? 'conv hit active'
-                    : 'conv hit'
+                  item.id === agent?.id ? 'agent-pill active' : 'agent-pill'
                 }
+                title={item.description || item.name}
                 onClick={() => {
-                  if (hit.agentId && hit.agentId !== agentId)
-                    setAgentId(hit.agentId);
-                  openChat(hit.conversationId);
+                  setAgentId(item.id);
+                  setActiveId(null);
+                  setView({ name: 'chat' });
                 }}
               >
-                <span>{hit.title}</span>
-                <small>{hit.snippet}</small>
+                <span className="agent-name">
+                  {item.emoji} {item.name}
+                </span>
+                {item.ownerId && <em className="own-mark">{t('personal')}</em>}
               </button>
             ))}
           </div>
-        )}
-        <nav className="conv-list" hidden={hits !== null}>
-          {conversations.length === 0 && (
-            <p className="muted empty-side">{t('noChats')}</p>
+          <p className="side-label">
+            {project ? `${t('chats')} · ${project.name}` : t('chats')}
+          </p>
+          {hits && (
+            <div className="search-hits">
+              <p className="side-label">{t('searchResults')}</p>
+              {hits.length === 0 && (
+                <p className="muted empty-side">{t('noResults')}</p>
+              )}
+              {hits.map((hit) => (
+                <button
+                  key={hit.conversationId}
+                  type="button"
+                  className={
+                    hit.conversationId === activeId
+                      ? 'conv hit active'
+                      : 'conv hit'
+                  }
+                  onClick={() => {
+                    if (hit.agentId && hit.agentId !== agentId)
+                      setAgentId(hit.agentId);
+                    openChat(hit.conversationId);
+                  }}
+                >
+                  <span>{hit.title}</span>
+                  <small>{hit.snippet}</small>
+                </button>
+              ))}
+            </div>
           )}
-          {conversations
-            .filter((conversation) =>
-              conversation.title
-                .toLowerCase()
-                .includes(chatQuery.trim().toLowerCase()),
-            )
-            .map((conversation) => (
-              <button
-                key={conversation.id}
-                type="button"
-                className={
-                  view.name === 'chat' && conversation.id === activeId
-                    ? 'conv active'
-                    : 'conv'
-                }
-                onClick={() => {
-                  if (
-                    projectId &&
-                    conversation.agentId &&
-                    conversation.agentId !== agentId
-                  )
-                    setAgentId(conversation.agentId);
-                  openChat(conversation.id);
-                }}
-              >
-                <span>{conversation.title}</span>
-                <time dateTime={conversation.updatedAt}>
-                  {formatWhen(conversation.updatedAt, locale)}
-                </time>
-              </button>
-            ))}
-        </nav>
+          <nav className="conv-list" hidden={hits !== null}>
+            {conversations.length === 0 && (
+              <p className="muted empty-side">{t('noChats')}</p>
+            )}
+            {conversations
+              .filter((conversation) =>
+                conversation.title
+                  .toLowerCase()
+                  .includes(chatQuery.trim().toLowerCase()),
+              )
+              .map((conversation) => (
+                <button
+                  key={conversation.id}
+                  type="button"
+                  className={
+                    view.name === 'chat' && conversation.id === activeId
+                      ? 'conv active'
+                      : 'conv'
+                  }
+                  onClick={() => {
+                    if (
+                      projectId &&
+                      conversation.agentId &&
+                      conversation.agentId !== agentId
+                    )
+                      setAgentId(conversation.agentId);
+                    openChat(conversation.id);
+                  }}
+                >
+                  <span>{conversation.title}</span>
+                  <time dateTime={conversation.updatedAt}>
+                    {formatWhen(conversation.updatedAt, locale)}
+                  </time>
+                </button>
+              ))}
+          </nav>
+        </div>
         <div className="side-foot">
-          {user?.role === 'admin' && (
-            <button
-              type="button"
-              className={view.name === 'team' ? 'ghost active' : 'ghost'}
-              onClick={() => {
-                setView({ name: 'team' });
-                setNavOpen(false);
-              }}
-            >
-              {t('team')}
-            </button>
-          )}
-          {isAdmin && (
-            <button
-              type="button"
-              className={view.name === 'settings' ? 'ghost active' : 'ghost'}
-              onClick={() => {
-                setView({ name: 'settings', tab: 'providers' });
-                setNavOpen(false);
-              }}
-            >
-              {t('settings')}
-            </button>
+          {menuOpen && (
+            <>
+              <button
+                type="button"
+                className="menu-scrim"
+                aria-label={t('close')}
+                onClick={() => setMenuOpen(false)}
+              />
+              <div className="user-menu" role="menu">
+                {user?.role === 'admin' && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setView({ name: 'team' });
+                      setMenuOpen(false);
+                      setNavOpen(false);
+                    }}
+                  >
+                    {t('team')}
+                  </button>
+                )}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setView({ name: 'settings', tab: 'providers' });
+                      setMenuOpen(false);
+                      setNavOpen(false);
+                    }}
+                  >
+                    {t('settings')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => setLocale(locale === 'ru' ? 'en' : 'ru')}
+                >
+                  {t('language')}: {locale === 'ru' ? 'Русский' : 'English'}
+                  <small>{locale === 'ru' ? 'EN' : 'RU'}</small>
+                </button>
+                {user && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="danger-text"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onLogout();
+                    }}
+                  >
+                    {t('logout')}
+                  </button>
+                )}
+              </div>
+            </>
           )}
           <button
             type="button"
-            className="lang"
-            onClick={() => setLocale(locale === 'ru' ? 'en' : 'ru')}
+            className={menuOpen ? 'user-btn open' : 'user-btn'}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
           >
-            {locale === 'ru' ? 'EN' : 'RU'}
+            <span className="avatar">
+              {(user?.name || user?.email || t('brand'))
+                .slice(0, 1)
+                .toUpperCase()}
+            </span>
+            <span className="user-name">
+              {user?.name || user?.email || t('brand')}
+              {user && <small>{user.email}</small>}
+            </span>
           </button>
-          {user && (
-            <button type="button" className="ghost" onClick={onLogout}>
-              {t('logout')}
-            </button>
-          )}
         </div>
-        {user && (
-          <p className="muted empty-side">
-            {t('youAre')} {user.email}
-          </p>
-        )}
       </aside>
       {navOpen && (
         <button

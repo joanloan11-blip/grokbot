@@ -1613,3 +1613,173 @@ input[type="checkbox"]:checked::after {
 .panel + .panel {
   margin-top: 12px;
 }
+
+/* --- боковая панель: прокручиваемая середина и меню профиля --- */
+.sidebar {
+  overflow: hidden;
+}
+.side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 -10px;
+  padding: 0 10px 8px;
+}
+.side-scroll .conv-list,
+.side-scroll .search-hits {
+  flex: none;
+  overflow: visible;
+  min-height: auto;
+}
+.side-scroll .project-list {
+  max-height: none;
+  overflow: visible;
+}
+.side-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+.agent-row {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 2px;
+  padding: 0;
+}
+.agent-pill {
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 10px;
+  text-align: left;
+  background: transparent;
+}
+.agent-pill:hover {
+  background: var(--bg-3);
+}
+.agent-pill.active {
+  background: var(--bg-3);
+  border: 0;
+}
+.side-foot {
+  position: relative;
+  display: block;
+  flex: none;
+  padding-top: 8px;
+}
+.user-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  border-radius: 12px;
+  padding: 8px;
+  text-align: left;
+  color: var(--text);
+}
+.user-btn:hover,
+.user-btn.open {
+  background: var(--bg-3);
+}
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex: none;
+}
+.user-name {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-name small {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  border: 0;
+  background: transparent;
+}
+.user-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+.user-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  padding: 9px 10px;
+  text-align: left;
+  color: var(--text);
+  font-size: 0.92rem;
+}
+.user-menu button:hover {
+  background: var(--bg-3);
+}
+.user-menu small {
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 5px;
+  font-size: 0.72rem;
+}
+.user-menu .danger-text {
+  color: var(--danger);
+}
+/* В прокручиваемой середине ничего не сжимается — прокручивается вся колонка. */
+.side-scroll > * {
+  flex-shrink: 0;
+}
+.side-scroll .agent-row {
+  overflow: visible;
+}
+.side-scroll .agent-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-pill .own-mark {
+  flex: none;
+  margin-left: 0;
+}
