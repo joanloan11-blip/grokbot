@@ -82,6 +82,26 @@ export const api = {
     }),
   logout: () =>
     request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  forgotPassword: (body: { email: string; locale: Locale }) =>
+    request<{ ok: boolean; mail: boolean }>('/api/auth/forgot', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  resetPassword: (body: { token: string; password: string }) =>
+    request<{ ok: boolean; user?: PublicUser; pending?: boolean }>(
+      '/api/auth/reset',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  resetLink: (userId: string) =>
+    request<{ link: string; expiresAt: string }>(
+      `/api/admin/users/${userId}/reset-link`,
+      {
+        method: 'POST',
+      },
+    ),
   team: () => request<PublicUser[]>('/api/admin/users'),
   inviteUser: (body: {
     email: string;

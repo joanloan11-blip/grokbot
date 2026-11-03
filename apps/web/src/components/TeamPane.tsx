@@ -20,6 +20,7 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
   const [limit, setLimit] = useState('');
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
+  const [resetLinks, setResetLinks] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const [nextUsers, nextAgents, nextUsage, nextProviders] = await Promise.all(
@@ -179,6 +180,27 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                     {t('disable')}
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() =>
+                    void api
+                      .resetLink(user.id)
+                      .then((result) =>
+                        setResetLinks((current) => ({
+                          ...current,
+                          [user.id]: result.link,
+                        })),
+                      )
+                      .catch((reason: unknown) =>
+                        setError(
+                          reason instanceof Error ? reason.message : t('error'),
+                        ),
+                      )
+                  }
+                >
+                  {t('resetLinkBtn')}
+                </button>
                 <label>
                   {t('limit')}
                   <input
@@ -193,6 +215,11 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                   />
                 </label>
               </div>
+              {resetLinks[user.id] && (
+                <p className="muted reset-link">
+                  {t('resetLinkHint')} <code>{resetLinks[user.id]}</code>
+                </p>
+              )}
               {user.role !== 'admin' && sharedModels.length > 0 && (
                 <div className="row-actions">
                   <label className="check">

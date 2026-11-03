@@ -1462,3 +1462,19 @@ input[type="checkbox"]:checked::after {
 .conv-list[hidden] {
   display: none;
 }
+
+.link-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.link-btn:hover {
+  color: var(--text);
+}
+.reset-link code {
+  word-break: break-all;
+  user-select: all;
+}

@@ -46,6 +46,7 @@ import { SkillLibrary, seedSkills } from './skills';
 import { AGENT_TEMPLATES } from './templates';
 import { assertQuota, runTurn } from './turn';
 import { asString, isRecord } from './util';
+import { mailConfigured, resetEmail, sendMail } from './mail';
 
 export interface AppHandle {
   app: Hono;
@@ -206,6 +207,112 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     );
     const agentIds = await store.listUserAgentIds(updated.id);
     return c.json({ user: toPublicUser(updated, agentIds) });
+  });
+
+  // --- Восстановление пароля ---
+  const resetHits = new Map<string, number[]>();
+  const tooMany = (key: string, limit: number) => {
+    const now = Date.now();
+    const hits = (resetHits.get(key) ?? []).filter(
+      (at) => at > now - 3_600_000,
+    );
+    hits.push(now);
+    resetHits.set(key, hits);
+    if (resetHits.size > 5000) resetHits.clear();
+    return hits.length > limit;
+  };
+  const siteUrl = (c: Context) => {
+    if (config.publicUrl) return config.publicUrl.replace(/\/$/, '');
+    const url = new URL(c.req.url);
+    const proto =
+      c.req.header('x-forwarded-proto') ?? url.protocol.replace(':', '');
+    const host =
+      c.req.header('x-forwarded-host') ?? c.req.header('host') ?? url.host;
+    return `${proto}://${host}`;
+  };
+  const issueResetLink = async (c: Context, userId: string) => {
+    const token = newInviteToken();
+    const expiresAt = await store.createPasswordReset(
+      userId,
+      hashInviteToken(token),
+    );
+    return { link: `${siteUrl(c)}/?reset=${token}`, expiresAt };
+  };
+
+  app.post('/api/auth/forgot', async (c) => {
+    const body = await readBody(c);
+    const email =
+      isRecord(body) && typeof body.email === 'string'
+        ? body.email.trim().toLowerCase()
+        : '';
+    const locale = isRecord(body) && body.locale === 'en' ? 'en' : 'ru';
+    const ip =
+      c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for') ?? 'local';
+    if (tooMany(`ip:${ip}`, 10) || (email && tooMany(`email:${email}`, 3))) {
+      throw new HttpError(429, 'Слишком много запросов. Попробуйте через час');
+    }
+    // Ответ одинаковый, есть такой пользователь или нет.
+    const answer = { ok: true, mail: mailConfigured() };
+    if (!email || !mailConfigured()) return c.json(answer);
+    const user = await store.getUserByEmail(email);
+    if (!user || user.status === 'disabled' || user.id === LOCAL_USER_ID)
+      return c.json(answer);
+    const { link } = await issueResetLink(c, user.id);
+    try {
+      await sendMail({ to: user.email, ...resetEmail(link, locale) });
+    } catch (error) {
+      console.error(
+        'Письмо со сбросом пароля не отправлено:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+    return c.json(answer);
+  });
+
+  app.post('/api/auth/reset', async (c) => {
+    const body = await readBody(c);
+    if (!isRecord(body) || typeof body.token !== 'string')
+      throw badRequest('Нужна ссылка для сброса');
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (password.length < 8) throw badRequest('Пароль не короче 8 символов');
+    if (password.length > 200) throw badRequest('Пароль слишком длинный');
+    const userId = await store.consumePasswordReset(
+      hashInviteToken(body.token.trim()),
+    );
+    if (!userId)
+      throw new HttpError(400, 'Ссылка недействительна или устарела');
+    const user = await store.getUser(userId);
+    if (!user || user.status === 'disabled')
+      throw new HttpError(400, 'Ссылка недействительна или устарела');
+    const updated = await store.updateUser(user.id, {
+      passwordHash: await hashPassword(password),
+      status:
+        user.status === 'pending' && !user.passwordHash
+          ? 'active'
+          : user.status,
+    });
+    if (!updated)
+      throw new HttpError(400, 'Ссылка недействительна или устарела');
+    await store.setPasswordChanged(updated.id);
+    await store.setInviteToken(updated.id, null);
+    if (updated.status !== 'active') return c.json({ ok: true, pending: true });
+    setSessionCookie(
+      c,
+      signSession(updated.id, auth.jwtSecret),
+      auth.secureCookie,
+    );
+    const agentIds = await store.listUserAgentIds(updated.id);
+    return c.json({ ok: true, user: toPublicUser(updated, agentIds) });
+  });
+
+  app.post('/api/admin/users/:id/reset-link', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const target = await store.getUser(c.req.param('id'));
+    if (!target || target.id === LOCAL_USER_ID)
+      return c.json({ error: 'Пользователь не найден' }, 404);
+    return c.json(await issueResetLink(c, target.id));
   });
 
   app.post('/api/auth/logout', (c) => {

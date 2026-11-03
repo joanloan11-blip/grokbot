@@ -71,7 +71,8 @@ function Gate() {
   }, []);
 
   if (!ready) return null;
-  if (required && !user) return <AuthScreen onUser={setUser} />;
+  const resetLink = new URLSearchParams(window.location.search).has('reset');
+  if (required && (!user || resetLink)) return <AuthScreen onUser={setUser} />;
   return <Shell user={user} onLogout={onLogout} />;
 }
 

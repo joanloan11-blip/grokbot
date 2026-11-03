@@ -335,6 +335,20 @@ export class Store {
       'attachments_json',
       'ALTER TABLE messages ADD COLUMN attachments_json TEXT',
     );
+    await add(
+      'users',
+      'password_changed_at',
+      'ALTER TABLE users ADD COLUMN password_changed_at TEXT',
+    );
+    await this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL
+      );
+    `);
     await this.sql.exec(`
       CREATE TABLE IF NOT EXISTS routine_runs (
         id TEXT PRIMARY KEY,
@@ -1378,6 +1392,42 @@ export class Store {
     return row;
   }
 
+  async createPasswordReset(
+    userId: string,
+    tokenHash: string,
+    ttlMinutes = 60,
+  ): Promise<string> {
+    const now = new Date();
+    const expires = new Date(now.getTime() + ttlMinutes * 60_000).toISOString();
+    // Старые неиспользованные ссылки этого пользователя гасим.
+    await this.sql.run(
+      'UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL',
+      [now.toISOString(), userId],
+    );
+    await this.sql.run(
+      'INSERT INTO password_resets (token_hash, user_id, expires_at, used_at, created_at) VALUES (?, ?, ?, NULL, ?)',
+      [tokenHash, userId, expires, now.toISOString()],
+    );
+    return expires;
+  }
+
+  /** Одноразово погашает ссылку. Возвращает id пользователя или undefined. */
+  async consumePasswordReset(tokenHash: string): Promise<string | undefined> {
+    const now = nowIso();
+    const row = await this.sql.get<{ user_id: string }>(
+      'UPDATE password_resets SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING user_id',
+      [now, tokenHash, now],
+    );
+    return row?.user_id;
+  }
+
+  async setPasswordChanged(userId: string, at = nowIso()): Promise<void> {
+    await this.sql.run(
+      'UPDATE users SET password_changed_at = ? WHERE id = ?',
+      [at, userId],
+    );
+  }
+
   async updateUser(
     id: string,
     patch: Partial<
@@ -2022,6 +2072,8 @@ export interface UserRecord {
   status: 'active' | 'pending' | 'disabled';
   dailyRequestLimit: number | null;
   modelsRestricted: boolean;
+  /** Когда пароль меняли последний раз: сессии, выданные раньше, недействительны. */
+  passwordChangedAt?: string | null;
   createdAt: string;
 }
 
@@ -2051,6 +2103,9 @@ function mapUser(row: UserSql): UserRecord {
     dailyRequestLimit:
       row.daily_request_limit === null ? null : Number(row.daily_request_limit),
     modelsRestricted: Number(row.models_restricted) === 1,
+    passwordChangedAt:
+      (row as unknown as { password_changed_at?: string | null })
+        .password_changed_at ?? null,
     createdAt: row.created_at,
   };
 }

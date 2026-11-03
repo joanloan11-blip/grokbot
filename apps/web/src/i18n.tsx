@@ -161,6 +161,26 @@ const ru = {
   memoryContent: 'Текст',
   memoryEmpty: 'Заметок пока нет. Агент пишет их инструментом memory_write.',
   noAgent: 'Сначала создайте агента',
+  forgotPassword: 'Забыли пароль?',
+  forgotTitle: 'Восстановление пароля',
+  forgotLead: 'Укажите почту — пришлём ссылку для смены пароля.',
+  forgotSend: 'Отправить ссылку',
+  forgotSent:
+    'Если такая почта зарегистрирована, ссылка уже в пути. Проверьте почту и папку «Спам». Ссылка действует 1 час.',
+  forgotNoMail:
+    'Отправка писем на этом сервере не настроена. Попросите администратора выдать ссылку для сброса в разделе «Команда».',
+  resetTitle: 'Новый пароль',
+  resetLead:
+    'Придумайте новый пароль — не короче 8 символов. Остальные сеансы будут завершены.',
+  newPassword: 'Новый пароль',
+  repeatPassword: 'Повторите пароль',
+  passwordsDiffer: 'Пароли не совпадают',
+  resetSave: 'Сохранить пароль',
+  resetDone: 'Пароль изменён. Войдите с новым паролем.',
+  backToLogin: 'Вернуться ко входу',
+  resetLinkBtn: 'Ссылка для сброса пароля',
+  resetLinkHint:
+    'Отправьте эту ссылку пользователю. Она одноразовая и действует 1 час.',
   login: 'Войти',
   register: 'Регистрация',
   logout: 'Выйти',
@@ -352,6 +372,27 @@ const en: Dictionary = {
   memoryContent: 'Text',
   memoryEmpty: 'No notes yet. The agent writes them with memory_write.',
   noAgent: 'Create an agent first',
+  forgotPassword: 'Forgot password?',
+  forgotTitle: 'Password recovery',
+  forgotLead:
+    'Enter your email and we will send a link to change the password.',
+  forgotSend: 'Send link',
+  forgotSent:
+    'If this email is registered, the link is on its way. Check your inbox and spam folder. The link works for 1 hour.',
+  forgotNoMail:
+    'Email is not set up on this server. Ask the admin for a reset link in the Team section.',
+  resetTitle: 'New password',
+  resetLead:
+    'Choose a new password of at least 8 characters. Other sessions will be signed out.',
+  newPassword: 'New password',
+  repeatPassword: 'Repeat password',
+  passwordsDiffer: 'Passwords do not match',
+  resetSave: 'Save password',
+  resetDone: 'Password changed. Sign in with the new password.',
+  backToLogin: 'Back to sign in',
+  resetLinkBtn: 'Password reset link',
+  resetLinkHint:
+    'Send this link to the user. It works once and expires in 1 hour.',
   login: 'Sign in',
   register: 'Register',
   logout: 'Sign out',
