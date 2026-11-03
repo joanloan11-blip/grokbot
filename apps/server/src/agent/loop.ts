@@ -8,7 +8,13 @@ import type {
 
 export type AgentEvent =
   | { type: 'text'; delta: string }
-  | { type: 'assistant'; content: string; toolCalls?: ToolCall[] }
+  | { type: 'reasoning'; delta: string }
+  | {
+      type: 'assistant';
+      content: string;
+      reasoning?: string;
+      toolCalls?: ToolCall[];
+    }
   | { type: 'tool_start'; call: ToolCall }
   | { type: 'tool_result'; call: ToolCall; content: string }
   | { type: 'error'; message: string };
@@ -44,7 +50,11 @@ export async function runAgentLoop(
     if (turn.toolCalls.length === 0) {
       const assistant: ModelMessage = { role: 'assistant', content: turn.text };
       history.push(assistant);
-      await input.onEvent({ type: 'assistant', content: turn.text });
+      await input.onEvent({
+        type: 'assistant',
+        content: turn.text,
+        reasoning: nonempty(turn.reasoning),
+      });
       return history;
     }
 
@@ -57,6 +67,7 @@ export async function runAgentLoop(
     await input.onEvent({
       type: 'assistant',
       content: turn.text,
+      reasoning: nonempty(turn.reasoning),
       toolCalls: turn.toolCalls,
     });
 
@@ -94,8 +105,9 @@ async function collectTurn(
   tools: ToolDefinition[],
   signal: AbortSignal | undefined,
   onEvent: AgentLoopInput['onEvent'],
-): Promise<{ text: string; toolCalls: ToolCall[] }> {
+): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[] }> {
   let text = '';
+  let reasoning = '';
   const acc = new Map<
     number,
     { id: string; name: string; arguments: string }
@@ -106,6 +118,9 @@ async function collectTurn(
     if (event.type === 'text') {
       text += event.delta;
       await onEvent({ type: 'text', delta: event.delta });
+    } else if (event.type === 'reasoning') {
+      reasoning += event.delta;
+      await onEvent({ type: 'reasoning', delta: event.delta });
     } else if (event.type === 'tool_call_delta') {
       applyToolDelta(acc, event);
     }
@@ -121,7 +136,12 @@ async function collectTurn(
       arguments: call.arguments || '{}',
     }));
 
-  return { text, toolCalls };
+  return { text, reasoning, toolCalls };
+}
+
+function nonempty(value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed ? value : undefined;
 }
 
 function applyToolDelta(

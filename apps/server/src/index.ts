@@ -1,6 +1,10 @@
+import path from 'node:path';
 import { serve } from '@hono/node-server';
 import { createApp } from './app';
-import { loadConfig } from './config';
+import { loadConfig, repoRoot } from './config';
+import { loadDotEnv } from './env';
+
+loadDotEnv(path.join(repoRoot, '.env'));
 
 const config = loadConfig();
 const handle = await createApp(config);

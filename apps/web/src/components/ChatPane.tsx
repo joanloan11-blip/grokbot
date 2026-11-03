@@ -21,6 +21,7 @@ interface Props {
 interface Choice {
   providerId: string;
   model: string;
+  kind: ProviderPublic['kind'];
 }
 
 export function ChatPane({
@@ -35,6 +36,7 @@ export function ChatPane({
   const [title, setTitle] = useState('');
   const [draft, setDraft] = useState('');
   const [streaming, setStreaming] = useState('');
+  const [reasoning, setReasoning] = useState('');
   const [pendingTools, setPendingTools] = useState<ToolCall[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -55,6 +57,7 @@ export function ChatPane({
     }
     abortRef.current?.abort();
     setStreaming('');
+    setReasoning('');
     setPendingTools([]);
     setBusy(false);
     setError('');
@@ -62,7 +65,7 @@ export function ChatPane({
     if (!conversationId) {
       setMessages([]);
       setTitle('');
-      const first = choices[0];
+      const first = preferredChoice(choices);
       setChoice(first ? keyOf(first) : '');
       return;
     }
@@ -77,7 +80,8 @@ export function ChatPane({
             item.providerId === data.conversation.providerId &&
             item.model === data.conversation.model,
         );
-        setChoice(match ? keyOf(match) : choices[0] ? keyOf(choices[0]) : '');
+        const fallback = preferredChoice(choices);
+        setChoice(match ? keyOf(match) : fallback ? keyOf(fallback) : '');
       },
       (reason: unknown) => {
         if (!cancelled)
@@ -89,7 +93,7 @@ export function ChatPane({
     };
   }, [conversationId, choices, t]);
 
-  const scrollKey = `${messages.length}:${streaming}:${pendingTools.length}:${messages.at(-1)?.id ?? ''}`;
+  const scrollKey = `${messages.length}:${streaming}:${reasoning.length}:${pendingTools.length}:${messages.at(-1)?.id ?? ''}`;
   useEffect(() => {
     if (scrollKey.length === 0) return;
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
@@ -134,6 +138,7 @@ export function ChatPane({
       const controller = new AbortController();
       abortRef.current = controller;
       setStreaming('');
+      setReasoning('');
       setPendingTools([]);
       await streamMessage(
         id,
@@ -146,6 +151,8 @@ export function ChatPane({
         (event) => {
           if (event.type === 'text')
             setStreaming((current) => current + event.delta);
+          if (event.type === 'reasoning')
+            setReasoning((current) => current + event.delta);
           if (event.type === 'title') {
             setTitle(event.title);
             onConversation({
@@ -160,7 +167,10 @@ export function ChatPane({
           if (event.type === 'tool_start')
             setPendingTools((current) => [...current, event.call]);
           if (event.type === 'message') {
-            if (event.message.role === 'assistant') setStreaming('');
+            if (event.message.role === 'assistant') {
+              setStreaming('');
+              setReasoning('');
+            }
             if (event.message.role === 'tool') {
               setPendingTools((current) =>
                 current.filter((call) => call.id !== event.message.toolCallId),
@@ -316,6 +326,15 @@ export function ChatPane({
           </div>
         )}
         {renderMessages(messages, t)}
+        {(reasoning || streaming) && (
+          <article className="bubble assistant">
+            <span className="who">{t('assistant')}</span>
+            {reasoning && (
+              <ReasoningBlock text={reasoning} label={t('reasoning')} open />
+            )}
+            {streaming && <MarkdownView text={streaming} />}
+          </article>
+        )}
         {pendingTools.map((call) => (
           <ToolCard
             key={call.id}
@@ -327,13 +346,7 @@ export function ChatPane({
             labelDone={t('toolDone')}
           />
         ))}
-        {streaming && (
-          <article className="bubble assistant">
-            <span className="who">{t('assistant')}</span>
-            <MarkdownView text={streaming} />
-          </article>
-        )}
-        {busy && !streaming && pendingTools.length === 0 && (
+        {busy && !streaming && !reasoning && pendingTools.length === 0 && (
           <p className="thinking">
             <i />
             {t('thinking')}
@@ -413,6 +426,9 @@ function renderMessages(
     nodes.push(
       <article key={message.id} className="bubble assistant">
         <span className="who">{t('assistant')}</span>
+        {message.reasoning && (
+          <ReasoningBlock text={message.reasoning} label={t('reasoning')} />
+        )}
         {message.content && <MarkdownView text={message.content} />}
         {calls.map((call) => {
           const result = messages.find(
@@ -476,6 +492,23 @@ function ToolCard({
   );
 }
 
+function ReasoningBlock({
+  text,
+  label,
+  open,
+}: {
+  text: string;
+  label: string;
+  open?: boolean;
+}) {
+  return (
+    <details className="reasoning" open={open}>
+      <summary>{label}</summary>
+      <div className="reasoning-body">{text}</div>
+    </details>
+  );
+}
+
 function pretty(value: string): string {
   try {
     return JSON.stringify(JSON.parse(value), null, 2);
@@ -489,10 +522,20 @@ function flattenChoices(providers: ProviderPublic[]): Choice[] {
   for (const provider of providers) {
     if (!provider.enabled) continue;
     for (const model of provider.models) {
-      out.push({ providerId: provider.id, model });
+      out.push({ providerId: provider.id, model, kind: provider.kind });
     }
   }
   return out;
+}
+
+function preferredChoice(choices: Choice[]): Choice | undefined {
+  return (
+    choices.find(
+      (item) => item.kind === 'deepseek' && item.model === 'deepseek-chat',
+    ) ??
+    choices.find((item) => item.kind === 'deepseek') ??
+    choices[0]
+  );
 }
 
 function keyOf(choice: Choice): string {

@@ -89,6 +89,13 @@ export async function* streamOpenAI(options: {
     if (delta && typeof delta.content === 'string' && delta.content) {
       yield { type: 'text', delta: delta.content };
     }
+    if (
+      delta &&
+      typeof delta.reasoning_content === 'string' &&
+      delta.reasoning_content
+    ) {
+      yield { type: 'reasoning', delta: delta.reasoning_content };
+    }
     if (delta && Array.isArray(delta.tool_calls)) {
       for (const call of delta.tool_calls) {
         if (!isRecord(call) || typeof call.index !== 'number') continue;

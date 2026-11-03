@@ -20,6 +20,7 @@ export interface ModelMessage {
 
 export type ProviderEvent =
   | { type: 'text'; delta: string }
+  | { type: 'reasoning'; delta: string }
   | {
       type: 'tool_call_delta';
       index: number;

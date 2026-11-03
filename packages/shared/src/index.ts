@@ -1,6 +1,16 @@
 export type Locale = 'ru' | 'en';
 
-export type ProviderKind = 'openai' | 'anthropic' | 'gemini' | 'mock';
+export type ProviderKind =
+  | 'openai'
+  | 'deepseek'
+  | 'anthropic'
+  | 'gemini'
+  | 'mock';
+
+/** OpenAI-совместимый endpoint DeepSeek. К пути добавляется `/chat/completions`. */
+export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+
+export const DEEPSEEK_MODELS = ['deepseek-chat', 'deepseek-reasoner'] as const;
 
 export interface ProviderPublic {
   id: string;
@@ -44,6 +54,8 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   toolName?: string;
+  /** Текст рассуждения (DeepSeek reasoner, поле `reasoning_content`). Не уходит обратно в API. */
+  reasoning?: string;
   createdAt: string;
 }
 
@@ -106,6 +118,7 @@ export interface Skill extends SkillSummary {
 
 export type ClientEvent =
   | { type: 'text'; delta: string }
+  | { type: 'reasoning'; delta: string }
   | { type: 'message'; message: ChatMessage }
   | { type: 'title'; title: string }
   | { type: 'tool_start'; call: ToolCall }

@@ -77,6 +77,7 @@ interface MessageSql {
   tool_calls_json: string | null;
   tool_call_id: string | null;
   tool_name: string | null;
+  reasoning: string | null;
   created_at: string;
 }
 
@@ -199,6 +200,7 @@ export class Store {
         tool_calls_json TEXT,
         tool_call_id TEXT,
         tool_name TEXT,
+        reasoning TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -209,6 +211,14 @@ export class Store {
         value TEXT NOT NULL
       );
     `);
+    const columns = this.db
+      .prepare('PRAGMA table_info(messages)')
+      .all() as unknown as {
+      name: string;
+    }[];
+    if (!columns.some((column) => column.name === 'reasoning')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN reasoning TEXT');
+    }
   }
 
   listProviders(): ProviderRow[] {
@@ -472,12 +482,13 @@ export class Store {
       toolCalls: input.toolCalls,
       toolCallId: input.toolCallId,
       toolName: input.toolName,
+      reasoning: input.reasoning?.trim() ? input.reasoning : undefined,
       createdAt: nowIso(),
     };
     this.db
       .prepare(
-        `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id,
@@ -487,6 +498,7 @@ export class Store {
         row.toolCalls ? JSON.stringify(row.toolCalls) : null,
         row.toolCallId ?? null,
         row.toolName ?? null,
+        row.reasoning ?? null,
         row.createdAt,
       );
     this.db
@@ -563,6 +575,7 @@ function mapMessage(row: MessageSql): ChatMessage {
     toolCalls: parseToolCalls(row.tool_calls_json),
     toolCallId: row.tool_call_id ?? undefined,
     toolName: row.tool_name ?? undefined,
+    reasoning: row.reasoning?.trim() ? row.reasoning : undefined,
     createdAt: row.created_at,
   };
 }
@@ -574,5 +587,6 @@ function normalizeModels(
   const cleaned = (models ?? []).map((item) => item.trim()).filter(Boolean);
   if (cleaned.length > 0) return cleaned;
   if (kind === 'mock') return ['mock'];
+  if (kind === 'deepseek') return ['deepseek-chat', 'deepseek-reasoner'];
   return [];
 }

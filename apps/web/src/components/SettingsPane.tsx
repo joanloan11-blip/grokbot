@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import type {
-  McpServerInput,
-  McpServerPublic,
-  ProviderInput,
-  ProviderKind,
-  ProviderPublic,
-  Skill,
-  SkillSummary,
+import {
+  DEEPSEEK_BASE_URL,
+  DEEPSEEK_MODELS,
+  type McpServerInput,
+  type McpServerPublic,
+  type ProviderInput,
+  type ProviderKind,
+  type ProviderPublic,
+  type Skill,
+  type SkillSummary,
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n, useTheme } from '../i18n';
@@ -14,7 +16,13 @@ import { IconMenu } from './icons';
 
 export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'general';
 
-const KINDS: ProviderKind[] = ['openai', 'anthropic', 'gemini', 'mock'];
+const KINDS: ProviderKind[] = [
+  'openai',
+  'deepseek',
+  'anthropic',
+  'gemini',
+  'mock',
+];
 
 export function SettingsPane({
   tab,
@@ -176,10 +184,9 @@ function ProvidersPanel({ onChanged }: { onChanged: () => void }) {
             <select
               value={editing.kind}
               onChange={(event) =>
-                setEditing({
-                  ...editing,
-                  kind: event.target.value as ProviderKind,
-                })
+                setEditing(
+                  applyKindPreset(editing, event.target.value as ProviderKind),
+                )
               }
             >
               {KINDS.map((kind) => (
@@ -191,6 +198,9 @@ function ProvidersPanel({ onChanged }: { onChanged: () => void }) {
           </label>
           {editing.kind === 'openai' && (
             <p className="hint">{t('openaiHint')}</p>
+          )}
+          {editing.kind === 'deepseek' && (
+            <p className="hint">{t('deepseekHint')}</p>
           )}
           {editing.kind !== 'mock' && (
             <>
@@ -767,13 +777,29 @@ function kindLabel(
   kind: ProviderKind,
   t: ReturnType<typeof useI18n>['t'],
 ): string {
+  if (kind === 'deepseek') return t('kindDeepSeek');
   if (kind === 'anthropic') return t('kindAnthropic');
   if (kind === 'gemini') return t('kindGemini');
   if (kind === 'mock') return t('kindMock');
   return t('kindOpenAI');
 }
 
+function applyKindPreset(
+  current: ProviderInput & { id?: string; hasApiKey?: boolean },
+  kind: ProviderKind,
+): ProviderInput & { id?: string; hasApiKey?: boolean } {
+  if (kind !== 'deepseek') return { ...current, kind };
+  return {
+    ...current,
+    kind,
+    name: current.name.trim() ? current.name : 'DeepSeek',
+    baseUrl: DEEPSEEK_BASE_URL,
+    models: [...DEEPSEEK_MODELS],
+  };
+}
+
 function placeholderUrl(kind: ProviderKind): string {
+  if (kind === 'deepseek') return DEEPSEEK_BASE_URL;
   if (kind === 'anthropic') return 'https://api.anthropic.com';
   if (kind === 'gemini')
     return 'https://generativelanguage.googleapis.com/v1beta';

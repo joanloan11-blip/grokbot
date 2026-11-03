@@ -43,6 +43,9 @@ describe('provider urls', () => {
     expect(openAiChatUrl('http://localhost:11434/v1')).toBe(
       'http://localhost:11434/v1/chat/completions',
     );
+    expect(openAiChatUrl('https://api.deepseek.com')).toBe(
+      'https://api.deepseek.com/chat/completions',
+    );
     expect(openAiChatUrl('https://api.openai.com/v1/chat/completions')).toBe(
       'https://api.openai.com/v1/chat/completions',
     );
@@ -125,6 +128,32 @@ describe('OpenAI-compatible streaming', () => {
       type: 'done',
       finishReason: 'tool_calls',
     });
+  });
+
+  it('parses DeepSeek reasoning_content ahead of the answer', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'Считаю' } }] })}`,
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: ' 2+2' } }] })}`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '4' }, finish_reason: 'stop' }] })}`,
+      ]),
+    ) as typeof fetch;
+
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'k',
+        model: 'deepseek-reasoner',
+        messages: [{ role: 'user', content: '2+2' }],
+        tools: [],
+      }),
+    );
+    const reasoning = events
+      .filter((event) => event.type === 'reasoning')
+      .map((event) => (event.type === 'reasoning' ? event.delta : ''))
+      .join('');
+    expect(reasoning).toBe('Считаю 2+2');
+    expect(events).toContainEqual({ type: 'text', delta: '4' });
   });
 
   it('omits tools when the model has none and surfaces HTTP errors', async () => {

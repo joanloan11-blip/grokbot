@@ -138,6 +138,33 @@ describe('runAgentLoop', () => {
     });
   });
 
+  it('forwards reasoning separately from the answer', async () => {
+    const events: AgentEvent[] = [];
+    const messages = await runAgentLoop({
+      client: scripted([
+        [
+          { type: 'reasoning', delta: 'черновик' },
+          { type: 'text', delta: 'ответ' },
+          { type: 'done' },
+        ],
+      ]),
+      model: 'deepseek-reasoner',
+      messages: [{ role: 'user', content: 'думаю' }],
+      tools: [],
+      executeTool: async () => 'unused',
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    expect(events).toContainEqual({ type: 'reasoning', delta: 'черновик' });
+    expect(events).toContainEqual({
+      type: 'assistant',
+      content: 'ответ',
+      reasoning: 'черновик',
+    });
+    expect(messages.at(-1)?.content).toBe('ответ');
+  });
+
   it('returns tool errors to the model instead of aborting the loop', async () => {
     const messages = await runAgentLoop({
       client: scripted([

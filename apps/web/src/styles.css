@@ -479,6 +479,24 @@ input[type="checkbox"]:checked::after {
   color: var(--muted);
   font-size: 0.75rem;
 }
+.reasoning {
+  margin: 0 0 10px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 8px 12px;
+  background: rgba(240, 180, 41, 0.06);
+}
+.reasoning summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.reasoning-body {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  color: var(--muted);
+  line-height: 1.5;
+}
 .thinking {
   display: flex;
   align-items: center;

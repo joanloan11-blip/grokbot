@@ -11,6 +11,8 @@ import {
   type McpServerPublic,
   type McpServersFile,
   type ProviderInput,
+  DEEPSEEK_BASE_URL,
+  DEEPSEEK_MODELS,
   type ProviderKind,
 } from '@mayak/shared';
 import type { Context } from 'hono';
@@ -39,6 +41,7 @@ export interface AppHandle {
 
 const KINDS: readonly ProviderKind[] = [
   'openai',
+  'deepseek',
   'anthropic',
   'gemini',
   'mock',
@@ -49,6 +52,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   const skills = new SkillLibrary(path.join(config.dataDir, 'skills'));
   const mcp = new McpManager();
   seed(store, skills, config);
+  ensureDeepSeek(store);
 
   for (const row of store.listMcp()) {
     if (row.enabled) await mcp.connect(row);
@@ -332,6 +336,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         await stream.writeSSE({ data: JSON.stringify(event) });
       };
       let pending = '';
+      let pendingReasoning = '';
       try {
         await write({ type: 'message', message: userMessage });
         if (fresh && fresh.title !== conversation.title)
@@ -365,15 +370,20 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
             if (event.type === 'text') {
               pending += event.delta;
               await write({ type: 'text', delta: event.delta });
+            } else if (event.type === 'reasoning') {
+              pendingReasoning += event.delta;
+              await write({ type: 'reasoning', delta: event.delta });
             } else if (event.type === 'tool_start') {
               await write({ type: 'tool_start', call: event.call });
             } else if (event.type === 'assistant') {
               pending = '';
+              pendingReasoning = '';
               const saved = store.insertMessage({
                 conversationId: conversation.id,
                 role: 'assistant',
                 content: event.content,
                 toolCalls: event.toolCalls,
+                reasoning: event.reasoning,
               });
               await write({ type: 'message', message: saved });
             } else if (event.type === 'tool_result') {
@@ -391,11 +401,12 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         await write({ type: 'done' });
       } catch (error) {
         if (isAbort(error)) {
-          if (pending.trim()) {
+          if (pending.trim() || pendingReasoning.trim()) {
             store.insertMessage({
               conversationId: conversation.id,
               role: 'assistant',
               content: pending,
+              reasoning: pendingReasoning || undefined,
             });
           }
           return;
@@ -459,6 +470,26 @@ function seed(store: Store, skills: SkillLibrary, config: AppConfig): void {
     store.setSetting('seeded', '1');
   }
   seedSkills(skills.directory, config.examplesSkillsDir);
+}
+
+function ensureDeepSeek(store: Store): void {
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return;
+  const existing = store
+    .listProviders()
+    .find((item) => item.kind === 'deepseek');
+  if (existing) {
+    if (!existing.apiKey) store.updateProvider(existing.id, { apiKey });
+    return;
+  }
+  store.insertProvider({
+    name: 'DeepSeek',
+    kind: 'deepseek',
+    baseUrl: DEEPSEEK_BASE_URL,
+    apiKey,
+    models: [...DEEPSEEK_MODELS],
+    enabled: true,
+  });
 }
 
 function exposeTools(mcp: McpManager, skills: SkillLibrary): ExposedTool[] {
@@ -531,11 +562,16 @@ function defaultSelection(store: Store): {
   providerId: string | null;
   model: string | null;
 } {
-  const provider = store
+  const enabled = store
     .listProviders()
-    .find((item) => item.enabled && item.models.length > 0);
+    .filter((item) => item.enabled && item.models.length > 0);
+  const provider =
+    enabled.find((item) => item.kind === 'deepseek') ?? enabled[0];
   if (!provider) return { providerId: null, model: null };
-  return { providerId: provider.id, model: provider.models[0] ?? null };
+  const model = provider.models.includes('deepseek-chat')
+    ? 'deepseek-chat'
+    : provider.models[0];
+  return { providerId: provider.id, model: model ?? null };
 }
 
 function presentMcp(row: McpRow, mcp: McpManager): McpServerPublic {
@@ -599,7 +635,9 @@ function parseProviderInput(body: unknown, partial = false): ProviderInput {
   const kind = body.kind;
   if (!partial || kind !== undefined) {
     if (!isKind(kind))
-      throw badRequest('Тип провайдера: openai, anthropic, gemini или mock');
+      throw badRequest(
+        'Тип провайдера: openai, deepseek, anthropic, gemini или mock',
+      );
   }
   const name = asString(body.name).trim();
   if ((!partial || body.name !== undefined) && !name)
