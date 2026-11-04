@@ -5,6 +5,8 @@ import {
   type McpServerInput,
   type McpServerPublic,
   type DiscoverResult,
+  type FreeCatalog,
+  type FreeProvider,
   type ProviderInput,
   type ProviderKind,
   type ProviderPublic,
@@ -127,6 +129,118 @@ export function SettingsPane({
   );
 }
 
+function FreeCatalogView({
+  onPick,
+  canRefresh,
+}: {
+  onPick: (item: FreeProvider) => void;
+  canRefresh: boolean;
+}) {
+  const { t } = useI18n();
+  const [catalog, setCatalog] = useState<FreeCatalog | null>(null);
+  const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    void api
+      .freeProviders()
+      .then(setCatalog)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : t('error')),
+      );
+  }, [t]);
+  if (!catalog) return error ? <p className="error-line">{error}</p> : null;
+  return (
+    <div className="free-catalog card">
+      <p className="hint">
+        {t('freeLead')}{' '}
+        <a href={catalog.source} target="_blank" rel="noreferrer">
+          awesome-free-llm-apis
+        </a>
+        {catalog.lastUpdated && ` · ${catalog.lastUpdated}`}
+        {canRefresh && (
+          <>
+            {' · '}
+            <button
+              type="button"
+              className="link-btn"
+              disabled={refreshing}
+              onClick={() => {
+                setRefreshing(true);
+                setError('');
+                void api
+                  .refreshFreeProviders()
+                  .then(setCatalog)
+                  .catch((reason: unknown) =>
+                    setError(
+                      reason instanceof Error ? reason.message : t('error'),
+                    ),
+                  )
+                  .finally(() => setRefreshing(false));
+              }}
+            >
+              {refreshing ? t('testing') : t('freeRefresh')}
+            </button>
+          </>
+        )}
+      </p>
+      {error && <p className="error-line">{error}</p>}
+      <ul className="free-list">
+        {catalog.providers.map((item) => (
+          <li key={item.id}>
+            <div className="free-top">
+              <strong>
+                {item.flag} {item.name}
+              </strong>
+              <span className="free-tags">
+                {!item.needsKey && (
+                  <span className="pill on">{t('freeNoKey')}</span>
+                )}
+                {item.viaProxy && (
+                  <span className="pill">{t('freeProxy')}</span>
+                )}
+              </span>
+            </div>
+            <p className="muted">{item.description}</p>
+            {item.notes.length > 0 && (
+              <ul className="free-notes">
+                {item.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            )}
+            <p className="free-models">
+              {item.models
+                .slice(0, 6)
+                .map((model) => model.id)
+                .join(', ')}
+              {item.models.length > 6 ? ` +${item.models.length - 6}` : ''}
+            </p>
+            <div className="row-actions">
+              {item.keyUrl && item.needsKey && (
+                <a
+                  className="ghost slim"
+                  href={item.keyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('freeGetKey')}
+                </a>
+              )}
+              <button
+                type="button"
+                className="primary-btn slim"
+                onClick={() => onPick(item)}
+              >
+                {t('freeConnect')}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 async function toggleShared(
   providers: ProviderPublic[],
   providerId: string,
@@ -166,6 +280,7 @@ function ProvidersPanel({
     name: false,
   });
   const [found, setFound] = useState<DiscoverResult | null>(null);
+  const [freeOpen, setFreeOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const discoverSeq = useRef(0);
   const autoName = useRef('');
@@ -332,7 +447,32 @@ function ProvidersPanel({
         >
           {t('addProvider')}
         </button>
+        <button
+          type="button"
+          className={freeOpen ? 'ghost active' : 'ghost'}
+          onClick={() => setFreeOpen((value) => !value)}
+        >
+          {t('freeProviders')}
+        </button>
       </div>
+      {freeOpen && (
+        <FreeCatalogView
+          canRefresh={!personal}
+          onPick={(item) => {
+            setFreeOpen(false);
+            setTouched({ kind: true, baseUrl: true, name: true });
+            setFound(null);
+            setEditing({
+              name: item.name,
+              kind: item.kind,
+              baseUrl: item.baseUrl,
+              models: item.models.map((model) => model.id),
+              enabled: true,
+              apiKey: '',
+            });
+          }}
+        />
+      )}
       {personal && <p className="hint">{t('myModelsHint')}</p>}
       {error && <p className="error-line">{error}</p>}
       {testNote && <p className="note">{testNote}</p>}

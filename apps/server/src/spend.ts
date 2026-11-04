@@ -1,4 +1,5 @@
-import { isNvidiaUrl, type SpendLine, type SpendReport } from '@mayak/shared';
+import type { SpendLine, SpendReport } from '@mayak/shared';
+import { freePriceFor, readFreeCatalog } from './free-llm';
 import type { Store } from './db';
 import { costUsd, priceFor, priceTable } from './pricing';
 
@@ -95,11 +96,16 @@ export async function buildSpendReport(
     }
   >();
 
-  const FREE = { input: 0, cached: 0, output: 0 };
-  const freeProvider = (id: string | null) =>
-    Boolean(id && isNvidiaUrl(providerById.get(id)?.baseUrl ?? ''));
+  // Бесплатные модели из каталога awesome-free-llm-apis (и NVIDIA целиком) стоят 0.
+  const catalog = await readFreeCatalog(store);
   const priceOf = (row: Row) =>
-    freeProvider(row.providerId) ? FREE : priceFor(row.model, prices);
+    (row.providerId &&
+      freePriceFor(
+        catalog,
+        providerById.get(row.providerId)?.baseUrl ?? '',
+        row.model,
+      )) ||
+    priceFor(row.model, prices);
 
   for (const row of rows) {
     const price = priceOf(row);

@@ -8,6 +8,7 @@ import {
 } from '@mayak/shared';
 import type { ProviderRow } from '../db';
 import { isRecord } from '../util';
+import { isKeylessUrl } from '../free-llm';
 import { llmFetch } from './http';
 
 const TIMEOUT_MS = 15_000;
@@ -68,7 +69,7 @@ export async function listProviderModels(input: {
     url = `${base}/models?pageSize=200&key=${encodeURIComponent(input.apiKey)}`;
   } else {
     url = `${base.replace(/\/chat\/completions$/, '')}/models`;
-    headers.authorization = `Bearer ${input.apiKey}`;
+    if (input.apiKey) headers.authorization = `Bearer ${input.apiKey}`;
   }
   let response: Response;
   try {
@@ -159,7 +160,7 @@ export async function probeModel(input: {
     };
   } else {
     url = `${base.replace(/\/chat\/completions$/, '')}/chat/completions`;
-    headers.authorization = `Bearer ${input.apiKey}`;
+    if (input.apiKey) headers.authorization = `Bearer ${input.apiKey}`;
     body = {
       model: input.model,
       messages: [{ role: 'user', content: 'hi' }],
@@ -295,7 +296,7 @@ export async function discoverProvider(input: {
   let lastError = '';
   for (const guess of candidates) {
     const apiKey = keyFor(guess);
-    if (!apiKey) continue;
+    if (!apiKey && !isKeylessUrl(guess.baseUrl)) continue;
     try {
       const models = await listProviderModels({ ...guess, apiKey });
       // Плюс уже выбранные пользователем модели — чтобы отметить отключённые.

@@ -9,8 +9,13 @@ const DEFAULT_HOSTS = [
   'api.openai.com',
   'api.anthropic.com',
   'generativelanguage.googleapis.com',
-  // NVIDIA отвечает 451 на запросы из России.
+  // Закрыты для России (403/451), проверено с сервера qastom.
   'integrate.api.nvidia.com',
+  'api.cohere.ai',
+  'api.groq.com',
+  'api.kilo.ai',
+  'openrouter.ai',
+  'api.cloudflare.com',
 ];
 
 let cached: { url: string; agent: ProxyAgent } | undefined;

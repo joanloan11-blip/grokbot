@@ -53,7 +53,9 @@ export async function* streamOpenAI(options: {
     llmFetch(openAiChatUrl(options.baseUrl), {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${options.apiKey}`,
+        ...(options.apiKey
+          ? { authorization: `Bearer ${options.apiKey}` }
+          : {}),
         'content-type': 'application/json',
       },
       body: JSON.stringify(body),

@@ -144,6 +144,10 @@ xattr -dr com.apple.quarantine /Applications/Mayak.app
 
 Настоящая модель вызывает инструменты сама, по их JSON-схеме.
 
+### Бесплатные провайдеры
+
+**Настройки → Модели → Бесплатные провайдеры** (и у менеджера в **Мои модели**) — каталог [awesome-free-llm-apis](https://github.com/mnfst/awesome-free-llm-apis) (CC0): Gemini, Groq, Mistral, Cohere, OpenRouter (`:free`), NVIDIA, Cloudflare, Z AI, Kilo, LLM7, OVHcloud и другие. «Подключить» подставляет адрес и бесплатные модели. Остаётся вставить ключ: у Kilo, LLM7 и OVHcloud он не нужен. Для каждого провайдера показано важное: логирует ли он промпты для обучения, нужна ли проверка личности, есть ли ограничения по региону. Снимок каталога лежит в `apps/server/src/free-llm-catalog.json`; администратор обновляет его с GitHub ссылкой «обновить список». Хосты, закрытые из России (Cohere, Groq, Kilo, OpenRouter, Cloudflare, NVIDIA), идут через `LLM_PROXY_URL`. В «Расходах» бесплатные модели из каталога стоят 0.
+
 ### NVIDIA (бесплатно)
 
 Ключ с [build.nvidia.com](https://build.nvidia.com) начинается с `nvapi-`. Вставьте его в **Настройки → Модели**: Маяк сам определит NVIDIA (`https://integrate.api.nvidia.com/v1`) и загрузит модели. Первыми в списке идут DeepSeek, Kimi, GLM, Qwen и Nemotron. Из России NVIDIA отвечает 451, поэтому запросы к ней идут через `LLM_PROXY_URL`. В «Расходах» модели NVIDIA считаются бесплатными. Лимит бесплатного доступа — около 40 запросов в минуту на ключ; гарантий доступности нет, это доступ для разработки.

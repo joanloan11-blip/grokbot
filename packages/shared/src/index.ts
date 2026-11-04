@@ -386,6 +386,38 @@ export interface ProviderGuess {
 
 const OPENAI_URL = 'https://api.openai.com/v1';
 
+/** Провайдер с бесплатным доступом из каталога awesome-free-llm-apis (CC0). */
+export interface FreeProvider {
+  id: string;
+  name: string;
+  country: string;
+  flag: string;
+  /** Где получить ключ. */
+  keyUrl: string;
+  /** Адрес для Маяка (OpenAI-совместимый или Gemini). */
+  baseUrl: string;
+  kind: ProviderKind;
+  /** false — работает без ключа. */
+  needsKey: boolean;
+  description: string;
+  /** Важное: логирование промптов, проверка личности, ограничения региона. */
+  notes: string[];
+  /** Через прокси Маяка (провайдер закрыт из России). */
+  viaProxy: boolean;
+  models: {
+    id: string;
+    context?: string;
+    rateLimit?: string;
+    modality?: string;
+  }[];
+}
+
+export interface FreeCatalog {
+  lastUpdated: string;
+  source: string;
+  providers: FreeProvider[];
+}
+
 /** NVIDIA build.nvidia.com: бесплатный доступ для разработки, OpenAI-совместимый. */
 export const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 
@@ -427,6 +459,14 @@ export function guessProvidersFromKey(rawKey: string): ProviderGuess[] {
         kind: 'openai',
         baseUrl: 'https://api.groq.com/openai/v1',
         name: 'Groq',
+      },
+    ];
+  if (key.startsWith('hf_'))
+    return [
+      {
+        kind: 'openai',
+        baseUrl: 'https://router.huggingface.co/v1',
+        name: 'Hugging Face',
       },
     ];
   if (key.startsWith('nvapi-'))

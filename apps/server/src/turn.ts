@@ -105,7 +105,7 @@ export async function runTurn(
   if (owner && !(await deps.store.isModelAllowed(owner, provider.id, model))) {
     throw new HttpError(403, 'Эта модель недоступна');
   }
-  if (providerNeedsKey(provider.kind) && !provider.apiKey) {
+  if (providerNeedsKey(provider.kind, provider.baseUrl) && !provider.apiKey) {
     throw badRequest('Сохраните API-ключ провайдера в настройках');
   }
 

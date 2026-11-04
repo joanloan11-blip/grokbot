@@ -3,6 +3,7 @@ import type {
   DiscoverResult,
   ProviderKind,
   ChatMessage,
+  FreeCatalog,
   ClientEvent,
   PublicUser,
   UsageRow,
@@ -70,6 +71,11 @@ export class ApiError extends Error {
 
 export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
+  freeProviders: () => request<FreeCatalog>('/api/free-providers'),
+  refreshFreeProviders: () =>
+    request<FreeCatalog>('/api/admin/free-providers/refresh', {
+      method: 'POST',
+    }),
   editMessage: (id: string, content: string) =>
     request<ChatMessage>(`/api/messages/${id}`, {
       method: 'PATCH',

@@ -1,3 +1,4 @@
+import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
 import { assertPublicUrl } from './webtools';
 import { keyBalance } from './balance';
 import { DEFAULT_PRICES, isPrice, readPriceOverrides } from './pricing';
@@ -538,6 +539,25 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     );
   });
 
+  // Каталог бесплатных LLM API (awesome-free-llm-apis): видят все, обновляет админ.
+  app.get('/api/free-providers', async (c) => {
+    await actor(c);
+    return c.json(await readFreeCatalog(store));
+  });
+
+  app.post('/api/admin/free-providers/refresh', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    try {
+      return c.json(await refreshFreeCatalog(store));
+    } catch (error) {
+      throw badRequest(
+        error instanceof Error ? error.message : 'Не удалось обновить каталог',
+      );
+    }
+  });
+
   app.get('/api/admin/usage/balances', async (c) => {
     const admin = await actor(c);
     if (admin.role !== 'admin')
@@ -778,7 +798,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   app.post('/api/providers/:id/test', async (c) => {
     const user = await actor(c);
     const provider = await editableProvider(user, c.req.param('id'));
-    if (providerNeedsKey(provider.kind) && !provider.apiKey)
+    if (providerNeedsKey(provider.kind, provider.baseUrl) && !provider.apiKey)
       return c.json({ error: 'Сначала сохраните API-ключ' }, 400);
     const model = provider.models[0];
     if (!model) return c.json({ error: 'Добавьте хотя бы одну модель' }, 400);
