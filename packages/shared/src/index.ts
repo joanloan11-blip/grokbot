@@ -384,6 +384,13 @@ export interface ProviderGuess {
 
 const OPENAI_URL = 'https://api.openai.com/v1';
 
+/** NVIDIA build.nvidia.com: бесплатный доступ для разработки, OpenAI-совместимый. */
+export const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+
+export function isNvidiaUrl(url: string): boolean {
+  return /integrate\.api\.nvidia\.com/i.test(url);
+}
+
 /** Тип провайдера по префиксу ключа. Для «голого» sk-… вернёт несколько вариантов. */
 export function guessProvidersFromKey(rawKey: string): ProviderGuess[] {
   const key = rawKey.trim();
@@ -420,6 +427,8 @@ export function guessProvidersFromKey(rawKey: string): ProviderGuess[] {
         name: 'Groq',
       },
     ];
+  if (key.startsWith('nvapi-'))
+    return [{ kind: 'openai', baseUrl: NVIDIA_BASE_URL, name: 'NVIDIA' }];
   if (key.startsWith('xai-'))
     return [
       { kind: 'openai', baseUrl: 'https://api.x.ai/v1', name: 'xAI Grok' },

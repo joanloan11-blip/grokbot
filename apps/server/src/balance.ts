@@ -83,6 +83,11 @@ export async function keyBalance(
       note: error instanceof Error ? error.message : 'Не удалось получить',
     };
   }
+  if (/integrate\.api\.nvidia\.com/.test(url))
+    return {
+      ...base,
+      note: 'Бесплатный доступ NVIDIA: баланс по API не отдаётся, лимит около 40 запросов в минуту на ключ. Кредиты смотрите на build.nvidia.com.',
+    };
   const where = /api\.openai\.com/.test(url)
     ? 'platform.openai.com/usage'
     : provider.kind === 'anthropic'

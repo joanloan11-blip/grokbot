@@ -499,7 +499,10 @@ export function SpendPane({
                                       }
                                     >
                                       {model.price
-                                        ? `${model.price.input} / ${model.price.cached} / ${model.price.output}`
+                                        ? model.price.input === 0 &&
+                                          model.price.output === 0
+                                          ? t('spendFree')
+                                          : `${model.price.input} / ${model.price.cached} / ${model.price.output}`
                                         : t('spendNoPrice')}
                                       {custom && ` · ${t('spendCustom')}`}
                                     </button>

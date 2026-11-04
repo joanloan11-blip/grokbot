@@ -221,6 +221,7 @@ const ru = {
   spendCustom: 'своя цена',
   spendImages: 'картинки',
   spendSince: 'с',
+  spendFree: 'бесплатно',
   spendLegendPrice:
     'у части моделей нет цены, они не вошли в сумму — задайте цену в блоке «По ключам».',
   moyskladTitle: 'МойСклад',
@@ -510,6 +511,7 @@ const en: Dictionary = {
   spendCustom: 'custom price',
   spendImages: 'images',
   spendSince: 'since',
+  spendFree: 'free',
   spendLegendPrice:
     'some models have no price and are left out of the total — set it under “By key”.',
   moyskladTitle: 'MoySklad',

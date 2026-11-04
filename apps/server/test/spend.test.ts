@@ -109,6 +109,20 @@ describe('key balance', () => {
     });
   });
 
+  it('explains the NVIDIA free tier', async () => {
+    const result = await keyBalance({
+      id: 'n',
+      name: 'NVIDIA',
+      kind: 'openai',
+      baseUrl: 'https://integrate.api.nvidia.com/v1',
+      apiKey: 'nvapi-x',
+      models: [],
+      enabled: true,
+      createdAt: '',
+    });
+    expect(result.note).toMatch(/NVIDIA/);
+  });
+
   it('explains when a key has no balance API', async () => {
     const result = await keyBalance({
       id: 'p',

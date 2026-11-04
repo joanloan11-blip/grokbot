@@ -14,7 +14,7 @@ const TIMEOUT_MS = 15_000;
 
 /** Модели, которые не подходят для чата (эмбеддинги, озвучка, картинки и т.п.). */
 const NOT_CHAT =
-  /(embed|embedding|whisper|tts|dall-e|davinci|babbage|moderation|transcribe|realtime|audio|image|search|computer-use|aqa|imagen|veo|codex|instruct|deep-research|sora|-001$|\d{4}-\d{2}-\d{2}|-\d{4}$)/i;
+  /(embed|embedding|whisper|tts|dall-e|davinci|babbage|moderation|transcribe|realtime|audio|image|search|computer-use|aqa|imagen|veo|codex|instruct|deep-research|sora|safety|guard|reward|rerank|retriev|parse|ocr|clip|-001$|\d{4}-\d{2}-\d{2}|-\d{4}$)/i;
 
 /**
  * Модели, которые предлагаем первыми (стабильные имена, без дат и алиасов
@@ -32,6 +32,14 @@ const PREFERRED = [
   /^gemini-\d(\.\d)?-(flash|pro)$/,
   /^deepseek-(chat|reasoner)$/,
   /^grok-\d/,
+  // NVIDIA: сильные модели для агентов
+  /^deepseek-ai\/deepseek-v\d/,
+  /^moonshotai\/kimi-k\d/,
+  /^z-ai\/glm-\d/,
+  /^qwen\/qwen3/,
+  /^nvidia\/nemotron-3(\.\d)?-(super|ultra)/,
+  /^minimaxai\/minimax-m/,
+  /^openai\/gpt-oss-120b/,
 ];
 
 export function defaultBaseUrl(kind: ProviderKind): string {
@@ -79,6 +87,10 @@ export async function listProviderModels(input: {
       );
     throw new Error('Ключ не подошёл к этому провайдеру');
   }
+  if (response.status === 451)
+    throw new Error(
+      'Провайдер недоступен из страны сервера (451) — нужен LLM_PROXY_URL',
+    );
   if (!response.ok) throw new Error(`Провайдер ответил ${response.status}`);
   const data = (await response.json().catch(() => ({}))) as unknown;
   const ids: string[] = [];

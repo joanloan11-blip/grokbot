@@ -1,4 +1,4 @@
-import type { SpendLine, SpendReport } from '@mayak/shared';
+import { isNvidiaUrl, type SpendLine, type SpendReport } from '@mayak/shared';
 import type { Store } from './db';
 import { costUsd, priceFor, priceTable } from './pricing';
 
@@ -95,8 +95,14 @@ export async function buildSpendReport(
     }
   >();
 
+  const FREE = { input: 0, cached: 0, output: 0 };
+  const freeProvider = (id: string | null) =>
+    Boolean(id && isNvidiaUrl(providerById.get(id)?.baseUrl ?? ''));
+  const priceOf = (row: Row) =>
+    freeProvider(row.providerId) ? FREE : priceFor(row.model, prices);
+
   for (const row of rows) {
-    const price = priceFor(row.model, prices);
+    const price = priceOf(row);
     const cost = costUsd(price, row);
     addTo(total, row, cost);
 
@@ -190,7 +196,7 @@ export async function buildSpendReport(
               ...finish(value),
               model: row.model,
               kind: row.kind,
-              price: priceFor(row.model, prices),
+              price: priceOf(row),
             }))
             .sort(byCost),
         };

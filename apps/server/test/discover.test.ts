@@ -67,6 +67,10 @@ describe('guessing', () => {
       'openrouter',
     );
     expect(guessProvidersFromKey('xai-abc')[0]?.baseUrl).toContain('x.ai');
+    expect(guessProvidersFromKey('nvapi-abc')[0]).toMatchObject({
+      name: 'NVIDIA',
+      baseUrl: 'https://integrate.api.nvidia.com/v1',
+    });
     expect(
       guessProvidersFromKey('sk-0123abcd').map((item) => item.kind),
     ).toEqual(['deepseek', 'openai']);

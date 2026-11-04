@@ -9,6 +9,8 @@ const DEFAULT_HOSTS = [
   'api.openai.com',
   'api.anthropic.com',
   'generativelanguage.googleapis.com',
+  // NVIDIA отвечает 451 на запросы из России.
+  'integrate.api.nvidia.com',
 ];
 
 let cached: { url: string; agent: ProxyAgent } | undefined;

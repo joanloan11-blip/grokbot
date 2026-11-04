@@ -84,6 +84,21 @@ export async function* streamOpenAI(options: {
       };
       return;
     }
+    if (response.status === 429) {
+      yield {
+        type: 'error',
+        message: `Провайдер ограничил частоту запросов (429)${/nvidia\.com/.test(options.baseUrl) ? ': у бесплатного NVIDIA около 40 запросов в минуту на ключ' : ''}. Подождите минуту или выберите другую модель.`,
+      };
+      return;
+    }
+    if (response.status === 451) {
+      yield {
+        type: 'error',
+        message:
+          'Провайдер недоступен из страны сервера (451). Нужен LLM_PROXY_URL, и хост провайдера должен быть в LLM_PROXY_HOSTS.',
+      };
+      return;
+    }
     yield {
       type: 'error',
       message: `OpenAI-совместимый API ${response.status}: ${detail}`,

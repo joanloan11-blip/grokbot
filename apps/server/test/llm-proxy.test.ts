@@ -20,6 +20,9 @@ describe('LLM proxy', () => {
     expect(
       proxyFor('https://api.deepseek.com/chat/completions'),
     ).toBeUndefined();
+    expect(
+      proxyFor('https://integrate.api.nvidia.com/v1/chat/completions'),
+    ).toBeDefined();
     process.env.LLM_PROXY_HOSTS = 'api.deepseek.com';
     expect(proxyFor('https://api.deepseek.com/x')).toBeDefined();
     expect(proxyFor('https://api.openai.com/x')).toBeUndefined();
