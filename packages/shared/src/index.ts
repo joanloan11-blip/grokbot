@@ -22,6 +22,8 @@ export interface ProviderPublic {
   managerModels: string[];
   enabled: boolean;
   hasApiKey: boolean;
+  /** Личный провайдер текущего пользователя (свой ключ). */
+  owned?: boolean;
 }
 
 export interface ModelRef {

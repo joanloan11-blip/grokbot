@@ -1,3 +1,4 @@
+import { assertPublicUrl } from './webtools';
 import { keyBalance } from './balance';
 import { DEFAULT_PRICES, isPrice, readPriceOverrides } from './pricing';
 import { buildSpendReport } from './spend';
@@ -386,6 +387,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return { providerId: provider.id, model: resolved };
   };
 
+  /** Чужой личный ключ нельзя выбрать никому, даже администратору. */
+  const denyForeignProvider = async (
+    user: UserRecord,
+    providerId: string | null | undefined,
+  ) => {
+    if (!providerId) return;
+    const provider = await store.getProvider(providerId);
+    if (provider?.ownerUserId && provider.ownerUserId !== user.id)
+      throw new HttpError(403, 'Эта модель недоступна');
+  };
+
   app.get('/api/auth/me', async (c) => {
     const user = await actor(c);
     return c.json({ user: await publishUser(user) });
@@ -531,7 +543,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     if (admin.role !== 'admin')
       throw new HttpError(403, 'Только для администратора');
     const providers = (await store.listProviders()).filter(
-      (item) => item.kind !== 'mock',
+      (item) => item.kind !== 'mock' && !item.ownerUserId,
     );
     return c.json(await Promise.all(providers.map((item) => keyBalance(item))));
   });
@@ -576,6 +588,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const kept = models.filter((item) =>
       known.some(
         (provider) =>
+          !provider.ownerUserId &&
           provider.id === item.providerId &&
           provider.models.includes(item.model),
       ),
@@ -584,48 +597,102 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ models: kept });
   });
 
+  /** Провайдеры, которые видит пользователь: общие + свои личные. Чужие личные скрыты. */
+  const visibleProviders = async (user: UserRecord) =>
+    (await store.listProviders()).filter(
+      (row) => !row.ownerUserId || row.ownerUserId === user.id,
+    );
+
+  /** Провайдер, который пользователь может менять: админ — общие и свои, менеджер — только свои. */
+  const editableProvider = async (user: UserRecord, id: string) => {
+    const row = await store.getProvider(id);
+    if (!row) throw new HttpError(404, 'Провайдер не найден');
+    const mine = row.ownerUserId === user.id;
+    if (row.ownerUserId ? !mine : user.role !== 'admin')
+      throw new HttpError(403, 'Можно менять только свои модели');
+    return row;
+  };
+
+  /** Свой адрес у менеджера — только публичный https (защита внутренней сети сервера). */
+  const checkPersonalBaseUrl = async (user: UserRecord, baseUrl?: string) => {
+    if (user.role === 'admin' || !baseUrl?.trim()) return;
+    let url: URL;
+    try {
+      url = await assertPublicUrl(baseUrl.trim());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw badRequest(
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo/.test(message)
+          ? 'Не удалось найти адрес провайдера — проверьте базовый URL'
+          : message || 'Некорректный адрес',
+      );
+    }
+    if (url.protocol !== 'https:')
+      throw badRequest('Адрес провайдера должен начинаться с https://');
+  };
+
   app.get('/api/providers', async (c) => {
     const user = await actor(c);
-    const rows = await store.listProviders();
+    const rows = await visibleProviders(user);
     const shared = await store.listModelAccess('');
     const allowed =
       user.role === 'manager' ? await store.allowedModels(user) : null;
     const visible = rows
       .map((row) => {
-        const managerModels = shared
-          .filter(
-            (item) =>
-              item.providerId === row.id && row.models.includes(item.model),
-          )
-          .map((item) => item.model);
-        const models = allowed
-          ? row.models.filter((model) =>
-              allowed.some(
-                (item) => item.providerId === row.id && item.model === model,
-              ),
-            )
-          : row.models;
-        return { ...toPublicProvider(row), models, managerModels };
+        const owned = row.ownerUserId === user.id;
+        const managerModels = row.ownerUserId
+          ? []
+          : shared
+              .filter(
+                (item) =>
+                  item.providerId === row.id && row.models.includes(item.model),
+              )
+              .map((item) => item.model);
+        const models =
+          allowed && !owned
+            ? row.models.filter((model) =>
+                allowed.some(
+                  (item) => item.providerId === row.id && item.model === model,
+                ),
+              )
+            : row.models;
+        return {
+          ...toPublicProvider(row),
+          // Менеджер не видит адрес общих провайдеров администратора.
+          baseUrl: user.role === 'manager' && !owned ? '' : row.baseUrl,
+          models,
+          managerModels,
+          owned,
+        };
       })
       .filter(
         (row) =>
-          user.role !== 'manager' || (row.enabled && row.models.length > 0),
+          row.owned ||
+          user.role !== 'manager' ||
+          (row.enabled && row.models.length > 0),
       );
     return c.json(visible);
   });
 
   // Определить провайдера по ключу или моделям и загрузить список моделей.
   app.post('/api/providers/discover', async (c) => {
+    const user = await actor(c);
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
     const apiKey =
       typeof body.apiKey === 'string' && body.apiKey !== SECRET_MASK
         ? body.apiKey
         : undefined;
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : undefined;
+    await checkPersonalBaseUrl(user, baseUrl);
+    // Менеджер может подставить ключ только из своих провайдеров.
+    const existing = (await visibleProviders(user)).filter(
+      (row) => user.role === 'admin' || row.ownerUserId === user.id,
+    );
     return c.json(
       await discoverProvider({
         apiKey,
-        baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl : undefined,
+        baseUrl,
         kind: isKind(body.kind) ? body.kind : undefined,
         models: Array.isArray(body.models)
           ? body.models.filter(
@@ -633,32 +700,52 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
             )
           : undefined,
         currentId:
-          typeof body.providerId === 'string' ? body.providerId : undefined,
-        existing: await store.listProviders(),
+          typeof body.providerId === 'string' &&
+          existing.some((row) => row.id === body.providerId)
+            ? body.providerId
+            : undefined,
+        existing,
       }),
     );
   });
 
   /** Ключ, скопированный на сервере из другого провайдера (в браузер не попадает). */
-  const borrowedKey = async (body: unknown): Promise<string | undefined> => {
+  const borrowedKey = async (
+    user: UserRecord,
+    body: unknown,
+  ): Promise<string | undefined> => {
     if (!isRecord(body) || typeof body.keyFromProviderId !== 'string')
       return undefined;
     const donor = await store.getProvider(body.keyFromProviderId);
-    return donor?.apiKey || undefined;
+    if (!donor) return undefined;
+    const mayUse = donor.ownerUserId
+      ? donor.ownerUserId === user.id
+      : user.role === 'admin';
+    return mayUse ? donor.apiKey || undefined : undefined;
   };
 
   app.post('/api/providers', async (c) => {
+    const user = await actor(c);
     const raw = await readBody(c);
     const input = parseProviderInput(raw);
+    if (user.role === 'manager' && input.kind === 'mock')
+      throw badRequest('Демо-провайдер добавляет только администратор');
+    await checkPersonalBaseUrl(user, input.baseUrl);
     if (input.apiKey === SECRET_MASK) input.apiKey = undefined;
-    if (!input.apiKey) input.apiKey = await borrowedKey(raw);
-    const row = await store.insertProvider(input);
-    return c.json(toPublicProvider(row), 201);
+    if (!input.apiKey) input.apiKey = await borrowedKey(user, raw);
+    const row = await store.insertProvider({
+      ...input,
+      ownerUserId: user.role === 'admin' ? null : user.id,
+    });
+    return c.json(
+      { ...toPublicProvider(row), owned: Boolean(row.ownerUserId) },
+      201,
+    );
   });
 
   app.patch('/api/providers/:id', async (c) => {
-    const current = await store.getProvider(c.req.param('id'));
-    if (!current) return c.json({ error: 'Провайдер не найден' }, 404);
+    const user = await actor(c);
+    const current = await editableProvider(user, c.req.param('id'));
     const body = await readBody(c);
     const record = isRecord(body) ? body : {};
     const input = parseProviderInput(
@@ -669,22 +756,28 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       },
       true,
     );
+    if (current.ownerUserId) await checkPersonalBaseUrl(user, input.baseUrl);
     if (!input.apiKey || input.apiKey === SECRET_MASK) input.apiKey = undefined;
-    if (!input.apiKey) input.apiKey = await borrowedKey(body);
+    if (!input.apiKey) input.apiKey = await borrowedKey(user, body);
     const row = await store.updateProvider(current.id, input);
     if (!row) return c.json({ error: 'Провайдер не найден' }, 404);
-    return c.json(toPublicProvider(row));
+    return c.json({
+      ...toPublicProvider(row),
+      owned: Boolean(row.ownerUserId),
+    });
   });
 
   app.delete('/api/providers/:id', async (c) => {
-    const ok = await store.deleteProvider(c.req.param('id'));
+    const user = await actor(c);
+    const current = await editableProvider(user, c.req.param('id'));
+    const ok = await store.deleteProvider(current.id);
     if (!ok) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json({ ok: true });
   });
 
   app.post('/api/providers/:id/test', async (c) => {
-    const provider = await store.getProvider(c.req.param('id'));
-    if (!provider) return c.json({ error: 'Провайдер не найден' }, 404);
+    const user = await actor(c);
+    const provider = await editableProvider(user, c.req.param('id'));
     if (providerNeedsKey(provider.kind) && !provider.apiKey)
       return c.json({ error: 'Сначала сохраните API-ключ' }, 400);
     const model = provider.models[0];
@@ -830,6 +923,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const providerId =
       input.providerId === undefined ? defaults.providerId : input.providerId;
     const model = input.model === undefined ? defaults.model : input.model;
+    await denyForeignProvider(user, providerId);
     if (user.role !== 'admin' && providerId && model) {
       await requireAllowedModel(
         user,
@@ -869,6 +963,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       throw new HttpError(403, 'Общего агента настраивает администратор');
     const raw = await readBody(c);
     const input = limitForManager(user, parseAgentInput(raw, true));
+    await denyForeignProvider(user, input.providerId);
     if (user.role !== 'admin' && (input.providerId || input.model)) {
       await requireAllowedModel(
         user,
@@ -884,6 +979,13 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       raw.shared === true &&
       current.ownerId
     ) {
+      const agentProvider = current.providerId
+        ? await store.getProvider(current.providerId)
+        : undefined;
+      if (agentProvider?.ownerUserId)
+        throw badRequest(
+          'Агент работает на личном ключе менеджера — выберите ему общую модель, потом делайте общим',
+        );
       const owner = current.ownerId;
       await store.setAgentOwner(current.id, null);
       const ids = await store.listUserAgentIds(owner);
@@ -1081,6 +1183,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       typeof record.model === 'string'
         ? record.model
         : (agent.model ?? defaults.model);
+    await denyForeignProvider(user, providerId);
     if (user.role === 'manager' && providerId && model) {
       await requireAllowedModel(
         user,
@@ -1132,6 +1235,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const providerId =
       typeof body.providerId === 'string' ? body.providerId : undefined;
     const model = typeof body.model === 'string' ? body.model : undefined;
+    await denyForeignProvider(user, providerId);
     if (
       user.role === 'manager' &&
       (providerId !== undefined || model !== undefined)

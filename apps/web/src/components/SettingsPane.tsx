@@ -34,14 +34,43 @@ export function SettingsPane({
   onMenu,
   onProvidersChanged,
   shareModels = false,
+  personal = false,
 }: {
   tab: SettingsTab;
   onTab: (tab: SettingsTab) => void;
   onMenu: () => void;
   onProvidersChanged: () => void;
   shareModels?: boolean;
+  /** Менеджер: только свои модели (личные ключи), без остальных настроек. */
+  personal?: boolean;
 }) {
   const { t } = useI18n();
+  if (personal)
+    return (
+      <section className="settings">
+        <header className="topbar">
+          <button
+            className="icon-btn menu-btn"
+            type="button"
+            onClick={onMenu}
+            aria-label={t('menu')}
+          >
+            <IconMenu />
+          </button>
+          <div>
+            <h1>{t('myModels')}</h1>
+            <p className="muted">{t('myModelsLead')}</p>
+          </div>
+        </header>
+        <div className="settings-body">
+          <ProvidersPanel
+            onChanged={onProvidersChanged}
+            shareModels={false}
+            personal
+          />
+        </div>
+      </section>
+    );
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'providers', label: t('tabProviders') },
     { id: 'mcp', label: t('tabMcp') },
@@ -116,9 +145,11 @@ async function toggleShared(
 function ProvidersPanel({
   onChanged,
   shareModels,
+  personal = false,
 }: {
   onChanged: () => void;
   shareModels: boolean;
+  personal?: boolean;
 }) {
   const { t } = useI18n();
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
@@ -225,8 +256,10 @@ function ProvidersPanel({
   };
 
   const load = useCallback(async () => {
-    setProviders(await api.providers());
-  }, []);
+    const list = await api.providers();
+    // В «Моих моделях» — только свои ключи; общие модели менеджер видит в чате.
+    setProviders(personal ? list.filter((row) => row.owned) : list);
+  }, [personal]);
   useEffect(() => {
     void load().catch((reason: unknown) =>
       setError(reason instanceof Error ? reason.message : t('error')),
@@ -300,6 +333,7 @@ function ProvidersPanel({
           {t('addProvider')}
         </button>
       </div>
+      {personal && <p className="hint">{t('myModelsHint')}</p>}
       {error && <p className="error-line">{error}</p>}
       {testNote && <p className="note">{testNote}</p>}
       {editing && (
@@ -332,11 +366,13 @@ function ProvidersPanel({
                 );
               }}
             >
-              {KINDS.map((kind) => (
-                <option key={kind} value={kind}>
-                  {kindLabel(kind, t)}
-                </option>
-              ))}
+              {KINDS.filter((kind) => !personal || kind !== 'mock').map(
+                (kind) => (
+                  <option key={kind} value={kind}>
+                    {kindLabel(kind, t)}
+                  </option>
+                ),
+              )}
             </select>
           </label>
           {editing.kind === 'openai' && (

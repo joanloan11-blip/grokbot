@@ -145,7 +145,61 @@ describe('auth and isolation', () => {
       { name: 'чужой', kind: 'mock', models: ['mock'] },
       managerCookie,
     );
-    expect(forbidden.status).toBe(403);
+    expect(forbidden.status).toBe(400);
+
+    // Личный провайдер менеджера: виден только ему, админ его не трогает.
+    const internal = await send(
+      '/api/providers',
+      {
+        name: 'локалка',
+        kind: 'openai',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        apiKey: 'k',
+        models: ['llama'],
+      },
+      managerCookie,
+    );
+    expect(internal.status).toBe(400);
+    const personal = await json<{ id: string; owned: boolean }>(
+      await send(
+        '/api/providers',
+        {
+          name: 'Мой OpenAI',
+          kind: 'openai',
+          apiKey: 'sk-proj-personal',
+          models: ['gpt-5-mini'],
+        },
+        managerCookie,
+      ),
+    );
+    expect(personal.owned).toBe(true);
+    const managerCatalog = await json<{ id: string; owned?: boolean }[]>(
+      await get('/api/providers', managerCookie),
+    );
+    expect(managerCatalog.find((row) => row.id === personal.id)?.owned).toBe(
+      true,
+    );
+    const adminCatalog = await json<{ id: string }[]>(
+      await get('/api/providers', adminCookie),
+    );
+    expect(adminCatalog.map((row) => row.id)).not.toContain(personal.id);
+    const adminDelete = await handle.app.request(
+      `/api/providers/${personal.id}`,
+      { method: 'DELETE', headers: { cookie: adminCookie } },
+    );
+    expect(adminDelete.status).toBe(403);
+    const managerChatOwn = await send(
+      '/api/conversations',
+      { locale: 'ru', providerId: personal.id, model: 'gpt-5-mini' },
+      managerCookie,
+    );
+    expect(managerChatOwn.status).toBe(201);
+    const adminUsesIt = await send(
+      '/api/conversations',
+      { locale: 'ru', providerId: personal.id, model: 'gpt-5-mini' },
+      adminCookie,
+    );
+    expect(adminUsesIt.status).toBe(403);
 
     const catalog = await json<{ id: string; models: string[] }[]>(
       await get('/api/providers', adminCookie),

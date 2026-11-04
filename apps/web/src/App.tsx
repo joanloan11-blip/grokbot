@@ -31,7 +31,8 @@ type View =
   | { name: 'settings'; tab: SettingsTab }
   | { name: 'agent' }
   | { name: 'team' }
-  | { name: 'spend' };
+  | { name: 'spend' }
+  | { name: 'myModels' };
 
 export function App() {
   return (
@@ -488,6 +489,19 @@ function Shell({
                     {t('team')}
                   </button>
                 )}
+                {user && user.role !== 'admin' && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setView({ name: 'myModels' });
+                      setMenuOpen(false);
+                      setNavOpen(false);
+                    }}
+                  >
+                    {t('myModels')}
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -620,6 +634,14 @@ function Shell({
           />
         ) : view.name === 'team' && user?.role === 'admin' ? (
           <TeamPane onMenu={openNav} />
+        ) : view.name === 'myModels' ? (
+          <SettingsPane
+            tab="providers"
+            onTab={() => undefined}
+            onMenu={openNav}
+            personal
+            onProvidersChanged={() => void refresh()}
+          />
         ) : view.name === 'spend' ? (
           <SpendPane
             onMenu={openNav}

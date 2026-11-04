@@ -222,6 +222,11 @@ const ru = {
   spendImages: 'картинки',
   spendSince: 'с',
   spendFree: 'бесплатно',
+  myModels: 'Мои модели',
+  myModelsLead:
+    'Подключите свой ключ OpenAI, DeepSeek, NVIDIA, OpenRouter и других — модели появятся в выборе модели в чате.',
+  myModelsHint:
+    'Ключ видите и используете только вы, администратор его не видит. Расход идёт с вашего ключа и виден в «Расходах». Свой адрес провайдера — только https.',
   spendLegendPrice:
     'у части моделей нет цены, они не вошли в сумму — задайте цену в блоке «По ключам».',
   moyskladTitle: 'МойСклад',
@@ -512,6 +517,11 @@ const en: Dictionary = {
   spendImages: 'images',
   spendSince: 'since',
   spendFree: 'free',
+  myModels: 'My models',
+  myModelsLead:
+    'Connect your own OpenAI, DeepSeek, NVIDIA, OpenRouter or other key — its models appear in the chat model picker.',
+  myModelsHint:
+    'Only you can see and use this key; the admin cannot. Usage is billed to your key and shown under Spending. A custom provider URL must be https.',
   spendLegendPrice:
     'some models have no price and are left out of the total — set it under “By key”.',
   moyskladTitle: 'MoySklad',

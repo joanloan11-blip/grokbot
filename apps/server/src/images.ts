@@ -31,7 +31,10 @@ export interface ImageSettings {
 }
 
 export async function readImageSettings(store: Store): Promise<ImageSettings> {
-  const providers = await store.listProviders();
+  // Картинки — только через общие ключи администратора.
+  const providers = (await store.listProviders()).filter(
+    (row) => !row.ownerUserId,
+  );
   const saved = await store.getSetting('image_provider_id');
   const fallback = providers.find(
     (row) =>

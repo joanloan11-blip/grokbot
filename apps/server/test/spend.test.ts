@@ -99,6 +99,7 @@ describe('key balance', () => {
         models: [],
         enabled: true,
         createdAt: '',
+        ownerUserId: null,
       },
       fake,
     );
@@ -119,6 +120,7 @@ describe('key balance', () => {
       models: [],
       enabled: true,
       createdAt: '',
+      ownerUserId: null,
     });
     expect(result.note).toMatch(/NVIDIA/);
   });
@@ -133,6 +135,7 @@ describe('key balance', () => {
       models: [],
       enabled: true,
       createdAt: '',
+      ownerUserId: null,
     });
     expect(result.supported).toBe(false);
     expect(result.note).toMatch(/platform\.openai\.com/);

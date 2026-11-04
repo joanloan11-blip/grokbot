@@ -28,6 +28,8 @@ export interface ProviderRow {
   models: string[];
   enabled: boolean;
   createdAt: string;
+  /** Личный провайдер менеджера (свой ключ). null — общий, его ведёт администратор. */
+  ownerUserId: string | null;
 }
 
 export interface McpRow {
@@ -49,6 +51,7 @@ interface ProviderSql {
   kind: string;
   base_url: string;
   api_key: string;
+  owner_user_id?: string | null;
   models_json: string;
   enabled: number;
   created_at: string;
@@ -367,6 +370,11 @@ export class Store {
       );
     }
     await add(
+      'providers',
+      'owner_user_id',
+      'ALTER TABLE providers ADD COLUMN owner_user_id TEXT',
+    );
+    await add(
       'users',
       'daily_token_limit',
       'ALTER TABLE users ADD COLUMN daily_token_limit INTEGER',
@@ -615,9 +623,10 @@ export class Store {
   }
 
   async insertProvider(
-    input: ProviderInput & { apiKey?: string },
+    input: ProviderInput & { apiKey?: string; ownerUserId?: string | null },
   ): Promise<ProviderRow> {
     const row: ProviderRow = {
+      ownerUserId: input.ownerUserId ?? null,
       id: newId(),
       name: input.name.trim(),
       kind: input.kind,
@@ -628,8 +637,8 @@ export class Store {
       createdAt: nowIso(),
     };
     await this.sql.run(
-      `INSERT INTO providers (id, name, kind, base_url, api_key, models_json, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO providers (id, name, kind, base_url, api_key, models_json, enabled, created_at, owner_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.name,
@@ -639,6 +648,7 @@ export class Store {
         JSON.stringify(row.models),
         row.enabled ? 1 : 0,
         row.createdAt,
+        row.ownerUserId,
       ],
     );
     return row;
@@ -1889,6 +1899,9 @@ export class Store {
     providerId: string,
     model: string,
   ): Promise<boolean> {
+    const provider = await this.getProvider(providerId);
+    // Личным ключом пользуется только его владелец — даже администратор нет.
+    if (provider?.ownerUserId) return provider.ownerUserId === user.id;
     if (user.role !== 'manager') return true;
     const allowed = await this.allowedModels(user);
     return allowed.some(
@@ -2397,6 +2410,7 @@ function mapProvider(row: ProviderSql): ProviderRow {
     models: parseStringArray(row.models_json),
     enabled: row.enabled === 1,
     createdAt: row.created_at,
+    ownerUserId: row.owner_user_id ?? null,
   };
 }
 
