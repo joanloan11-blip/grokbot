@@ -139,17 +139,34 @@ export class SkillLibrary {
   }
 }
 
+/**
+ * Копирует примеры навыков в каталог данных. Новые примеры (из обновлений)
+ * добавляются и в уже заполненный каталог; удалённые пользователем навыки
+ * не возвращаются — их имена помнит файл `.seeded`.
+ */
 export function seedSkills(targetDir: string, examplesDir: string): void {
   fs.mkdirSync(targetDir, { recursive: true });
+  if (!fs.existsSync(examplesDir)) return;
+  const marker = path.join(targetDir, '.seeded');
   const existing = fs
     .readdirSync(targetDir)
     .filter((name) => !name.startsWith('.'));
-  if (existing.length > 0 || !fs.existsSync(examplesDir)) return;
+  let seeded: string[] = [];
+  if (fs.existsSync(marker)) {
+    seeded = fs.readFileSync(marker, 'utf8').split('\n').filter(Boolean);
+  } else if (existing.length > 0) {
+    // Каталог заполнялся старой версией: всё, что там есть, считаем уже выданным.
+    seeded = [...existing];
+  }
   for (const name of fs.readdirSync(examplesDir)) {
     const source = path.join(examplesDir, name, 'SKILL.md');
     if (!fs.existsSync(source)) continue;
+    if (seeded.includes(name)) continue;
+    seeded.push(name);
+    if (existing.includes(name)) continue;
     const destDir = path.join(targetDir, name);
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(source, path.join(destDir, 'SKILL.md'));
   }
+  fs.writeFileSync(marker, `${seeded.join('\n')}\n`);
 }

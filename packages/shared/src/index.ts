@@ -225,6 +225,10 @@ export interface AgentTemplate {
   emoji: string;
   description: string;
   systemPrompt: string;
+  /** Навыки, которые включить. Не задано — все включённые. */
+  skillNames?: string[];
+  /** MCP-серверы по имени или префиксу (`avito-` — все кабинеты). Не задано — ни одного. */
+  mcpNames?: string[];
 }
 
 export interface MemoryNote {

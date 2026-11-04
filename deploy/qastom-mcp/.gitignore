@@ -1,0 +1,5 @@
+avito/secrets/
+moysklad/home/
+moysklad/auth.env
+servers.json
+docker-compose.yml

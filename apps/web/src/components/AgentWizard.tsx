@@ -44,6 +44,7 @@ export function AgentWizard({
   const [mcpServerIds, setMcpServerIds] = useState<string[]>([]);
   const [error, setError] = useState('');
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: шаблон применяется один раз при загрузке
   useEffect(() => {
     void Promise.all([
       api.templates(),
@@ -57,28 +58,8 @@ export function AgentWizard({
         setSkills(nextSkills.skills);
         setServers(nextServers);
         const first = nextTemplates[0];
-        if (first) {
-          setTemplateId(first.id);
-          setName(first.name);
-          setEmoji(first.emoji);
-          setDescription(first.description);
-          setSystemPrompt(first.systemPrompt);
-          setSkillNames(
-            nextSkills.skills
-              .filter((skill) => skill.enabled)
-              .map((skill) => skill.name),
-          );
-          setMcpServerIds(
-            nextServers
-              .filter((server) => server.enabled)
-              .map((server) => server.id),
-          );
-          const provider = nextProviders.find(
-            (item) => item.enabled && item.models.length > 0,
-          );
-          setProviderId(provider?.id ?? '');
-          setModel(provider?.models[0] ?? '');
-        }
+        if (first)
+          applyTemplate(first, nextSkills.skills, nextServers, nextProviders);
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : t('error')),
@@ -97,10 +78,28 @@ export function AgentWizard({
     setDescription(template.description);
     setSystemPrompt(template.systemPrompt);
     setSkillNames(
-      nextSkills.filter((skill) => skill.enabled).map((skill) => skill.name),
+      nextSkills
+        .filter((skill) =>
+          template.skillNames
+            ? template.skillNames.includes(skill.name)
+            : skill.enabled,
+        )
+        .map((skill) => skill.name),
     );
+    // MCP добавляют много инструментов — включаем только те, что нужны шаблону.
+    const wanted = template.mcpNames ?? [];
     setMcpServerIds(
-      nextServers.filter((server) => server.enabled).map((server) => server.id),
+      nextServers
+        .filter(
+          (server) =>
+            server.enabled &&
+            wanted.some((name) =>
+              name.endsWith('-')
+                ? server.name.startsWith(name)
+                : server.name === name,
+            ),
+        )
+        .map((server) => server.id),
     );
     const provider = nextProviders.find(
       (item) => item.enabled && item.models.length > 0,
