@@ -193,6 +193,7 @@ const ru = {
   imagesLimit: 'Картинок в день на пользователя',
   imagesUsed: 'Вы создали сегодня',
   download: 'Скачать',
+  openSubchat: 'Открыть чат подзадачи',
   moyskladTitle: 'МойСклад',
   moyskladLead:
     'Токен только на чтение: агенты смогут проверять наличие и цены инструментом stock_lookup. Токен хранится на сервере зашифрованным.',
@@ -452,6 +453,7 @@ const en: Dictionary = {
   imagesLimit: 'Images per user per day',
   imagesUsed: 'You created today',
   download: 'Download',
+  openSubchat: 'Open subtask chat',
   moyskladTitle: 'MoySklad',
   moyskladLead:
     'Read-only token: agents can check stock and prices with the stock_lookup tool. The token is stored encrypted on the server.',

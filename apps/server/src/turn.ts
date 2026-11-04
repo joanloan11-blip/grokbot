@@ -29,6 +29,7 @@ import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
+import { DELEGATE_LIMITS, normalizeTasks, runDelegation } from './orchestrator';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
 import { asString, clampText, jsonObject } from './util';
@@ -765,6 +766,48 @@ async function exposeTools(
       .filter((item) => item.id !== agent.id)
       .map((item) => item.name)
       .join(', ');
+    used.add('delegate');
+    tools.push({
+      definition: {
+        name: 'delegate',
+        description: `Orchestrate: split a complex request into independent subtasks and run them IN PARALLEL on other agents (or on yourself with agent="self"). Each subtask gets its own chat; you receive all results together and must then compare and synthesize one final answer. Up to ${DELEGATE_LIMITS.maxTasks} subtasks, ${DELEGATE_LIMITS.concurrency} at a time, 5 minutes each. Use for research from several angles, checking stock + competitors + drafting a reply, etc. Available agents: ${names || 'only self'}. Оркестратор: параллельные подзадачи.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tasks: {
+              type: 'array',
+              description: 'Independent subtasks',
+              items: {
+                type: 'object',
+                properties: {
+                  agent: {
+                    type: 'string',
+                    description: 'Agent name, or "self"',
+                  },
+                  title: { type: 'string', description: 'Short label' },
+                  task: {
+                    type: 'string',
+                    description:
+                      'Full self-contained instruction with all needed context',
+                  },
+                },
+                required: ['task'],
+              },
+            },
+          },
+          required: ['tasks'],
+        },
+      },
+      run: (args) =>
+        runDelegation(deps, {
+          from: agent,
+          userId,
+          conversationId,
+          depth,
+          locale: 'ru',
+          tasks: normalizeTasks(args.tasks),
+        }),
+    });
     tools.push({
       definition: {
         name: 'send_to_agent',
@@ -1130,6 +1173,7 @@ export async function toolNeedsApproval(
   if (auto.includes('*') || auto.includes(name)) return false;
   return (
     name === 'send_to_agent' ||
+    name === 'delegate' ||
     name === 'run_code' ||
     name === 'shell' ||
     name === 'workspace_delete' ||

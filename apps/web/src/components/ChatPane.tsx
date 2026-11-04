@@ -32,6 +32,8 @@ interface Props {
   onMenu: () => void;
   onConversation: (conversation: Conversation) => void;
   onDeleted: (id: string) => void;
+  /** Открыть другой чат (например, подзадачу оркестратора). */
+  onOpen?: (id: string) => void;
 }
 
 interface Choice {
@@ -50,6 +52,7 @@ export function ChatPane({
   onMenu,
   onConversation,
   onDeleted,
+  onOpen,
 }: Props) {
   const { t, locale } = useI18n();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -548,7 +551,7 @@ export function ChatPane({
         <>
           <div className="transcript" ref={scroller}>
             <div className="thread">
-              {renderMessages(messages, t, (text) => void send(text))}
+              {renderMessages(messages, t, (text) => void send(text), onOpen)}
               {(reasoning || streaming) && (
                 <article className="bubble assistant">
                   {reasoning && (
@@ -637,6 +640,7 @@ function renderMessages(
   messages: ChatMessage[],
   t: ReturnType<typeof useI18n>['t'],
   onSend: (text: string) => void,
+  onOpen?: (id: string) => void,
 ) {
   const nodes = [];
   for (const message of messages) {
@@ -698,6 +702,7 @@ function renderMessages(
               args={call.arguments}
               result={result?.content}
               onSend={onSend}
+              onOpen={onOpen}
               labelRunning={t('toolRunning')}
               labelArgs={t('toolArgs')}
               labelDone={t('toolDone')}
@@ -719,6 +724,7 @@ function ToolCard({
   labelArgs,
   labelDone,
   onSend,
+  onOpen,
 }: {
   name: string;
   args: string;
@@ -728,6 +734,7 @@ function ToolCard({
   labelArgs: string;
   labelDone: string;
   onSend?: (text: string) => void;
+  onOpen?: (id: string) => void;
 }) {
   return (
     <div className={running ? 'tool running' : 'tool'}>
@@ -753,11 +760,15 @@ function ToolCard({
       {result?.startsWith('APPROVAL:') && <ApprovalCard raw={result} />}
       {result?.startsWith('DIFF:') && <DiffView raw={result.slice(5)} />}
       {result?.startsWith('IMAGE:') && <ImageResult raw={result.slice(6)} />}
+      {result?.startsWith('DELEGATE:') && (
+        <DelegateView raw={result.slice(9)} onOpen={onOpen} />
+      )}
       {result !== undefined &&
         !result.startsWith('ASK:') &&
         !result.startsWith('APPROVAL:') &&
         !result.startsWith('DIFF:') &&
-        !result.startsWith('IMAGE:') && (
+        !result.startsWith('IMAGE:') &&
+        !result.startsWith('DELEGATE:') && (
           <div className="tool-result">{result}</div>
         )}
     </div>
@@ -973,5 +984,69 @@ function ImageResult({ raw }: { raw: string }) {
         </a>
       </figcaption>
     </figure>
+  );
+}
+
+interface DelegateItem {
+  agent: string;
+  emoji: string;
+  title: string;
+  status: 'done' | 'error' | 'timeout';
+  result: string;
+  conversationId: string | null;
+  seconds: number;
+}
+
+function DelegateView({
+  raw,
+  onOpen,
+}: {
+  raw: string;
+  onOpen?: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  let results: DelegateItem[] = [];
+  try {
+    results = (JSON.parse(raw) as { results?: DelegateItem[] }).results ?? [];
+  } catch {
+    return null;
+  }
+  return (
+    <div className="delegate">
+      {results.map((item, index) => (
+        <details
+          // biome-ignore lint/suspicious/noArrayIndexKey: порядок подзадач фиксирован
+          key={index}
+          className={`sub ${item.status}`}
+        >
+          <summary>
+            <span className="sub-state">
+              {item.status === 'done'
+                ? '✓'
+                : item.status === 'timeout'
+                  ? '⏱'
+                  : '✕'}
+            </span>
+            <strong>{item.title}</strong>
+            <span className="sub-agent">
+              {item.emoji} {item.agent}
+            </span>
+            <span className="sub-time">{item.seconds} с</span>
+          </summary>
+          <div className="sub-body">
+            <MarkdownView text={item.result} />
+            {item.conversationId && onOpen && (
+              <button
+                type="button"
+                className="ghost slim"
+                onClick={() => onOpen(item.conversationId as string)}
+              >
+                {t('openSubchat')}
+              </button>
+            )}
+          </div>
+        </details>
+      ))}
+    </div>
   );
 }

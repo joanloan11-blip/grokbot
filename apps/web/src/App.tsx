@@ -586,6 +586,7 @@ function Shell({
             defaultModel={agent.model}
             providers={providers}
             projectId={projectId}
+            onOpen={(id) => openChat(id)}
             barPicker={user?.role === 'manager'}
             onMenu={openNav}
             onConversation={(conversation) => {

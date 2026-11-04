@@ -1807,3 +1807,115 @@ input[type="checkbox"]:checked::after {
   color: var(--text);
   flex: none;
 }
+
+/* --- оркестратор: подзадачи --- */
+.delegate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.delegate .sub {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.delegate summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.9rem;
+}
+.delegate summary::-webkit-details-marker {
+  display: none;
+}
+.sub-state {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  background: var(--bg-3);
+}
+.sub.done .sub-state {
+  background: rgba(63, 185, 80, 0.2);
+  color: #3fb950;
+}
+.sub.error .sub-state,
+.sub.timeout .sub-state {
+  background: rgba(248, 81, 73, 0.18);
+  color: #f85149;
+}
+.sub-agent {
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.sub-time {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.sub-body {
+  padding: 0 12px 12px;
+}
+
+/* --- оркестратор: подзадачи --- */
+.delegate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.delegate .sub {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.delegate summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.9rem;
+}
+.delegate summary::-webkit-details-marker {
+  display: none;
+}
+.sub-state {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  background: var(--bg-3);
+}
+.sub.done .sub-state {
+  background: rgba(63, 185, 80, 0.2);
+  color: #3fb950;
+}
+.sub.error .sub-state,
+.sub.timeout .sub-state {
+  background: rgba(248, 81, 73, 0.18);
+  color: #f85149;
+}
+.sub-agent {
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.sub-time {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.sub-body {
+  padding: 0 12px 12px;
+}
