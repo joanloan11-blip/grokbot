@@ -1919,3 +1919,166 @@ input[type="checkbox"]:checked::after {
 .sub-body {
   padding: 0 12px 12px;
 }
+
+/* --- расходы --- */
+.spend-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.spend-total {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 860px;
+}
+.spend-total > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.spend-total strong {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+.spend-h {
+  font-size: 1rem;
+  margin: 26px 0 10px;
+}
+.spend .stack {
+  max-width: 860px;
+}
+.spend-row summary,
+.spend-flat {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(60px, 1fr) auto;
+  grid-template-areas:
+    "name bar cost"
+    "nums nums nums";
+  align-items: center;
+  gap: 4px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.spend-flat {
+  cursor: default;
+}
+.spend-row summary::-webkit-details-marker {
+  display: none;
+}
+.spend-name {
+  grid-area: name;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spend-emoji {
+  margin-right: 8px;
+}
+.spend-bar {
+  grid-area: bar;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.spend-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+}
+.spend-cost {
+  grid-area: cost;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+.spend-nums {
+  grid-area: nums;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+.spend .warn {
+  color: var(--accent);
+}
+.spend-sub {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-x: auto;
+}
+.spend table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+.spend td,
+.spend th {
+  padding: 6px 8px 6px 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+.spend th {
+  border-top: 0;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.78rem;
+}
+.spend td.num,
+.spend th.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.spend td .spend-nums {
+  font-size: 0.78rem;
+}
+.spend-balance {
+  margin: 8px 0 4px;
+}
+.spend-prices {
+  margin-top: 8px;
+}
+.price-edit {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.price-edit input {
+  width: 64px;
+  padding: 4px 6px;
+}
+.chip.bad-price {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+@media (max-width: 640px) {
+  .spend-row summary,
+  .spend-flat {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name cost"
+      "bar bar"
+      "nums nums";
+  }
+  .spend-total {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .spend-prices th:nth-child(2),
+  .spend-prices td:nth-child(2) {
+    display: none;
+  }
+}
+
+.spend-legend {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  max-width: 860px;
+}

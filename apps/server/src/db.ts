@@ -353,6 +353,19 @@ export class Store {
       'output_tokens',
       'ALTER TABLE usage_events ADD COLUMN output_tokens INTEGER',
     );
+    for (const [column, type] of [
+      ['agent_id', 'TEXT'],
+      ['conversation_id', 'TEXT'],
+      ['cached_tokens', 'INTEGER'],
+      ['exact', 'INTEGER'],
+      ['kind', 'TEXT'],
+    ] as const) {
+      await add(
+        'usage_events',
+        column,
+        `ALTER TABLE usage_events ADD COLUMN ${column} ${type}`,
+      );
+    }
     await add(
       'users',
       'daily_token_limit',
@@ -1675,7 +1688,7 @@ export class Store {
 
   async countUsageSince(userId: string, sinceIso: string): Promise<number> {
     const row = await this.sql.get<{ n: number }>(
-      'SELECT COUNT(*) AS n FROM usage_events WHERE user_id = ? AND created_at >= ?',
+      "SELECT COUNT(*) AS n FROM usage_events WHERE user_id = ? AND created_at >= ? AND COALESCE(kind, 'chat') <> 'image'",
       [userId, sinceIso],
     );
     return Number(row?.n ?? 0);
@@ -1687,20 +1700,103 @@ export class Store {
     model: string;
     inputTokens?: number;
     outputTokens?: number;
-  }): Promise<void> {
+    cachedTokens?: number;
+    agentId?: string | null;
+    conversationId?: string | null;
+    /** true — цифры пришли от провайдера, false — оценка по длине текста. */
+    exact?: boolean;
+    kind?: 'chat' | 'image';
+  }): Promise<string> {
+    const id = newId();
     await this.sql.run(
-      `INSERT INTO usage_events (id, user_id, provider_id, model, created_at, input_tokens, output_tokens)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO usage_events (id, user_id, provider_id, model, created_at, input_tokens, output_tokens,
+         cached_tokens, agent_id, conversation_id, exact, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        newId(),
+        id,
         input.userId,
         input.providerId,
         input.model,
         nowIso(),
         input.inputTokens ?? null,
         input.outputTokens ?? null,
+        input.cachedTokens ?? 0,
+        input.agentId ?? null,
+        input.conversationId ?? null,
+        input.exact ? 1 : 0,
+        input.kind ?? 'chat',
       ],
     );
+    return id;
+  }
+
+  /** Заменяет оценку на реальные цифры, которые вернул провайдер. */
+  async updateUsageTokens(
+    id: string,
+    tokens: {
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+      exact?: boolean;
+    },
+  ): Promise<void> {
+    await this.sql.run(
+      `UPDATE usage_events SET input_tokens = ?, output_tokens = ?, cached_tokens = ?, exact = ?
+       WHERE id = ?`,
+      [
+        tokens.inputTokens,
+        tokens.outputTokens,
+        tokens.cachedTokens,
+        tokens.exact === false ? 0 : 1,
+        id,
+      ],
+    );
+  }
+
+  /** Расход, сгруппированный по пользователю, агенту, ключу и модели. */
+  async usageBreakdown(
+    sinceIso: string,
+    userId?: string,
+  ): Promise<
+    {
+      userId: string;
+      agentId: string | null;
+      providerId: string | null;
+      model: string;
+      kind: string;
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+      exactCalls: number;
+    }[]
+  > {
+    const params: unknown[] = [sinceIso];
+    if (userId) params.push(userId);
+    const rows = await this.sql.all<Record<string, unknown>>(
+      `SELECT user_id, agent_id, provider_id, model, COALESCE(kind, 'chat') AS kind,
+         COUNT(*) AS calls,
+         COALESCE(SUM(input_tokens), 0) AS input_tokens,
+         COALESCE(SUM(output_tokens), 0) AS output_tokens,
+         COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+         COALESCE(SUM(exact), 0) AS exact_calls
+       FROM usage_events
+       WHERE created_at >= ?${userId ? ' AND user_id = ?' : ''}
+       GROUP BY user_id, agent_id, provider_id, model, COALESCE(kind, 'chat')`,
+      params,
+    );
+    return rows.map((row) => ({
+      userId: String(row.user_id),
+      agentId: (row.agent_id as string | null) ?? null,
+      providerId: (row.provider_id as string | null) ?? null,
+      model: String(row.model),
+      kind: String(row.kind),
+      calls: Number(row.calls),
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      cachedTokens: Number(row.cached_tokens),
+      exactCalls: Number(row.exact_calls),
+    }));
   }
 
   async tokenSumSince(userId: string, sinceIso: string): Promise<number> {

@@ -30,6 +30,13 @@ export type ProviderEvent =
       name?: string;
       argumentsDelta?: string;
     }
+  | {
+      type: 'usage';
+      inputTokens: number;
+      outputTokens: number;
+      /** Сколько входных токенов взято из кэша (дешевле). */
+      cachedTokens?: number;
+    }
   | { type: 'done'; finishReason?: string }
   | { type: 'error'; message: string };
 

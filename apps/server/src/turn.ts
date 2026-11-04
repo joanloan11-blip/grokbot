@@ -156,25 +156,35 @@ export async function runTurn(
   try {
     await assertQuota(deps.store, owner);
     await runAgentLoop({
-      client: meteredClient(createClient(provider), async () => {
-        await assertQuota(deps.store, owner);
-        const cap = await deps.store.getSetting(`token_limit:${userId}`);
-        if (cap && Number(cap) > 0) {
-          const used = await deps.store.tokenSumSince(userId, utcDayStart());
-          if (used >= Number(cap)) {
-            throw new HttpError(429, 'Дневной лимит токенов исчерпан');
+      client: meteredClient(createClient(provider), {
+        before: async (messages) => {
+          await assertQuota(deps.store, owner);
+          const cap = await deps.store.getSetting(`token_limit:${userId}`);
+          if (cap && Number(cap) > 0) {
+            const used = await deps.store.tokenSumSince(userId, utcDayStart());
+            if (used >= Number(cap)) {
+              throw new HttpError(429, 'Дневной лимит токенов исчерпан');
+            }
           }
-        }
-        await deps.store.insertUsage({
-          userId,
-          providerId: provider.id,
-          model,
-          inputTokens: Math.ceil(
-            history.reduce((sum, message) => sum + message.content.length, 0) /
-              4,
-          ),
-          outputTokens: 0,
-        });
+          // Пока провайдер не ответил — оценка по длине; потом заменим реальными цифрами.
+          return deps.store.insertUsage({
+            userId,
+            providerId: provider.id,
+            model,
+            agentId: agent.id,
+            conversationId: conversation.id,
+            inputTokens: Math.ceil(
+              messages.reduce(
+                (sum, message) => sum + message.content.length,
+                0,
+              ) / 4,
+            ),
+            outputTokens: 0,
+          });
+        },
+        after: async (id, usage) => {
+          await deps.store.updateUsageTokens(id, usage);
+        },
       }),
       model,
       messages: [
@@ -905,6 +915,7 @@ async function exposeTools(
           size: asString(args.size) || undefined,
           quality: asString(args.quality) || undefined,
           editAttached: args.edit_attached === true,
+          agentId: agent.id,
         }),
     });
   }
@@ -1353,13 +1364,60 @@ export async function assertQuota(
 
 function meteredClient(
   client: LLMClient,
-  onCall: () => Promise<void>,
+  hooks: {
+    before: (messages: ModelMessage[]) => Promise<string>;
+    after: (
+      id: string,
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cachedTokens: number;
+        exact: boolean;
+      },
+    ) => Promise<void>;
+  },
 ): LLMClient {
   return {
     stream(input) {
       return (async function* () {
-        await onCall();
-        yield* client.stream(input);
+        const id = await hooks.before(input.messages);
+        let outputChars = 0;
+        let reported = false;
+        try {
+          for await (const event of client.stream(input)) {
+            if (event.type === 'usage') {
+              reported = true;
+              await hooks.after(id, {
+                inputTokens: event.inputTokens,
+                outputTokens: event.outputTokens,
+                cachedTokens: event.cachedTokens ?? 0,
+                exact: true,
+              });
+              continue;
+            }
+            if (event.type === 'text' || event.type === 'reasoning')
+              outputChars += event.delta.length;
+            if (event.type === 'tool_call_delta')
+              outputChars += (event.argumentsDelta ?? '').length;
+            yield event;
+          }
+        } finally {
+          // Провайдер не прислал usage (или поток оборвался) — хотя бы оценим ответ.
+          if (!reported && outputChars > 0)
+            await hooks
+              .after(id, {
+                inputTokens: Math.ceil(
+                  input.messages.reduce(
+                    (sum, message) => sum + message.content.length,
+                    0,
+                  ) / 4,
+                ),
+                outputTokens: Math.ceil(outputChars / 4),
+                cachedTokens: 0,
+                exact: false,
+              })
+              .catch(() => undefined);
+        }
       })();
     },
   };

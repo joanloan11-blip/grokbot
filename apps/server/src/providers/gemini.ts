@@ -69,6 +69,7 @@ export async function* streamGemini(options: {
   }
 
   let toolIndex = 0;
+  let usage: Extract<ProviderEvent, { type: 'usage' }> | undefined;
   for await (const message of readSse(response)) {
     let json: unknown;
     try {
@@ -83,6 +84,17 @@ export async function* streamGemini(options: {
         message: String(json.error.message ?? 'Ошибка Gemini'),
       };
       return;
+    }
+    if (isRecord(json.usageMetadata)) {
+      const meta = json.usageMetadata;
+      usage = {
+        type: 'usage',
+        inputTokens: Number(meta.promptTokenCount ?? 0) || 0,
+        outputTokens:
+          (Number(meta.candidatesTokenCount ?? 0) || 0) +
+          (Number(meta.thoughtsTokenCount ?? 0) || 0),
+        cachedTokens: Number(meta.cachedContentTokenCount ?? 0) || 0,
+      };
     }
     const candidate = Array.isArray(json.candidates)
       ? json.candidates[0]
@@ -110,6 +122,7 @@ export async function* streamGemini(options: {
       }
     }
   }
+  if (usage) yield usage;
   yield { type: 'done' };
 }
 

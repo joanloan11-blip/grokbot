@@ -35,6 +35,8 @@ export async function* streamOpenAI(options: {
     model: options.model,
     messages: options.messages.map(toOpenAIMessage),
     stream: true,
+    // Провайдер присылает в последнем чанке реальный расход токенов.
+    stream_options: { include_usage: true },
   };
   if (options.tools.length > 0) {
     body.tools = options.tools.map((tool) => ({
@@ -47,15 +49,28 @@ export async function* streamOpenAI(options: {
     }));
   }
 
-  const response = await llmFetch(openAiChatUrl(options.baseUrl), {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${options.apiKey}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: options.signal,
-  });
+  const send = () =>
+    llmFetch(openAiChatUrl(options.baseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${options.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: options.signal,
+    });
+  let response = await send();
+  if (response.status === 400) {
+    // Некоторые совместимые API не знают stream_options — повторяем без него.
+    const detail = await response
+      .clone()
+      .text()
+      .catch(() => '');
+    if (/stream_options|include_usage/i.test(detail)) {
+      delete body.stream_options;
+      response = await send();
+    }
+  }
 
   if (!response.ok) {
     const detail = await readErrorBody(response);
@@ -76,9 +91,11 @@ export async function* streamOpenAI(options: {
     return;
   }
 
+  let finishReason: string | undefined;
+  let usageSent = false;
   for await (const message of readSse(response)) {
     if (message.data.trim() === '[DONE]') {
-      yield { type: 'done' };
+      yield { type: 'done', finishReason };
       return;
     }
     let json: unknown;
@@ -95,8 +112,19 @@ export async function* streamOpenAI(options: {
       };
       return;
     }
+    const usage = readOpenAiUsage(json.usage);
+    if (usage && !usageSent) {
+      usageSent = true;
+      yield usage;
+    }
     const choice = Array.isArray(json.choices) ? json.choices[0] : undefined;
-    if (!isRecord(choice)) continue;
+    if (!isRecord(choice)) {
+      if (usageSent && finishReason) {
+        yield { type: 'done', finishReason };
+        return;
+      }
+      continue;
+    }
     const delta = isRecord(choice.delta) ? choice.delta : undefined;
     if (delta && typeof delta.content === 'string' && delta.content) {
       yield { type: 'text', delta: delta.content };
@@ -123,11 +151,39 @@ export async function* streamOpenAI(options: {
       }
     }
     if (typeof choice.finish_reason === 'string' && choice.finish_reason) {
-      yield { type: 'done', finishReason: choice.finish_reason };
-      return;
+      // Чанк с usage приходит после finish_reason — дочитываем поток.
+      finishReason = choice.finish_reason;
+      if (usageSent) {
+        yield { type: 'done', finishReason };
+        return;
+      }
     }
   }
-  yield { type: 'done' };
+  yield { type: 'done', finishReason };
+}
+
+/** usage из OpenAI-совместимого ответа (OpenAI, DeepSeek, OpenRouter, xAI…). */
+export function readOpenAiUsage(
+  raw: unknown,
+): Extract<ProviderEvent, { type: 'usage' }> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const input = Number(raw.prompt_tokens ?? raw.input_tokens);
+  const output = Number(raw.completion_tokens ?? raw.output_tokens);
+  if (!Number.isFinite(input) && !Number.isFinite(output)) return undefined;
+  const details = isRecord(raw.prompt_tokens_details)
+    ? raw.prompt_tokens_details
+    : isRecord(raw.input_tokens_details)
+      ? raw.input_tokens_details
+      : undefined;
+  const cached = Number(
+    raw.prompt_cache_hit_tokens ?? details?.cached_tokens ?? 0,
+  );
+  return {
+    type: 'usage',
+    inputTokens: Number.isFinite(input) ? input : 0,
+    outputTokens: Number.isFinite(output) ? output : 0,
+    cachedTokens: Number.isFinite(cached) ? cached : 0,
+  };
 }
 
 function toOpenAIMessage(message: ModelMessage): Record<string, unknown> {

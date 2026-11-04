@@ -67,6 +67,9 @@ export async function* streamAnthropic(options: {
     return;
   }
 
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedTokens = 0;
   for await (const message of readSse(response)) {
     let json: unknown;
     try {
@@ -115,7 +118,21 @@ export async function* streamAnthropic(options: {
         };
       }
     }
+    if (json.type === 'message_start' && isRecord(json.message)) {
+      const usage = isRecord(json.message.usage) ? json.message.usage : {};
+      cachedTokens = Number(usage.cache_read_input_tokens ?? 0) || 0;
+      inputTokens =
+        (Number(usage.input_tokens ?? 0) || 0) +
+        cachedTokens +
+        (Number(usage.cache_creation_input_tokens ?? 0) || 0);
+      outputTokens = Number(usage.output_tokens ?? 0) || 0;
+    }
+    if (json.type === 'message_delta' && isRecord(json.usage)) {
+      outputTokens = Number(json.usage.output_tokens ?? outputTokens) || 0;
+    }
     if (json.type === 'message_stop') {
+      if (inputTokens || outputTokens)
+        yield { type: 'usage', inputTokens, outputTokens, cachedTokens };
       yield { type: 'done' };
       return;
     }

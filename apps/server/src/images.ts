@@ -84,6 +84,12 @@ export async function generateImage(input: {
   quality?: string;
   sources?: { name: string; mime: string; bytes: Buffer }[];
   fetchImpl?: typeof llmFetch;
+  /** Сколько токенов списал OpenAI (поле usage ответа). */
+  onUsage?: (usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+  }) => void;
 }): Promise<Buffer> {
   const base = (input.baseUrl || 'https://api.openai.com/v1').replace(
     /\/$/,
@@ -149,6 +155,17 @@ export async function generateImage(input: {
       );
     throw new Error(`Генерация не удалась: ${message.slice(0, 300)}`);
   }
+  if (isRecord(data) && isRecord(data.usage)) {
+    const usage = data.usage;
+    const details = isRecord(usage.input_tokens_details)
+      ? usage.input_tokens_details
+      : {};
+    input.onUsage?.({
+      inputTokens: Number(usage.input_tokens ?? 0) || 0,
+      outputTokens: Number(usage.output_tokens ?? 0) || 0,
+      cachedTokens: Number(details.cached_tokens ?? 0) || 0,
+    });
+  }
   const first =
     isRecord(data) && Array.isArray(data.data) ? data.data[0] : undefined;
   if (isRecord(first) && typeof first.b64_json === 'string')
@@ -172,6 +189,7 @@ export async function runImageTool(input: {
   size?: string;
   quality?: string;
   editAttached?: boolean;
+  agentId?: string;
   fetchImpl?: typeof llmFetch;
 }): Promise<string> {
   const settings = await readImageSettings(input.store);
@@ -211,6 +229,8 @@ export async function runImageTool(input: {
   }
 
   let png: Buffer;
+  let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+  let exact = false;
   try {
     png = await generateImage({
       baseUrl: provider.baseUrl,
@@ -221,10 +241,24 @@ export async function runImageTool(input: {
       quality: input.quality || settings.quality,
       sources,
       fetchImpl: input.fetchImpl,
+      onUsage: (value) => {
+        usage = value;
+        exact = true;
+      },
     });
   } catch (error) {
     return error instanceof Error ? error.message : 'Генерация не удалась';
   }
+  await input.store.insertUsage({
+    userId: input.userId,
+    providerId: provider.id,
+    model: settings.model,
+    agentId: input.agentId ?? null,
+    conversationId: input.conversationId,
+    kind: 'image',
+    exact,
+    ...usage,
+  });
   await input.store.setSetting(
     `images_used:${input.userId}:${new Date().toISOString().slice(0, 10)}`,
     String(used + 1),

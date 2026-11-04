@@ -104,6 +104,62 @@ export interface UsageRow {
   models: UsageModelCount[];
 }
 
+/** Цена модели в долларах за 1 млн токенов. */
+export interface ModelPrice {
+  input: number;
+  cached: number;
+  output: number;
+}
+
+export interface SpendLine {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  /** null — для модели нет цены. */
+  costUsd: number | null;
+  /** Доля вызовов с точными цифрами от провайдера (0…1). */
+  exactShare: number;
+  /** Вызовы моделей без цены — в сумму не вошли. */
+  unpricedCalls: number;
+}
+
+export interface SpendReport {
+  since: string;
+  period: 'day' | 'week' | 'month';
+  scope: 'all' | 'mine';
+  total: SpendLine;
+  agents: (SpendLine & {
+    agentId: string | null;
+    name: string;
+    emoji: string;
+    users: (SpendLine & { userId: string; name: string; email: string })[];
+    models: (SpendLine & { model: string; provider: string; kind: string })[];
+  })[];
+  users: (SpendLine & { userId: string; name: string; email: string })[];
+  keys: (SpendLine & {
+    providerId: string | null;
+    name: string;
+    models: (SpendLine & {
+      model: string;
+      price: ModelPrice | null;
+      kind: string;
+    })[];
+  })[];
+}
+
+export interface KeyBalance {
+  providerId: string;
+  name: string;
+  /** Что вернул сам провайдер по этому ключу. */
+  supported: boolean;
+  balance?: number;
+  currency?: string;
+  used?: number;
+  limit?: number | null;
+  note?: string;
+}
+
 export interface Agent {
   id: string;
   name: string;

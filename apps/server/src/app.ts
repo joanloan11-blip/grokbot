@@ -1,3 +1,6 @@
+import { keyBalance } from './balance';
+import { DEFAULT_PRICES, isPrice, readPriceOverrides } from './pricing';
+import { buildSpendReport } from './spend';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -488,6 +491,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const byModel = await store.usageByModel(since.toISOString());
     const byUser = new Map(summary.map((row) => [row.userId, row.calls]));
     const users = await store.listUsers();
+    const spend = await buildSpendReport(store, { period: 'day' });
     const usageRows = [];
     for (const item of users) {
       const tokens = await store.tokenSumSince(item.id, since.toISOString());
@@ -498,13 +502,65 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         calls: byUser.get(item.id) ?? 0,
         limit: item.dailyRequestLimit,
         tokens,
-        costUsd: Number(((tokens / 1_000_000) * 1).toFixed(4)),
+        costUsd:
+          spend.users.find((row) => row.userId === item.id)?.costUsd ?? 0,
         models: byModel
           .filter((row) => row.userId === item.id)
           .map((row) => ({ model: row.model, calls: row.calls })),
       });
     }
     return c.json(usageRows);
+  });
+
+  // Расходы: админ видит всех, остальные — только себя.
+  app.get('/api/usage/report', async (c) => {
+    const user = await actor(c);
+    const raw = c.req.query('period');
+    const period = raw === 'week' || raw === 'month' ? raw : 'day';
+    const all = user.role === 'admin' && c.req.query('scope') !== 'mine';
+    return c.json(
+      await buildSpendReport(store, {
+        period,
+        userId: all ? undefined : user.id,
+      }),
+    );
+  });
+
+  app.get('/api/admin/usage/balances', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const providers = (await store.listProviders()).filter(
+      (item) => item.kind !== 'mock',
+    );
+    return c.json(await Promise.all(providers.map((item) => keyBalance(item))));
+  });
+
+  app.get('/api/admin/prices', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return c.json({
+      defaults: DEFAULT_PRICES,
+      overrides: await readPriceOverrides(store),
+    });
+  });
+
+  app.put('/api/admin/prices', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      overrides?: unknown;
+    };
+    const next: Record<string, unknown> = {};
+    if (body.overrides && typeof body.overrides === 'object')
+      for (const [model, price] of Object.entries(body.overrides)) {
+        const key = model.trim().toLowerCase().slice(0, 120);
+        if (key && isPrice(price)) next[key] = price;
+      }
+    await store.setSetting('model_prices', JSON.stringify(next));
+    return c.json({ defaults: DEFAULT_PRICES, overrides: next });
   });
 
   app.put('/api/admin/models/shared', async (c) => {

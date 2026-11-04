@@ -6,6 +6,9 @@ import type {
   ClientEvent,
   PublicUser,
   UsageRow,
+  SpendReport,
+  KeyBalance,
+  ModelPrice,
   GithubPreview,
   GithubRepoInfo,
   GithubStatus,
@@ -141,6 +144,22 @@ export const api = {
       body: JSON.stringify(body),
     }),
   usage: () => request<UsageRow[]>('/api/admin/usage'),
+  spend: (period: SpendReport['period'], scope: SpendReport['scope']) =>
+    request<SpendReport>(`/api/usage/report?period=${period}&scope=${scope}`),
+  balances: () => request<KeyBalance[]>('/api/admin/usage/balances'),
+  prices: () =>
+    request<{
+      defaults: Record<string, ModelPrice>;
+      overrides: Record<string, ModelPrice>;
+    }>('/api/admin/prices'),
+  savePrices: (overrides: Record<string, ModelPrice>) =>
+    request<{
+      defaults: Record<string, ModelPrice>;
+      overrides: Record<string, ModelPrice>;
+    }>('/api/admin/prices', {
+      method: 'PUT',
+      body: JSON.stringify({ overrides }),
+    }),
   githubStatus: () => request<GithubStatus>('/api/github/status'),
   saveGithubToken: (token: string) =>
     request<GithubStatus>('/api/github/token', {

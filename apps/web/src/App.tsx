@@ -22,6 +22,7 @@ import {
   IconSidebar,
 } from './components/icons';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
+import { SpendPane } from './components/SpendPane';
 import { TeamPane } from './components/TeamPane';
 import { I18nProvider, useI18n } from './i18n';
 
@@ -29,7 +30,8 @@ type View =
   | { name: 'chat' }
   | { name: 'settings'; tab: SettingsTab }
   | { name: 'agent' }
-  | { name: 'team' };
+  | { name: 'team' }
+  | { name: 'spend' };
 
 export function App() {
   return (
@@ -486,6 +488,17 @@ function Shell({
                     {t('team')}
                   </button>
                 )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setView({ name: 'spend' });
+                    setMenuOpen(false);
+                    setNavOpen(false);
+                  }}
+                >
+                  {t('spend')}
+                </button>
                 {isAdmin && (
                   <button
                     type="button"
@@ -607,6 +620,11 @@ function Shell({
           />
         ) : view.name === 'team' && user?.role === 'admin' ? (
           <TeamPane onMenu={openNav} />
+        ) : view.name === 'spend' ? (
+          <SpendPane
+            onMenu={openNav}
+            isAdmin={user?.role === 'admin' || (!user && isAdmin)}
+          />
         ) : view.name === 'settings' && isAdmin ? (
           <SettingsPane
             tab={view.tab}

@@ -13,6 +13,27 @@ export function createMockClient(): LLMClient {
   return {
     async *stream(input): AsyncGenerator<ProviderEvent> {
       const chunks = replyFor(input.messages, input.tools);
+      // Похоже на реальный провайдер: перед done приходит расход токенов.
+      const output = chunks.reduce(
+        (sum, event) =>
+          sum +
+          (event.type === 'text'
+            ? event.delta.length
+            : event.type === 'tool_call_delta'
+              ? (event.argumentsDelta ?? '').length
+              : 0),
+        0,
+      );
+      const input_ = input.messages.reduce(
+        (sum, message) => sum + message.content.length,
+        0,
+      );
+      chunks.splice(chunks.length - 1, 0, {
+        type: 'usage',
+        inputTokens: Math.ceil(input_ / 4),
+        outputTokens: Math.ceil(output / 4),
+        cachedTokens: 0,
+      });
       for (const event of chunks) {
         yield event;
         if (event.type === 'text' && !process.env.VITEST) {
