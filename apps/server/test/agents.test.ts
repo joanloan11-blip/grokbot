@@ -141,8 +141,15 @@ describe('agents', () => {
     const inbox = (await (
       await handle.app.request(`/api/conversations?agentId=${editor.id}`)
     ).json()) as Conversation[];
-    expect(inbox.some((item) => item.title === 'От: Маяк')).toBe(true);
-    const thread = inbox.find((item) => item.title === 'От: Маяк');
+    // Переписка агентов — служебная: в списке чатов её нет.
+    expect(inbox.some((item) => item.title === 'От: Маяк')).toBe(false);
+    const owner = (await handle.runtime.store.listUsers())[0];
+    const thread = await handle.runtime.store.findConversationByTitle(
+      owner?.id ?? '',
+      editor.id,
+      'От: Маяк',
+    );
+    expect(thread).toBeTruthy();
     const stored = (await (
       await handle.app.request(`/api/conversations/${thread?.id}`)
     ).json()) as { messages: ChatMessage[] };

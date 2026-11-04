@@ -180,6 +180,48 @@ export function registerExtraRoutes(
     );
   });
 
+  /** Сообщение из чата текущего пользователя (или 404). */
+  const ownMessage = async (userId: string, id: string) => {
+    const message = await deps.store.getMessage(id);
+    const chat = message
+      ? await deps.store.getConversation(message.conversationId, userId)
+      : undefined;
+    if (!message || !chat || chat.userId !== userId)
+      throw new HttpError(404, 'Сообщение не найдено');
+    return message;
+  };
+
+  // Правка текста ответа (или своего сообщения) без повторного запроса к модели.
+  app.patch('/api/messages/:id', async (c) => {
+    const user = await deps.actor(c);
+    const message = await ownMessage(user.id, c.req.param('id'));
+    if (message.role !== 'assistant' && message.role !== 'user')
+      throw badRequest('Это сообщение менять нельзя');
+    const body = await deps.readBody(c);
+    const content =
+      isRecord(body) && typeof body.content === 'string' ? body.content : '';
+    if (!content.trim()) throw badRequest('Текст не может быть пустым');
+    await deps.store.updateMessageContent(
+      message.id,
+      content.slice(0, 100_000),
+    );
+    return c.json({ ...message, content: content.slice(0, 100_000) });
+  });
+
+  // «Изменить и отправить заново»: удалить своё сообщение и всё после него.
+  app.post('/api/messages/:id/rewind', async (c) => {
+    const user = await deps.actor(c);
+    const message = await ownMessage(user.id, c.req.param('id'));
+    if (message.role !== 'user')
+      throw badRequest('Заново отправить можно только своё сообщение');
+    const removed = await deps.store.deleteMessagesFrom(message);
+    return c.json({
+      ok: true,
+      removed,
+      attachments: (message.attachments ?? []).map((file) => file.id),
+    });
+  });
+
   app.post('/api/messages/:id/reactions', async (c) => {
     const user = await deps.actor(c);
     const body = await deps.readBody(c);

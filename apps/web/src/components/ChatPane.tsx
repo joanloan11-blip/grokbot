@@ -33,7 +33,6 @@ interface Props {
   onConversation: (conversation: Conversation) => void;
   onDeleted: (id: string) => void;
   /** Открыть другой чат (например, подзадачу оркестратора). */
-  onOpen?: (id: string) => void;
 }
 
 interface Choice {
@@ -52,7 +51,6 @@ export function ChatPane({
   onMenu,
   onConversation,
   onDeleted,
-  onOpen,
 }: Props) {
   const { t, locale } = useI18n();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -238,9 +236,39 @@ export function ChatPane({
     }
   }
 
-  async function send(text: string) {
+  const editHandlers: EditHandlers = {
+    busy,
+    onSaveReply: async (messageId, text) => {
+      try {
+        const saved = await api.editMessage(messageId, text);
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === messageId ? { ...item, content: saved.content } : item,
+          ),
+        );
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : t('error'));
+      }
+    },
+    onResend: async (message, text) => {
+      try {
+        const result = await api.rewindMessage(message.id);
+        setMessages((current) => {
+          const index = current.findIndex((item) => item.id === message.id);
+          return index >= 0 ? current.slice(0, index) : current;
+        });
+        await send(text, result.attachments);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : t('error'));
+      }
+    },
+  };
+
+  async function send(text: string, reuseAttachments?: string[]) {
     const typed = text.trim();
-    const pendingFiles = files;
+    const pendingFiles = reuseAttachments
+      ? reuseAttachments.map((id) => ({ id }))
+      : files;
     if ((!typed && pendingFiles.length === 0) || busy || uploading) return;
     const content = typed;
     if (!selected) {
@@ -249,8 +277,10 @@ export function ChatPane({
     }
     setError('');
     setBusy(true);
-    setDraft('');
-    setFiles([]);
+    if (!reuseAttachments) {
+      setDraft('');
+      setFiles([]);
+    }
     let id = conversationId;
     try {
       if (!id) id = await ensureConversation();
@@ -551,7 +581,12 @@ export function ChatPane({
         <>
           <div className="transcript" ref={scroller}>
             <div className="thread">
-              {renderMessages(messages, t, (text) => void send(text), onOpen)}
+              {renderMessages(
+                messages,
+                t,
+                (text) => void send(text),
+                editHandlers,
+              )}
               {(reasoning || streaming) && (
                 <article className="bubble assistant">
                   {reasoning && (
@@ -636,11 +671,19 @@ function ModelSelect({
   );
 }
 
+interface EditHandlers {
+  busy: boolean;
+  /** Ответ модели: заменить текст. */
+  onSaveReply: (id: string, text: string) => Promise<void>;
+  /** Своё сообщение: удалить его и всё после, отправить новый текст. */
+  onResend: (message: ChatMessage, text: string) => Promise<void>;
+}
+
 function renderMessages(
   messages: ChatMessage[],
   t: ReturnType<typeof useI18n>['t'],
   onSend: (text: string) => void,
-  onOpen?: (id: string) => void,
+  edit: EditHandlers,
 ) {
   const nodes = [];
   for (const message of messages) {
@@ -678,7 +721,7 @@ function renderMessages(
               )}
             </div>
           ) : null}
-          <MarkdownView text={message.content} />
+          <EditableText message={message} edit={edit} />
         </article>,
       );
       continue;
@@ -690,7 +733,7 @@ function renderMessages(
         {message.reasoning && (
           <ReasoningBlock text={message.reasoning} label={t('reasoning')} />
         )}
-        {message.content && <MarkdownView text={message.content} />}
+        {message.content && <EditableText message={message} edit={edit} />}
         {calls.map((call) => {
           const result = messages.find(
             (item) => item.role === 'tool' && item.toolCallId === call.id,
@@ -702,7 +745,6 @@ function renderMessages(
               args={call.arguments}
               result={result?.content}
               onSend={onSend}
-              onOpen={onOpen}
               labelRunning={t('toolRunning')}
               labelArgs={t('toolArgs')}
               labelDone={t('toolDone')}
@@ -724,7 +766,6 @@ function ToolCard({
   labelArgs,
   labelDone,
   onSend,
-  onOpen,
 }: {
   name: string;
   args: string;
@@ -734,12 +775,14 @@ function ToolCard({
   labelArgs: string;
   labelDone: string;
   onSend?: (text: string) => void;
-  onOpen?: (id: string) => void;
 }) {
+  const { t } = useI18n();
+  // Задания для других моделей (подзадачи, сообщения агентам, промпт картинки) не показываем.
+  const hidden = PROMPT_TOOLS[name];
   return (
     <div className={running ? 'tool running' : 'tool'}>
       <header>
-        <code>{name}</code>
+        {hidden ? <strong>{t(hidden)}</strong> : <code>{name}</code>}
         <span>
           {running
             ? labelRunning
@@ -748,7 +791,8 @@ function ToolCard({
               : labelArgs}
         </span>
       </header>
-      {args && args !== '{}' && (
+      {hidden && name === 'delegate' && <DelegateTitles args={args} />}
+      {!hidden && args && args !== '{}' && (
         <pre>
           <em>{labelArgs}</em>
           {pretty(args)}
@@ -761,7 +805,7 @@ function ToolCard({
       {result?.startsWith('DIFF:') && <DiffView raw={result.slice(5)} />}
       {result?.startsWith('IMAGE:') && <ImageResult raw={result.slice(6)} />}
       {result?.startsWith('DELEGATE:') && (
-        <DelegateView raw={result.slice(9)} onOpen={onOpen} />
+        <DelegateView raw={result.slice(9)} />
       )}
       {result !== undefined &&
         !result.startsWith('ASK:') &&
@@ -772,6 +816,152 @@ function ToolCard({
           <div className="tool-result">{result}</div>
         )}
     </div>
+  );
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Без https или без разрешения — старый способ.
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  }
+}
+
+/** Текст сообщения с кнопками «Копировать» и «Изменить». */
+function EditableText({
+  message,
+  edit,
+}: {
+  message: ChatMessage;
+  edit: EditHandlers;
+}) {
+  const { t } = useI18n();
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(message.content);
+  const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const mine = message.role === 'user';
+
+  if (editing)
+    return (
+      <form
+        className="msg-edit"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!text.trim() || saving) return;
+          setSaving(true);
+          void (
+            mine
+              ? edit.onResend(message, text)
+              : edit.onSaveReply(message.id, text)
+          )
+            .then(() => setEditing(false))
+            .finally(() => setSaving(false));
+        }}
+      >
+        <textarea
+          value={text}
+          rows={Math.min(16, Math.max(3, text.split('\n').length + 1))}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setEditing(false);
+          }}
+        />
+        <p className="hint">{mine ? t('resendHint') : t('editedHint')}</p>
+        <div className="row-actions">
+          <button className="primary-btn slim" type="submit" disabled={saving}>
+            {mine ? t('resend') : t('save')}
+          </button>
+          <button
+            className="ghost slim"
+            type="button"
+            onClick={() => {
+              setText(message.content);
+              setEditing(false);
+            }}
+          >
+            {t('cancel')}
+          </button>
+        </div>
+      </form>
+    );
+
+  return (
+    <>
+      <MarkdownView text={message.content} />
+      <div className="msg-actions">
+        <button
+          type="button"
+          className="msg-act"
+          onClick={() =>
+            void copyToClipboard(message.content).then((ok) => {
+              if (!ok) return;
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            })
+          }
+        >
+          {copied ? t('copied') : t('copy')}
+        </button>
+        <button
+          type="button"
+          className="msg-act"
+          disabled={edit.busy}
+          onClick={() => {
+            setText(message.content);
+            setEditing(true);
+          }}
+        >
+          {t('editMessage')}
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** Инструменты, чьи аргументы — промпты для других моделей. Значение — подпись вместо имени. */
+const PROMPT_TOOLS: Record<
+  string,
+  Parameters<ReturnType<typeof useI18n>['t']>[0]
+> = {
+  delegate: 'toolDelegate',
+  send_to_agent: 'toolSendAgent',
+  task: 'toolTask',
+  generate_image: 'toolImage',
+  create_routine: 'toolRoutine',
+};
+
+/** Только названия подзадач, без текста заданий. */
+function DelegateTitles({ args }: { args: string }) {
+  let titles: string[] = [];
+  try {
+    const parsed = JSON.parse(args) as {
+      tasks?: { title?: string; agent?: string }[];
+    };
+    titles = (parsed.tasks ?? []).map(
+      (item, index) => item.title || `${index + 1}`,
+    );
+  } catch {
+    titles = [];
+  }
+  if (!titles.length) return null;
+  return (
+    <ul className="delegate-titles">
+      {titles.map((title, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: порядок задач не меняется
+        <li key={index}>{title}</li>
+      ))}
+    </ul>
   );
 }
 
@@ -975,10 +1165,10 @@ function ImageResult({ raw }: { raw: string }) {
   return (
     <figure className="gen-image">
       <a href={url} target="_blank" rel="noreferrer">
-        <img src={url} alt={image.prompt || image.name} loading="lazy" />
+        <img src={url} alt={image.name} loading="lazy" />
       </a>
       <figcaption>
-        <span>{image.prompt}</span>
+        <span>{image.name}</span>
         <a href={url} download={image.name}>
           {t('download')}
         </a>
@@ -997,14 +1187,7 @@ interface DelegateItem {
   seconds: number;
 }
 
-function DelegateView({
-  raw,
-  onOpen,
-}: {
-  raw: string;
-  onOpen?: (id: string) => void;
-}) {
-  const { t } = useI18n();
+function DelegateView({ raw }: { raw: string }) {
   let results: DelegateItem[] = [];
   try {
     results = (JSON.parse(raw) as { results?: DelegateItem[] }).results ?? [];
@@ -1035,15 +1218,6 @@ function DelegateView({
           </summary>
           <div className="sub-body">
             <MarkdownView text={item.result} />
-            {item.conversationId && onOpen && (
-              <button
-                type="button"
-                className="ghost slim"
-                onClick={() => onOpen(item.conversationId as string)}
-              >
-                {t('openSubchat')}
-              </button>
-            )}
           </div>
         </details>
       ))}

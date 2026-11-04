@@ -2082,3 +2082,67 @@ input[type="checkbox"]:checked::after {
   font-size: 0.8rem;
   max-width: 860px;
 }
+
+/* --- копировать / изменить сообщение --- */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.bubble:hover .msg-actions,
+.bubble:focus-within .msg-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .msg-actions {
+    opacity: 1;
+  }
+}
+.bubble.user .msg-actions {
+  justify-content: flex-end;
+}
+.msg-act {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.msg-act:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line);
+}
+.msg-act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: min(560px, 70vw);
+}
+.msg-edit textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.msg-edit .hint {
+  margin: 0;
+  font-size: 0.78rem;
+}
+.delegate-titles {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}

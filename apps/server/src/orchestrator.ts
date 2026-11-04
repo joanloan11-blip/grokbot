@@ -123,6 +123,7 @@ export async function runDelegation(
         providerId: target.providerId,
         model: target.model,
         projectId: parent?.projectId ?? null,
+        internal: true,
       });
       const controller = new AbortController();
       const timer = setTimeout(

@@ -192,3 +192,54 @@ describe('spend report', () => {
     expect(Array.isArray(balances)).toBe(true);
   });
 });
+
+describe('editing messages', () => {
+  it('edits a reply and rewinds from a user message', async () => {
+    const providers = (await (
+      await send('GET', '/api/providers')
+    ).json()) as ProviderPublic[];
+    const mock = providers.find((item) => item.kind === 'mock');
+    const chat = (await (
+      await send('POST', '/api/conversations', {
+        locale: 'ru',
+        providerId: mock?.id,
+        model: 'mock',
+      })
+    ).json()) as Conversation;
+    for (const content of ['первый', 'второй'])
+      await (
+        await send('POST', `/api/conversations/${chat.id}/messages`, {
+          content,
+          locale: 'ru',
+        })
+      ).text();
+    const load = async () =>
+      (
+        (await (await send('GET', `/api/conversations/${chat.id}`)).json()) as {
+          messages: { id: string; role: string; content: string }[];
+        }
+      ).messages;
+    let messages = await load();
+    const reply = messages.find((item) => item.role === 'assistant');
+    const edited = await send('PATCH', `/api/messages/${reply?.id}`, {
+      content: 'исправленный ответ',
+    });
+    expect(edited.status).toBe(200);
+    messages = await load();
+    expect(messages.find((item) => item.id === reply?.id)?.content).toBe(
+      'исправленный ответ',
+    );
+    const second = messages.find(
+      (item) => item.role === 'user' && item.content === 'второй',
+    );
+    const before = messages.length;
+    const rewound = await send('POST', `/api/messages/${second?.id}/rewind`);
+    expect(rewound.status).toBe(200);
+    messages = await load();
+    expect(messages.length).toBeLessThan(before);
+    expect(messages.some((item) => item.content === 'второй')).toBe(false);
+    expect(messages.some((item) => item.content === 'первый')).toBe(true);
+    const badRewind = await send('POST', `/api/messages/${reply?.id}/rewind`);
+    expect(badRewind.status).toBe(400);
+  });
+});

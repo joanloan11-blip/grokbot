@@ -316,6 +316,7 @@ export async function deliverToAgent(
       userId: input.userId,
       providerId: target.providerId,
       model: target.model,
+      internal: true,
     });
   }
   const result = await runTurn(deps, {
@@ -1211,6 +1212,7 @@ async function runBackgroundTask(
       userId: input.userId,
       providerId: input.agent.providerId,
       model: input.agent.model,
+      internal: true,
     });
     const result = await runTurn(deps, {
       conversationId: chat.id,

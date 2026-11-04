@@ -70,6 +70,16 @@ export class ApiError extends Error {
 
 export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
+  editMessage: (id: string, content: string) =>
+    request<ChatMessage>(`/api/messages/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    }),
+  rewindMessage: (id: string) =>
+    request<{ ok: boolean; attachments: string[] }>(
+      `/api/messages/${id}/rewind`,
+      { method: 'POST' },
+    ),
   authConfig: () => request<{ required: boolean }>('/api/auth/config'),
   me: () => request<{ user: PublicUser }>('/api/auth/me'),
   register: (body: { email: string; password: string; name?: string }) =>

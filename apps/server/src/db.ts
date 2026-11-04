@@ -399,6 +399,18 @@ export class Store {
       'project_id',
       'ALTER TABLE conversations ADD COLUMN project_id TEXT',
     );
+    if (!(await this.hasColumn('conversations', 'internal'))) {
+      await this.sql.exec(
+        'ALTER TABLE conversations ADD COLUMN internal INTEGER NOT NULL DEFAULT 0',
+      );
+      // Служебные чаты агентов (подзадачи, фоновые задачи, сообщения между агентами)
+      // хранят промпты для других моделей — в списке чатов их не показываем.
+      await this.sql.run(
+        `UPDATE conversations SET internal = 1
+         WHERE title LIKE 'Подзадача: %' OR title LIKE 'Задача: %' OR title LIKE 'От: %'`,
+        [],
+      );
+    }
     await this.sql.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -787,18 +799,18 @@ export class Store {
   ): Promise<Conversation[]> {
     if (projectId) {
       const rows = (await this.sql.all(
-        'SELECT * FROM conversations WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC',
+        'SELECT * FROM conversations WHERE user_id = ? AND project_id = ? AND COALESCE(internal, 0) = 0 ORDER BY updated_at DESC',
         [userId, projectId],
       )) as unknown as ConversationSql[];
       return rows.map(mapConversation);
     }
     const rows = (agentId
       ? await this.sql.all(
-          'SELECT * FROM conversations WHERE user_id = ? AND agent_id = ? ORDER BY updated_at DESC',
+          'SELECT * FROM conversations WHERE user_id = ? AND agent_id = ? AND COALESCE(internal, 0) = 0 ORDER BY updated_at DESC',
           [userId, agentId],
         )
       : await this.sql.all(
-          'SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC',
+          'SELECT * FROM conversations WHERE user_id = ? AND COALESCE(internal, 0) = 0 ORDER BY updated_at DESC',
           [userId],
         )) as unknown as ConversationSql[];
     return rows.map(mapConversation);
@@ -824,6 +836,8 @@ export class Store {
     providerId: string | null;
     model: string | null;
     projectId?: string | null;
+    /** Служебный чат агента: не показывается в списке чатов. */
+    internal?: boolean;
   }): Promise<Conversation> {
     const row: Conversation = {
       id: newId(),
@@ -837,8 +851,8 @@ export class Store {
       updatedAt: nowIso(),
     };
     await this.sql.run(
-      `INSERT INTO conversations (id, title, agent_id, user_id, provider_id, model, project_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversations (id, title, agent_id, user_id, provider_id, model, project_id, created_at, updated_at, internal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.title,
@@ -849,6 +863,7 @@ export class Store {
         row.projectId ?? null,
         row.createdAt,
         row.updatedAt,
+        input.internal ? 1 : 0,
       ],
     );
     return row;
@@ -1037,6 +1052,35 @@ export class Store {
       updatedAt: row.updated_at,
       snippet: snippetAround(row.hit ?? row.title, needle),
     }));
+  }
+
+  async getMessage(id: string): Promise<ChatMessage | undefined> {
+    const row = (await this.sql.get('SELECT * FROM messages WHERE id = ?', [
+      id,
+    ])) as MessageSql | undefined;
+    return row ? mapMessage(row) : undefined;
+  }
+
+  async updateMessageContent(id: string, content: string): Promise<void> {
+    await this.sql.run('UPDATE messages SET content = ? WHERE id = ?', [
+      content,
+      id,
+    ]);
+  }
+
+  /** Удаляет сообщение и всё, что после него в том же чате (для «изменить и отправить заново»). */
+  async deleteMessagesFrom(message: ChatMessage): Promise<number> {
+    const result = await this.sql.run(
+      `DELETE FROM messages WHERE conversation_id = ?
+         AND (created_at > ? OR (created_at = ? AND id >= ?))`,
+      [
+        message.conversationId,
+        message.createdAt,
+        message.createdAt,
+        message.id,
+      ],
+    );
+    return result.changes;
   }
 
   async listMessages(conversationId: string): Promise<ChatMessage[]> {

@@ -98,12 +98,19 @@ describe('delegate tool', () => {
       ['Конкуренты', 'done'],
       ['Ошибка', 'error'],
     ]);
+    // Чаты подзадач существуют, но в списке не видны: там промпты для других моделей.
     const chats = (await (
       await send('GET', '/api/conversations')
     ).json()) as Conversation[];
-    expect(
-      chats.filter((chat) => chat.title.startsWith('Подзадача:')).length,
-    ).toBe(2);
+    expect(chats.some((chat) => chat.title.startsWith('Подзадача:'))).toBe(
+      false,
+    );
+    const ids = results
+      .map((item) => item.conversationId)
+      .filter((id): id is string => Boolean(id));
+    expect(ids).toHaveLength(2);
+    for (const id of ids)
+      expect(await handle.runtime.store.getConversation(id)).toBeTruthy();
   });
 
   it('refuses nested delegation', async () => {

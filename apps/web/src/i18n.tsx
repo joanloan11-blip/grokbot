@@ -223,6 +223,17 @@ const ru = {
   spendSince: 'с',
   spendFree: 'бесплатно',
   myModels: 'Мои модели',
+  toolDelegate: 'Раздаёт задачи агентам',
+  toolSendAgent: 'Спрашивает другого агента',
+  toolTask: 'Фоновая задача',
+  toolImage: 'Рисует картинку',
+  toolRoutine: 'Создаёт расписание',
+  copy: 'Копировать',
+  copied: 'Скопировано',
+  editMessage: 'Изменить',
+  resend: 'Отправить заново',
+  editedHint: 'Ответ модели будет заменён этим текстом',
+  resendHint: 'Сообщение и всё после него будет удалено и отправлено заново',
   myModelsLead:
     'Подключите свой ключ OpenAI, DeepSeek, NVIDIA, OpenRouter и других — модели появятся в выборе модели в чате.',
   myModelsHint:
@@ -518,6 +529,18 @@ const en: Dictionary = {
   spendSince: 'since',
   spendFree: 'free',
   myModels: 'My models',
+  toolDelegate: 'Delegating tasks to agents',
+  toolSendAgent: 'Asking another agent',
+  toolTask: 'Background task',
+  toolImage: 'Drawing an image',
+  toolRoutine: 'Creating a schedule',
+  copy: 'Copy',
+  copied: 'Copied',
+  editMessage: 'Edit',
+  resend: 'Send again',
+  editedHint: 'The model reply will be replaced with this text',
+  resendHint:
+    'This message and everything after it will be removed and sent again',
   myModelsLead:
     'Connect your own OpenAI, DeepSeek, NVIDIA, OpenRouter or other key — its models appear in the chat model picker.',
   myModelsHint:
