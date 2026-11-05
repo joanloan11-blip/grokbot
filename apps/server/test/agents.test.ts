@@ -53,7 +53,7 @@ describe('agents', () => {
     const listed = (await (
       await handle.app.request('/api/agents')
     ).json()) as Agent[];
-    expect(listed.map((agent) => agent.name)).toContain('Маяк');
+    expect(listed.map((agent) => agent.name)).toContain('QASTOM AGENT');
     const primary = listed[0];
     expect(primary).toBeTruthy();
 
@@ -111,7 +111,7 @@ describe('agents', () => {
     const agents = (await (
       await handle.app.request('/api/agents')
     ).json()) as Agent[];
-    const primary = agents.find((agent) => agent.name === 'Маяк');
+    const primary = agents.find((agent) => agent.name === 'QASTOM AGENT');
     expect(primary).toBeTruthy();
     const editor = (await (
       await send('/api/agents', {
@@ -142,12 +142,12 @@ describe('agents', () => {
       await handle.app.request(`/api/conversations?agentId=${editor.id}`)
     ).json()) as Conversation[];
     // Переписка агентов — служебная: в списке чатов её нет.
-    expect(inbox.some((item) => item.title === 'От: Маяк')).toBe(false);
+    expect(inbox.some((item) => item.title === 'От: QASTOM AGENT')).toBe(false);
     const owner = (await handle.runtime.store.listUsers())[0];
     const thread = await handle.runtime.store.findConversationByTitle(
       owner?.id ?? '',
       editor.id,
-      'От: Маяк',
+      'От: QASTOM AGENT',
     );
     expect(thread).toBeTruthy();
     const stored = (await (
@@ -166,7 +166,7 @@ describe('agents', () => {
     const agents = (await (
       await handle.app.request('/api/agents')
     ).json()) as Agent[];
-    const primary = agents.find((agent) => agent.name === 'Маяк');
+    const primary = agents.find((agent) => agent.name === 'QASTOM AGENT');
     expect(primary).toBeTruthy();
     const chat = (await (
       await send('/api/conversations', { agentId: primary?.id })
@@ -175,7 +175,7 @@ describe('agents', () => {
       `/api/conversations/${chat.id}/messages`,
       {
         content:
-          'tool memory_write {"key":"project","content":"Маяк хранит заметки"}',
+          'tool memory_write {"key":"project","content":"QASTOM AGENT хранит заметки"}',
       },
     );
     const memoryEvents = await readEvents(memoryResponse);
@@ -190,7 +190,7 @@ describe('agents', () => {
     ).json()) as MemoryNote[];
     expect(toolText, JSON.stringify(memoryEvents)).toContain('Запомнил');
     expect(notes.find((note) => note.key === 'project')?.content).toBe(
-      'Маяк хранит заметки',
+      'QASTOM AGENT хранит заметки',
     );
 
     const routineResponse = await send(`/api/agents/${primary?.id}/routines`, {

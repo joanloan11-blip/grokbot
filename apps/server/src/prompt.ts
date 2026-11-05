@@ -13,8 +13,8 @@ export function buildSystemPrompt(
   const identity = options?.persona?.trim()
     ? options.persona.trim()
     : locale === 'en'
-      ? 'You are Mayak, a local assistant running on the user machine.'
-      : 'Ты — Маяк, локальный ассистент на компьютере пользователя.';
+      ? 'You are QASTOM AGENT, the AI assistant of the QASTOM team.'
+      : 'Ты — QASTOM AGENT, ИИ-ассистент команды QASTOM.';
   const rules =
     locale === 'en'
       ? "Reply in the user language. If you use an internal reasoning channel, reason in the same language as the user's latest message, not in English by default. When a listed skill fits the task, call load_skill with its exact name and follow the instructions. Use memory_read and memory_write for notes that should survive across chats. Use MCP tools when they help you answer accurately. Do not invent tool results."

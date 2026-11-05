@@ -10,14 +10,14 @@ import { isRecord } from './util';
 
 /**
  * Каталог бесплатных LLM API из github.com/mnfst/awesome-free-llm-apis (CC0-1.0).
- * В Маяке лежит снимок data.json; администратор может обновить его с GitHub.
+ * В QASTOM AGENT лежит снимок data.json; администратор может обновить его с GitHub.
  */
 export const FREE_CATALOG_URL =
   'https://raw.githubusercontent.com/mnfst/awesome-free-llm-apis/main/data.json';
 export const FREE_CATALOG_SOURCE =
   'https://github.com/mnfst/awesome-free-llm-apis';
 
-/** Поправки, чтобы адрес работал как OpenAI-совместимый в Маяке. */
+/** Поправки, чтобы адрес работал как OpenAI-совместимый в QASTOM AGENT. */
 const FIXES: Record<
   string,
   { baseUrl?: string; kind?: ProviderKind; needsKey?: boolean; note?: string }
@@ -34,7 +34,7 @@ const FIXES: Record<
   'OVHcloud AI Endpoints': { needsKey: false },
 };
 
-/** Хосты, которые из России отвечают 403/451 — к ним Маяк ходит через LLM_PROXY_URL. */
+/** Хосты, которые из России отвечают 403/451 — к ним QASTOM AGENT ходит через LLM_PROXY_URL. */
 export const PROXY_HOSTS = [
   'api.cohere.ai',
   'api.groq.com',

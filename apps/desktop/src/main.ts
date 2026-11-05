@@ -67,7 +67,7 @@ async function createWindow(): Promise<void> {
     height: 860,
     minWidth: 880,
     minHeight: 640,
-    title: 'Маяк',
+    title: 'QASTOM AGENT',
     backgroundColor: '#09111c',
     autoHideMenuBar: true,
     webPreferences: {

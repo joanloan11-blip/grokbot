@@ -2257,3 +2257,19 @@ input[type="checkbox"]:checked::after {
   color: var(--danger);
   text-decoration: none;
 }
+
+/* --- знак QASTOM AGENT --- */
+.qmark .q-bg {
+  fill: var(--text);
+}
+.qmark .q-ring {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 3;
+}
+.qmark .q-tail {
+  stroke: var(--accent);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  fill: none;
+}

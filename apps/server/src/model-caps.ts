@@ -108,7 +108,7 @@ export async function probeCaps(
   const withTools = await run(client, model, [PROBE_TOOL]);
   if (withTools.called) return { ok: true, tools: true, checkedAt };
   if (!withTools.error)
-    // Ответила, но инструмент не вызвала (или провайдер отказал и Маяк повторил без них).
+    // Ответила, но инструмент не вызвала (или провайдер отказал и QASTOM AGENT повторил без них).
     return {
       ok: withTools.text.trim().length > 0 || withTools.noTools,
       tools: false,

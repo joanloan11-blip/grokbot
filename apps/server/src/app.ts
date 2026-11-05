@@ -1543,11 +1543,11 @@ async function ensureDefaultAgent(
   if ((await store.listAgents()).length === 0) {
     const defaults = await defaultSelection(store);
     await store.insertAgent({
-      name: 'Маяк',
-      emoji: '🏮',
-      description: 'Основной локальный ассистент',
+      name: 'QASTOM AGENT',
+      emoji: '🤖',
+      description: 'Основной ассистент команды',
       systemPrompt:
-        'Ты — Маяк, локальный ассистент на компьютере пользователя. Отвечай на языке пользователя, коротко и по делу.',
+        'Ты — QASTOM AGENT, ИИ-ассистент команды QASTOM. Отвечай на языке пользователя, коротко и по делу.',
       providerId: defaults.providerId,
       model: defaults.model,
       mcpServerIds: (await store.listMcp()).map((item) => item.id),

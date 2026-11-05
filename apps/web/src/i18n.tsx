@@ -10,7 +10,7 @@ import {
 import type { Locale } from '@mayak/shared';
 
 const ru = {
-  brand: 'Маяк',
+  brand: 'QASTOM AGENT',
   tagline: 'локальный ассистент',
   newChat: 'Новый чат',
   settings: 'Настройки',
@@ -20,7 +20,7 @@ const ru = {
   chatPlaceholder: 'Спросите что угодно…',
   send: 'Отправить',
   stop: 'Стоп',
-  thinking: 'Маяк думает',
+  thinking: 'QASTOM AGENT думает',
   emptyTitle: 'Чем могу помочь?',
   attach: 'Прикрепить файл или фото',
   voiceInput: 'Голосовой ввод',
@@ -52,10 +52,10 @@ const ru = {
   toolDone: 'результат',
   toolArgs: 'аргументы',
   you: 'Вы',
-  assistant: 'Маяк',
+  assistant: 'QASTOM AGENT',
   error: 'Ошибка',
   serverDown:
-    'Сервер Маяка недоступен. Запустите pnpm dev и обновите страницу.',
+    'Сервер QASTOM AGENT недоступен. Запустите pnpm dev и обновите страницу.',
   retry: 'Повторить',
   delete: 'Удалить',
   confirmDelete: 'Точно удалить',
@@ -333,7 +333,7 @@ const ru = {
 type Dictionary = { [K in keyof typeof ru]: string };
 
 const en: Dictionary = {
-  brand: 'Mayak',
+  brand: 'QASTOM AGENT',
   tagline: 'local assistant',
   newChat: 'New chat',
   settings: 'Settings',
@@ -343,7 +343,7 @@ const en: Dictionary = {
   chatPlaceholder: 'Ask anything…',
   send: 'Send',
   stop: 'Stop',
-  thinking: 'Mayak is thinking',
+  thinking: 'QASTOM AGENT is thinking',
   emptyTitle: 'How can I help?',
   attach: 'Attach a file or photo',
   voiceInput: 'Voice input',
@@ -375,9 +375,9 @@ const en: Dictionary = {
   toolDone: 'result',
   toolArgs: 'arguments',
   you: 'You',
-  assistant: 'Mayak',
+  assistant: 'QASTOM AGENT',
   error: 'Error',
-  serverDown: 'The Mayak server is offline. Start pnpm dev and refresh.',
+  serverDown: 'The QASTOM AGENT server is offline. Start pnpm dev and refresh.',
   retry: 'Retry',
   delete: 'Delete',
   confirmDelete: 'Confirm delete',

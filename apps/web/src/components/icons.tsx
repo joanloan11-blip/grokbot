@@ -1,16 +1,10 @@
+/** Знак QASTOM AGENT: «Q» в скруглённом квадрате. */
 export function BeaconMark() {
   return (
-    <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
-      <path
-        className="beam"
-        d="M16 12c5 1.4 8.5 2.2 11 2.2-2.4 1.5-6 3.8-11 3.8S7.4 15.7 5 14.2C7.5 14.2 11 13.4 16 12z"
-      />
-      <path className="lamp" d="M16 3.2 18.4 8h-4.8L16 3.2z" />
-      <path className="tower" d="M13.2 9.2h5.6l1.3 13.2H11.9l1.3-13.2z" />
-      <path
-        className="base"
-        d="M9.5 23.2h13v2.1a2.2 2.2 0 0 1-2.2 2.2h-8.6a2.2 2.2 0 0 1-2.2-2.2v-2.1z"
-      />
+    <svg className="mark qmark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect className="q-bg" x="1" y="1" width="30" height="30" rx="9" />
+      <circle className="q-ring" cx="15.5" cy="15" r="7.2" />
+      <path className="q-tail" d="M18.6 18.4 23.6 23.4" />
     </svg>
   );
 }

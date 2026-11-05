@@ -411,7 +411,7 @@ export interface FreeProvider {
   flag: string;
   /** Где получить ключ. */
   keyUrl: string;
-  /** Адрес для Маяка (OpenAI-совместимый или Gemini). */
+  /** Адрес для QASTOM AGENT (OpenAI-совместимый или Gemini). */
   baseUrl: string;
   kind: ProviderKind;
   /** false — работает без ключа. */
@@ -419,7 +419,7 @@ export interface FreeProvider {
   description: string;
   /** Важное: логирование промптов, проверка личности, ограничения региона. */
   notes: string[];
-  /** Через прокси Маяка (провайдер закрыт из России). */
+  /** Через прокси QASTOM AGENT (провайдер закрыт из России). */
   viaProxy: boolean;
   models: {
     id: string;

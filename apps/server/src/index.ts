@@ -139,7 +139,7 @@ const stopScheduler = handle.startScheduler();
 const server = serve(
   { fetch: handle.app.fetch, hostname: config.host, port: config.port },
   (info) => {
-    console.log(`Маяк слушает http://${info.address}:${info.port}`);
+    console.log(`QASTOM AGENT слушает http://${info.address}:${info.port}`);
   },
 );
 

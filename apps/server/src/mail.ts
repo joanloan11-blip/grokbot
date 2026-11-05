@@ -42,14 +42,14 @@ export async function sendMail(input: {
 export function resetEmail(link: string, locale: 'ru' | 'en') {
   if (locale === 'en') {
     return {
-      subject: 'Mayak password reset',
-      text: `Someone asked to reset the password for your Mayak account.\n\nSet a new password: ${link}\n\nThe link works once and expires in 1 hour. If it was not you, ignore this email.`,
-      html: `<p>Someone asked to reset the password for your Mayak account.</p><p><a href="${link}">Set a new password</a></p><p>The link works once and expires in 1 hour. If it was not you, ignore this email.</p>`,
+      subject: 'QASTOM AGENT password reset',
+      text: `Someone asked to reset the password for your QASTOM AGENT account.\n\nSet a new password: ${link}\n\nThe link works once and expires in 1 hour. If it was not you, ignore this email.`,
+      html: `<p>Someone asked to reset the password for your QASTOM AGENT account.</p><p><a href="${link}">Set a new password</a></p><p>The link works once and expires in 1 hour. If it was not you, ignore this email.</p>`,
     };
   }
   return {
-    subject: 'Сброс пароля в Маяке',
-    text: `Вы запросили смену пароля в Маяке.\n\nЗадать новый пароль: ${link}\n\nСсылка одноразовая и действует 1 час. Если это были не вы, просто проигнорируйте письмо.`,
-    html: `<p>Вы запросили смену пароля в Маяке.</p><p><a href="${link}">Задать новый пароль</a></p><p>Ссылка одноразовая и действует 1 час. Если это были не вы, просто проигнорируйте письмо.</p>`,
+    subject: 'Сброс пароля в QASTOM AGENT',
+    text: `Вы запросили смену пароля в QASTOM AGENT.\n\nЗадать новый пароль: ${link}\n\nСсылка одноразовая и действует 1 час. Если это были не вы, просто проигнорируйте письмо.`,
+    html: `<p>Вы запросили смену пароля в QASTOM AGENT.</p><p><a href="${link}">Задать новый пароль</a></p><p>Ссылка одноразовая и действует 1 час. Если это были не вы, просто проигнорируйте письмо.</p>`,
   };
 }
