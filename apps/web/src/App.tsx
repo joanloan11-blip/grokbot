@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import type {
   Agent,
   Conversation,
@@ -15,11 +21,17 @@ import { AuthScreen } from './components/AuthScreen';
 import { ChatPane } from './components/ChatPane';
 import {
   BeaconMark,
+  IconBot,
+  IconChart,
+  IconChats,
+  IconChip,
   IconEdit,
   IconFolder,
+  IconGear,
   IconPlus,
   IconSearch,
   IconSidebar,
+  IconUsers,
 } from './components/icons';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { SpendPane } from './components/SpendPane';
@@ -122,6 +134,7 @@ function Shell({
     else toggleSidebar(false);
   };
   const [chatQuery, setChatQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   useEffect(() => {
     const query = chatQuery.trim();
@@ -257,6 +270,100 @@ function Shell({
 
   return (
     <div className={collapsed ? 'app collapsed' : 'app'}>
+      {/* Панель иконок слева, как в Codex: быстрые переходы, подписи — во всплывающих подсказках. */}
+      <nav className="rail" aria-label={t('menu')}>
+        <button
+          type="button"
+          className="rail-logo"
+          title={collapsed ? t('showSidebar') : t('hideSidebar')}
+          aria-label={collapsed ? t('showSidebar') : t('hideSidebar')}
+          onClick={() => toggleSidebar(!collapsed)}
+        >
+          <BeaconMark />
+        </button>
+        <RailButton
+          label={t('newChat')}
+          active={view.name === 'chat' && !activeId}
+          onClick={() => openChat(null)}
+        >
+          <IconPlus />
+        </RailButton>
+        <RailButton
+          label={t('searchChats')}
+          onClick={() => {
+            toggleSidebar(false);
+            setTimeout(() => searchRef.current?.focus(), 50);
+          }}
+        >
+          <IconSearch />
+        </RailButton>
+        <RailButton
+          label={t('chats')}
+          active={view.name === 'chat' && Boolean(activeId)}
+          onClick={() => {
+            setView({ name: 'chat' });
+            toggleSidebar(!collapsed);
+          }}
+        >
+          <IconChats />
+        </RailButton>
+        <RailButton label={t('newAgent')} onClick={() => setWizard(true)}>
+          <IconBot />
+        </RailButton>
+        <RailButton
+          label={t('projectNew')}
+          onClick={() => setProjectDialog('new')}
+        >
+          <IconFolder />
+        </RailButton>
+        <span className="rail-gap" />
+        <RailButton
+          label={t('spend')}
+          active={view.name === 'spend'}
+          onClick={() => setView({ name: 'spend' })}
+        >
+          <IconChart />
+        </RailButton>
+        {user && user.role !== 'admin' && (
+          <RailButton
+            label={t('myModels')}
+            active={view.name === 'myModels'}
+            onClick={() => setView({ name: 'myModels' })}
+          >
+            <IconChip />
+          </RailButton>
+        )}
+        {user?.role === 'admin' && (
+          <RailButton
+            label={t('team')}
+            active={view.name === 'team'}
+            onClick={() => setView({ name: 'team' })}
+          >
+            <IconUsers />
+          </RailButton>
+        )}
+        {isAdmin && (
+          <RailButton
+            label={t('settings')}
+            active={view.name === 'settings'}
+            onClick={() => setView({ name: 'settings', tab: 'providers' })}
+          >
+            <IconGear />
+          </RailButton>
+        )}
+        <button
+          type="button"
+          className="rail-avatar"
+          title={user?.name || user?.email || t('brand')}
+          aria-label={t('menu')}
+          onClick={() => {
+            toggleSidebar(false);
+            setMenuOpen(true);
+          }}
+        >
+          {(user?.name || user?.email || t('brand')).slice(0, 1).toUpperCase()}
+        </button>
+      </nav>
       <aside className={navOpen ? 'sidebar open' : 'sidebar'}>
         <div className="brand">
           <BeaconMark />
@@ -285,6 +392,7 @@ function Shell({
         <label className="chat-search">
           <IconSearch />
           <input
+            ref={searchRef}
             value={chatQuery}
             placeholder={t('searchChats')}
             onChange={(event) => setChatQuery(event.target.value)}
@@ -723,4 +831,30 @@ function formatWhen(iso: string, locale: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function RailButton({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={active ? 'rail-btn active' : 'rail-btn'}
+      title={label}
+      aria-label={label}
+      aria-current={active ? 'page' : undefined}
+      onClick={onClick}
+    >
+      {children}
+      <span className="rail-tip">{label}</span>
+    </button>
+  );
 }

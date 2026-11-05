@@ -127,3 +127,55 @@ export function IconEdit() {
     </svg>
   );
 }
+
+export function IconChats() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" />
+    </svg>
+  );
+}
+
+export function IconBot() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="5" y="8" width="14" height="11" rx="3" />
+      <path d="M12 4v4M9 13h.01M15 13h.01M9.5 16h5" />
+    </svg>
+  );
+}
+
+export function IconChart() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h16M7 16v-5M12 16V7M17 16v-8" />
+    </svg>
+  );
+}
+
+export function IconChip() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="2" />
+      <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
+    </svg>
+  );
+}
+
+export function IconGear() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" />
+    </svg>
+  );
+}
+
+export function IconUsers() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="9" cy="9" r="3" />
+      <path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 6.5a3 3 0 0 1 0 5.5M17.5 19a5 5 0 0 0-2.5-4.3" />
+    </svg>
+  );
+}

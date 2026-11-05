@@ -2273,3 +2273,134 @@ input[type="checkbox"]:checked::after {
   stroke-linecap: round;
   fill: none;
 }
+
+/* ============================================================
+   Панель иконок слева (как в Codex)
+   ============================================================ */
+.app {
+  grid-template-columns: 60px 264px 1fr;
+}
+.app.collapsed {
+  grid-template-columns: 60px 0 1fr;
+}
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+  height: 100dvh;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.rail-logo {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-bottom: 10px;
+  cursor: pointer;
+  border-radius: 9px;
+}
+.rail-logo .mark {
+  width: 34px;
+  height: 34px;
+}
+.rail-btn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.rail-btn svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.rail-btn:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.rail-btn.active {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.rail-btn.active::before {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--text);
+}
+.rail-tip {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+  box-shadow: var(--shadow);
+}
+.rail-btn:hover .rail-tip,
+.rail-btn:focus-visible .rail-tip {
+  opacity: 1;
+}
+.rail-gap {
+  flex: 1;
+}
+.rail-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 0;
+  margin-top: 6px;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 700;
+  cursor: pointer;
+}
+/* На компьютере панель иконок заменяет кнопку меню в шапке. */
+@media (min-width: 901px) {
+  .app.collapsed .icon-btn.menu-btn {
+    display: none;
+  }
+}
+/* В боковой панели знак и кнопка «свернуть» дублируют панель иконок. */
+.sidebar .brand .mark {
+  display: none;
+}
+@media (max-width: 900px) {
+  .rail {
+    display: none;
+  }
+  .app,
+  .app.collapsed {
+    grid-template-columns: 1fr;
+  }
+  .sidebar .brand .mark {
+    display: block;
+  }
+}
