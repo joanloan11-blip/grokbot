@@ -355,3 +355,47 @@ describe('usage from providers', () => {
     });
   });
 });
+
+describe('models without tool calling', () => {
+  it('retries without tools and remembers the model', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      if (body.tools)
+        return new Response(
+          '{"message":"feature \'tool calls\' is not currently supported"}',
+          { status: 400 },
+        );
+      return sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`,
+        'data: [DONE]',
+      ]);
+    }) as typeof fetch;
+    const tools = [
+      {
+        name: 'stock_lookup',
+        description: 'x',
+        inputSchema: { type: 'object' },
+      },
+    ];
+    const run = () =>
+      collect(
+        streamOpenAI({
+          baseUrl: 'https://notools.test/v1',
+          apiKey: 'k',
+          model: 'qwen2.5-7b',
+          messages: [{ role: 'user', content: 'hi' }],
+          tools,
+        }),
+      );
+    const first = await run();
+    expect(first).toContainEqual({ type: 'text', delta: 'ok' });
+    expect(first.some((event) => event.type === 'reasoning')).toBe(true);
+    expect(bodies).toHaveLength(2);
+    await run();
+    // Второй раз — сразу без инструментов, без лишнего запроса.
+    expect(bodies).toHaveLength(3);
+    expect(bodies[2]!.tools).toBeUndefined();
+  });
+});

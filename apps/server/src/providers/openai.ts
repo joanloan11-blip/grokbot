@@ -8,6 +8,18 @@ import type {
   ToolDefinition,
 } from './types';
 
+/** Модели, которые отказались от инструментов: сразу шлём им запрос без tools. */
+const NO_TOOLS = new Set<string>();
+
+export function toolsUnsupported(detail: string): boolean {
+  return (
+    /tool|function/i.test(detail) &&
+    /not (currently )?supported|unsupported|does not support|doesn't support|not available|not enabled/i.test(
+      detail,
+    )
+  );
+}
+
 export function openAiChatUrl(baseUrl: string): string {
   const base = baseUrl.replace(/\/$/, '');
   if (base.endsWith('/chat/completions')) return base;
@@ -61,18 +73,35 @@ export async function* streamOpenAI(options: {
       body: JSON.stringify(body),
       signal: options.signal,
     });
+  const toolKey = `${options.baseUrl}|${options.model}`;
+  let withoutTools = false;
+  if (body.tools && NO_TOOLS.has(toolKey)) {
+    delete body.tools;
+    withoutTools = true;
+  }
   let response = await send();
-  if (response.status === 400) {
-    // Некоторые совместимые API не знают stream_options — повторяем без него.
+  // Совместимые API бывают неполными: повторяем без того, что они не знают.
+  for (let attempt = 0; attempt < 2 && response.status === 400; attempt++) {
     const detail = await response
       .clone()
       .text()
       .catch(() => '');
-    if (/stream_options|include_usage/i.test(detail)) {
+    if (body.stream_options && /stream_options|include_usage/i.test(detail)) {
       delete body.stream_options;
-      response = await send();
-    }
+    } else if (body.tools && toolsUnsupported(detail)) {
+      // Модель не умеет вызывать инструменты (часто у Qwen 2.5, Llama 3 и т.п.).
+      NO_TOOLS.add(toolKey);
+      delete body.tools;
+      withoutTools = true;
+    } else break;
+    response = await send();
   }
+  if (withoutTools && response.ok)
+    yield {
+      type: 'reasoning',
+      delta:
+        'Эта модель не умеет вызывать инструменты (склад, поиск, MCP) — отвечаю без них. Для работы с инструментами выберите другую модель.\n',
+    };
 
   if (!response.ok) {
     const detail = await readErrorBody(response);
