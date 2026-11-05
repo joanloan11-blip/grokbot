@@ -10,6 +10,7 @@ import type {
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n } from '../i18n';
+import { modelLabel, splitModelRef, visibleModels } from '../models';
 import { IconMenu } from './icons';
 
 export function AgentEditor({
@@ -164,7 +165,7 @@ export function AgentEditor({
                   : ''
               }
               onChange={(event) => {
-                const [providerId, model] = event.target.value.split(':');
+                const [providerId, model] = splitModelRef(event.target.value);
                 setDraft({
                   ...draft,
                   providerId: providerId || null,
@@ -176,12 +177,12 @@ export function AgentEditor({
               {providers
                 .filter((item) => item.enabled)
                 .map((item) =>
-                  item.models.map((itemModel) => (
+                  visibleModels(item).map((itemModel) => (
                     <option
                       key={`${item.id}:${itemModel}`}
                       value={`${item.id}:${itemModel}`}
                     >
-                      {item.name} / {itemModel}
+                      {item.name} / {modelLabel(item, itemModel, t)}
                     </option>
                   )),
                 )}

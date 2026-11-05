@@ -225,6 +225,13 @@ const ru = {
   myModels: 'Мои модели',
   toolDelegate: 'Раздаёт задачи агентам',
   freeProviders: 'Бесплатные провайдеры',
+  capTools: 'MCP ✓',
+  capNoTools: 'без MCP',
+  capDown: 'не отвечает',
+  capCheck: 'Проверить модели',
+  capChecking: 'Проверяю модели…',
+  capLegend:
+    'MCP ✓ — модель вызывает инструменты (склад, Авито, amoCRM, браузер). Без MCP — только текст. Модели без ключа, которые не отвечают, скрыты из выбора.',
   freeLead:
     'Провайдеры с бесплатным доступом. Выберите, получите ключ на их сайте и вставьте его в форму — модели подставятся сами. Источник:',
   freeRefresh: 'обновить список',
@@ -539,6 +546,13 @@ const en: Dictionary = {
   myModels: 'My models',
   toolDelegate: 'Delegating tasks to agents',
   freeProviders: 'Free providers',
+  capTools: 'MCP ✓',
+  capNoTools: 'no MCP',
+  capDown: 'not responding',
+  capCheck: 'Check models',
+  capChecking: 'Checking models…',
+  capLegend:
+    'MCP ✓ — the model calls tools (stock, Avito, amoCRM, browser). No MCP — text only. Keyless models that do not respond are hidden from the picker.',
   freeLead:
     'Providers with free access. Pick one, get a key on their site and paste it into the form — models fill in automatically. Source:',
   freeRefresh: 'refresh list',

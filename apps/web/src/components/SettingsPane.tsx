@@ -129,6 +129,49 @@ export function SettingsPane({
   );
 }
 
+/** Метки умений моделей провайдера после проверки. */
+function CapsLine({ provider }: { provider: ProviderPublic }) {
+  const { t } = useI18n();
+  const caps = provider.caps ?? {};
+  const checked = provider.models.filter((model) => caps[model]);
+  if (!checked.length) return null;
+  return (
+    <div className="caps-line">
+      {provider.models.map((model) => {
+        const item = caps[model];
+        if (!item) return null;
+        const state =
+          item.ok === false
+            ? 'down'
+            : item.tools === true
+              ? 'tools'
+              : item.tools === false
+                ? 'text'
+                : 'unknown';
+        return (
+          <span
+            key={model}
+            className={`cap cap-${state}`}
+            title={item.error || new Date(item.checkedAt).toLocaleString()}
+          >
+            {model}
+            <em>
+              {state === 'down'
+                ? t('capDown')
+                : state === 'tools'
+                  ? t('capTools')
+                  : state === 'text'
+                    ? t('capNoTools')
+                    : '?'}
+            </em>
+          </span>
+        );
+      })}
+      <p className="hint">{t('capLegend')}</p>
+    </div>
+  );
+}
+
 function FreeCatalogView({
   onPick,
   canRefresh,
@@ -375,6 +418,13 @@ function ProvidersPanel({
     // В «Моих моделях» — только свои ключи; общие модели менеджер видит в чате.
     setProviders(personal ? list.filter((row) => row.owned) : list);
   }, [personal]);
+  // Пока идёт проверка моделей — обновляем список раз в 4 секунды.
+  const anyChecking = providers.some((item) => item.checking);
+  useEffect(() => {
+    if (!anyChecking) return;
+    const timer = setInterval(() => void load().catch(() => undefined), 4000);
+    return () => clearInterval(timer);
+  }, [anyChecking, load]);
   useEffect(() => {
     void load().catch((reason: unknown) =>
       setError(reason instanceof Error ? reason.message : t('error')),
@@ -753,6 +803,7 @@ function ProvidersPanel({
             ) : (
               <p className="models">{provider.models.join(', ') || '—'}</p>
             )}
+            <CapsLine provider={provider} />
             <div className="row-actions">
               <button
                 type="button"
@@ -781,6 +832,23 @@ function ProvidersPanel({
                 onClick={() => void test(provider.id)}
               >
                 {testing ? t('testing') : t('test')}
+              </button>
+              <button
+                type="button"
+                className="ghost slim"
+                disabled={provider.checking}
+                onClick={() =>
+                  void api
+                    .checkModels(provider.id)
+                    .then(() => load())
+                    .catch((reason: unknown) =>
+                      setError(
+                        reason instanceof Error ? reason.message : t('error'),
+                      ),
+                    )
+                }
+              >
+                {provider.checking ? t('capChecking') : t('capCheck')}
               </button>
               <button
                 type="button"

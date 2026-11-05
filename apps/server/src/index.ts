@@ -36,6 +36,31 @@ if (process.argv[2] === 'moysklad-token') {
   process.exit(0);
 }
 
+// Проверка умений моделей: node apps/server/dist/index.js check-models [имя или id провайдера]
+// отвечает ли модель и умеет ли вызывать инструменты (MCP); результат виден в выборе модели.
+if (process.argv[2] === 'check-models') {
+  const needle = (process.argv[3] ?? '').trim().toLowerCase();
+  const { checkProviderModels } = await import('./model-caps');
+  const providers = (await handle.runtime.store.listProviders()).filter(
+    (row) =>
+      row.enabled &&
+      row.kind !== 'mock' &&
+      (!needle || row.id === needle || row.name.toLowerCase() === needle),
+  );
+  for (const provider of providers) {
+    console.log(`\n${provider.name} (${provider.models.length})`);
+    await checkProviderModels(handle.runtime.store, provider, {
+      gapMs: 3000,
+      onModel: (model, caps) =>
+        console.log(
+          `  ${caps.ok === true ? '✓' : caps.ok === false ? '✕' : '?'} ${caps.tools ? 'MCP ' : caps.tools === false ? 'без MCP' : '    '} ${model}${caps.error ? `  — ${caps.error.slice(0, 90)}` : ''}`,
+        ),
+    });
+  }
+  await handle.close();
+  process.exit(0);
+}
+
 // Проверка моделей: node apps/server/dist/index.js refresh-models <имя или id провайдера>
 // оставляет у провайдера только модели, которые отвечают на пробный запрос.
 if (process.argv[2] === 'refresh-models') {

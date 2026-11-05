@@ -2214,3 +2214,46 @@ input[type="checkbox"]:checked::after {
   display: inline-flex;
   align-items: center;
 }
+
+/* --- умения моделей --- */
+.caps-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.caps-line .hint {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: 0.76rem;
+}
+.cap {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 0.76rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+.cap em {
+  font-style: normal;
+  font-family: var(--sans);
+  color: var(--muted);
+}
+.cap-tools {
+  border-color: var(--line-strong);
+}
+.cap-tools em {
+  color: var(--text);
+  font-weight: 600;
+}
+.cap-down {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+.cap-down em {
+  color: var(--danger);
+  text-decoration: none;
+}

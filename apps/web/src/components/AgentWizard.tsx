@@ -7,6 +7,7 @@ import type {
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n } from '../i18n';
+import { modelLabel, splitModelRef, visibleModels } from '../models';
 
 const STEPS = [
   'stepTemplate',
@@ -211,7 +212,9 @@ export function AgentWizard({
             <select
               value={providerId && model ? `${providerId}:${model}` : ''}
               onChange={(event) => {
-                const [nextProvider, nextModel] = event.target.value.split(':');
+                const [nextProvider, nextModel] = splitModelRef(
+                  event.target.value,
+                );
                 setProviderId(nextProvider ?? '');
                 setModel(nextModel ?? '');
               }}
@@ -220,12 +223,12 @@ export function AgentWizard({
               {providers
                 .filter((item) => item.enabled)
                 .map((item) =>
-                  item.models.map((itemModel) => (
+                  visibleModels(item).map((itemModel) => (
                     <option
                       key={`${item.id}:${itemModel}`}
                       value={`${item.id}:${itemModel}`}
                     >
-                      {item.name} / {itemModel}
+                      {item.name} / {modelLabel(item, itemModel, t)}
                     </option>
                   )),
                 )}

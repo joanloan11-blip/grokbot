@@ -1,3 +1,5 @@
+import { checkProviderModels, isChecking, readCaps } from './model-caps';
+import { isKeylessUrl } from './free-llm';
 import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
 import { assertPublicUrl } from './webtools';
 import { keyBalance } from './balance';
@@ -654,6 +656,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   app.get('/api/providers', async (c) => {
     const user = await actor(c);
     const rows = await visibleProviders(user);
+    const capsMap = await readCaps(store);
     const shared = await store.listModelAccess('');
     const allowed =
       user.role === 'manager' ? await store.allowedModels(user) : null;
@@ -683,6 +686,9 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
           models,
           managerModels,
           owned,
+          keyless: isKeylessUrl(row.baseUrl),
+          caps: capsMap[row.id] ?? {},
+          checking: isChecking(row.id),
         };
       })
       .filter(
@@ -757,6 +763,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       ...input,
       ownerUserId: user.role === 'admin' ? null : user.id,
     });
+    if (!process.env.VITEST)
+      void checkProviderModels(store, row, { gapMs: 3000 }).catch(
+        () => undefined,
+      );
     return c.json(
       { ...toPublicProvider(row), owned: Boolean(row.ownerUserId) },
       201,
@@ -781,6 +791,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     if (!input.apiKey) input.apiKey = await borrowedKey(user, body);
     const row = await store.updateProvider(current.id, input);
     if (!row) return c.json({ error: 'Провайдер не найден' }, 404);
+    if (!process.env.VITEST)
+      void checkProviderModels(store, row, { gapMs: 3000 }).catch(
+        () => undefined,
+      );
     return c.json({
       ...toPublicProvider(row),
       owned: Boolean(row.ownerUserId),
@@ -793,6 +807,16 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const ok = await store.deleteProvider(current.id);
     if (!ok) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json({ ok: true });
+  });
+
+  // Проверить все модели провайдера: отвечает ли, умеет ли инструменты (MCP).
+  app.post('/api/providers/:id/check', async (c) => {
+    const user = await actor(c);
+    const provider = await editableProvider(user, c.req.param('id'));
+    void checkProviderModels(store, provider, { gapMs: 3000 }).catch(
+      () => undefined,
+    );
+    return c.json({ started: true }, 202);
   });
 
   app.post('/api/providers/:id/test', async (c) => {

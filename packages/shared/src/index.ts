@@ -24,6 +24,23 @@ export interface ProviderPublic {
   hasApiKey: boolean;
   /** Личный провайдер текущего пользователя (свой ключ). */
   owned?: boolean;
+  /** Работает без ключа (анонимный бесплатный доступ). */
+  keyless?: boolean;
+  /** Что умеет каждая модель — по последней проверке. */
+  caps?: Record<string, ModelCaps>;
+  /** Сейчас идёт проверка моделей. */
+  checking?: boolean;
+}
+
+/**
+ * Результат проверки модели. ok: отвечает ли вообще (null — не удалось проверить:
+ * лимит запросов, таймаут). tools: умеет ли вызывать инструменты (MCP, склад, поиск).
+ */
+export interface ModelCaps {
+  ok: boolean | null;
+  tools: boolean | null;
+  checkedAt: string;
+  error?: string;
 }
 
 export interface ModelRef {

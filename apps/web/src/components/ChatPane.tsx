@@ -7,6 +7,7 @@ import type {
 } from '@mayak/shared';
 import { api, streamMessage } from '../api';
 import { useI18n } from '../i18n';
+import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
 import {
   BeaconMark,
@@ -646,6 +647,7 @@ function ModelSelect({
   label?: string;
   className?: string;
 }) {
+  const { t } = useI18n();
   return (
     <select
       className={className}
@@ -654,15 +656,17 @@ function ModelSelect({
       onChange={(event) => onChange(event.target.value)}
     >
       {providers
-        .filter((provider) => provider.enabled && provider.models.length > 0)
+        .filter(
+          (provider) => provider.enabled && visibleModels(provider).length > 0,
+        )
         .map((provider) => (
           <optgroup key={provider.id} label={provider.name}>
-            {provider.models.map((model) => (
+            {visibleModels(provider).map((model) => (
               <option
                 key={`${provider.id}:${model}`}
                 value={`${provider.id}:${model}`}
               >
-                {model}
+                {modelLabel(provider, model, t)}
               </option>
             ))}
           </optgroup>
@@ -1072,7 +1076,7 @@ function flattenChoices(providers: ProviderPublic[]): Choice[] {
   const out: Choice[] = [];
   for (const provider of providers) {
     if (!provider.enabled) continue;
-    for (const model of provider.models) {
+    for (const model of visibleModels(provider)) {
       out.push({ providerId: provider.id, model, kind: provider.kind });
     }
   }

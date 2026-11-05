@@ -29,6 +29,7 @@ import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
+import { readCaps } from './model-caps';
 import { DELEGATE_LIMITS, normalizeTasks, runDelegation } from './orchestrator';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
@@ -150,6 +151,8 @@ export async function runTurn(
     await deps.store.listMessages(conversation.id),
     provider.kind,
   );
+  const toolsOff =
+    (await readCaps(deps.store))[provider.id]?.[model]?.tools === false;
   let pending = '';
   let pendingReasoning = '';
   let finalText = '';
@@ -204,7 +207,8 @@ export async function runTurn(
         },
         ...history,
       ],
-      tools: exposed.map((tool) => tool.definition),
+      // Модели без инструментов (по проверке) сразу получают запрос без них.
+      tools: toolsOff ? [] : exposed.map((tool) => tool.definition),
       signal: input.signal,
       limitMessage:
         input.locale === 'en'

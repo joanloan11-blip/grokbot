@@ -71,6 +71,10 @@ export class ApiError extends Error {
 
 export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
+  checkModels: (id: string) =>
+    request<{ started: boolean }>(`/api/providers/${id}/check`, {
+      method: 'POST',
+    }),
   freeProviders: () => request<FreeCatalog>('/api/free-providers'),
   refreshFreeProviders: () =>
     request<FreeCatalog>('/api/admin/free-providers/refresh', {
