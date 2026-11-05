@@ -80,6 +80,25 @@ export async function* streamOpenAI(options: {
     withoutTools = true;
   }
   let response = await send();
+  // 429: бесплатные API режут частоту (OVHcloud — 2 запроса в минуту). Ждём и повторяем.
+  for (let attempt = 0; attempt < 3 && response.status === 429; attempt++) {
+    const header = Number(response.headers.get('retry-after'));
+    const waitSec = Math.min(
+      30,
+      Number.isFinite(header) && header > 0
+        ? Math.ceil(header)
+        : 10 * (attempt + 1),
+    );
+    yield {
+      type: 'reasoning',
+      delta: `Провайдер ограничил частоту запросов — жду ${waitSec} с и повторяю…\n`,
+    };
+    await new Promise((resolve) =>
+      setTimeout(resolve, process.env.VITEST ? 5 : waitSec * 1000),
+    );
+    if (options.signal?.aborted) break;
+    response = await send();
+  }
   // Совместимые API бывают неполными: повторяем без того, что они не знают.
   for (let attempt = 0; attempt < 2 && response.status === 400; attempt++) {
     const detail = await response

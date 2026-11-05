@@ -399,3 +399,37 @@ describe('models without tool calling', () => {
     expect(bodies[2]!.tools).toBeUndefined();
   });
 });
+
+describe('rate limits', () => {
+  it('waits and retries on 429', async () => {
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      if (calls < 3)
+        return new Response('slow down', {
+          status: 429,
+          headers: { 'retry-after': '2' },
+        });
+      return sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`,
+        'data: [DONE]',
+      ]);
+    }) as typeof fetch;
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://limited.test/v1',
+        apiKey: 'k',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(calls).toBe(3);
+    expect(events).toContainEqual({ type: 'text', delta: 'ok' });
+    expect(
+      events.some(
+        (event) => event.type === 'reasoning' && /жду 2 с/.test(event.delta),
+      ),
+    ).toBe(true);
+  });
+});
