@@ -21,6 +21,7 @@ import {
   type ProjectInput,
   type ProviderInput,
   type RoutineInput,
+  AGENT_PLUGINS,
   DEEPSEEK_BASE_URL,
   DEEPSEEK_MODELS,
   type ProviderKind,
@@ -1779,6 +1780,14 @@ function parseAgentInput(
     body.mcpServerIds === undefined ? undefined : stringList(body.mcpServerIds);
   const skillNames =
     body.skillNames === undefined ? undefined : stringList(body.skillNames);
+  const plugins =
+    body.plugins === undefined
+      ? undefined
+      : body.plugins === null
+        ? null
+        : stringList(body.plugins).filter((id) =>
+            AGENT_PLUGINS.some((plugin) => plugin.id === id),
+          );
   const githubRepos =
     body.githubRepos === undefined
       ? undefined
@@ -1791,6 +1800,7 @@ function parseAgentInput(
     emoji,
     description,
     systemPrompt,
+    plugins,
     providerId:
       body.providerId === null
         ? null

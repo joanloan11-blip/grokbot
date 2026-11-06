@@ -29,6 +29,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     ].join('\n'),
     skillNames: ['market-analyst'],
     mcpNames: ['browser', 'moysklad'],
+    plugins: ['web', 'stock', 'memory', 'pages', 'code'],
   },
   {
     id: 'competitor-analyst',
@@ -45,6 +46,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     ].join('\n'),
     skillNames: ['competitor-analyst'],
     mcpNames: ['browser', 'moysklad', 'avito-main'],
+    plugins: ['web', 'stock', 'memory', 'pages', 'code'],
   },
   {
     id: 'sales-stock',
@@ -65,6 +67,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
       'Пиши по-русски.',
     ].join('\n'),
     mcpNames: ['moysklad', 'amocrm', 'avito-main'],
+    plugins: ['stock', 'web', 'memory', 'images'],
   },
   {
     id: 'assistant',

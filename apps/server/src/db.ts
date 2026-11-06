@@ -117,6 +117,7 @@ interface AgentSql {
   mcp_ids_json: string;
   skill_names_json: string;
   owner_user_id?: string | null;
+  plugins_json?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -369,6 +370,11 @@ export class Store {
         `ALTER TABLE usage_events ADD COLUMN ${column} ${type}`,
       );
     }
+    await add(
+      'agents',
+      'plugins_json',
+      'ALTER TABLE agents ADD COLUMN plugins_json TEXT',
+    );
     await add(
       'providers',
       'owner_user_id',
@@ -1240,14 +1246,15 @@ export class Store {
       skillNames: input.skillNames ?? [],
       githubRepos: input.githubRepos ?? [],
       ownerId: input.ownerId ?? null,
+      plugins: input.plugins ?? null,
       createdAt: now,
       updatedAt: now,
     };
     await this.sql.run(
       `INSERT INTO agents (
           id, name, emoji, description, system_prompt, provider_id, model,
-          mcp_ids_json, skill_names_json, owner_user_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          mcp_ids_json, skill_names_json, owner_user_id, created_at, updated_at, plugins_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.name,
@@ -1261,6 +1268,7 @@ export class Store {
         row.ownerId,
         row.createdAt,
         row.updatedAt,
+        row.plugins ? JSON.stringify(row.plugins) : null,
       ],
     );
     if (row.githubRepos.length > 0) {
@@ -1290,6 +1298,7 @@ export class Store {
       mcpServerIds: patch.mcpServerIds ?? current.mcpServerIds,
       skillNames: patch.skillNames ?? current.skillNames,
       githubRepos: patch.githubRepos ?? current.githubRepos,
+      plugins: patch.plugins === undefined ? current.plugins : patch.plugins,
       updatedAt: nowIso(),
     };
     if (patch.githubRepos !== undefined) {
@@ -1298,7 +1307,7 @@ export class Store {
     await this.sql.run(
       `UPDATE agents SET
           name = ?, emoji = ?, description = ?, system_prompt = ?, provider_id = ?,
-          model = ?, mcp_ids_json = ?, skill_names_json = ?, updated_at = ?
+          model = ?, mcp_ids_json = ?, skill_names_json = ?, updated_at = ?, plugins_json = ?
          WHERE id = ?`,
       [
         next.name,
@@ -1310,6 +1319,7 @@ export class Store {
         JSON.stringify(next.mcpServerIds),
         JSON.stringify(next.skillNames),
         next.updatedAt,
+        next.plugins ? JSON.stringify(next.plugins) : null,
         id,
       ],
     );
@@ -2501,6 +2511,7 @@ function mapAgent(row: AgentSql): Agent {
     skillNames: parseStringArray(row.skill_names_json),
     githubRepos: [],
     ownerId: row.owner_user_id ?? null,
+    plugins: row.plugins_json ? parseStringArray(row.plugins_json) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

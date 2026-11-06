@@ -10,6 +10,7 @@ import type {
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n } from '../i18n';
+import { AgentCapabilities } from './AgentCapabilities';
 import { modelLabel, splitModelRef, visibleModels } from '../models';
 import { IconMenu } from './icons';
 
@@ -87,6 +88,7 @@ export function AgentEditor({
         skillNames: draft.skillNames,
         mcpServerIds: draft.mcpServerIds,
         githubRepos: draft.githubRepos ?? [],
+        plugins: draft.plugins ?? null,
       });
       onSaved(saved);
     } catch (reason) {
@@ -188,46 +190,18 @@ export function AgentEditor({
                 )}
             </select>
           </label>
+          <AgentCapabilities
+            skills={skills}
+            servers={servers}
+            skillNames={draft.skillNames}
+            mcpServerIds={draft.mcpServerIds}
+            plugins={draft.plugins ?? null}
+            restricted={restricted}
+            onSkills={(next) => setDraft({ ...draft, skillNames: next })}
+            onServers={(next) => setDraft({ ...draft, mcpServerIds: next })}
+            onPlugins={(next) => setDraft({ ...draft, plugins: next })}
+          />
           <div className="check-grid">
-            {skills.map((skill) => (
-              <label key={skill.name} className="check">
-                <input
-                  type="checkbox"
-                  checked={draft.skillNames.includes(skill.name)}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      skillNames: event.target.checked
-                        ? [...draft.skillNames, skill.name]
-                        : draft.skillNames.filter(
-                            (item) => item !== skill.name,
-                          ),
-                    })
-                  }
-                />
-                {skill.name}
-              </label>
-            ))}
-            {!restricted &&
-              servers.map((server) => (
-                <label key={server.id} className="check">
-                  <input
-                    type="checkbox"
-                    checked={draft.mcpServerIds.includes(server.id)}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        mcpServerIds: event.target.checked
-                          ? [...draft.mcpServerIds, server.id]
-                          : draft.mcpServerIds.filter(
-                              (item) => item !== server.id,
-                            ),
-                      })
-                    }
-                  />
-                  MCP {server.name}
-                </label>
-              ))}
             {!restricted &&
               githubRepos.map((item) => (
                 <label key={item.fullName} className="check">

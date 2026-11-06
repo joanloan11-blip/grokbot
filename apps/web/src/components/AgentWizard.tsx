@@ -8,6 +8,7 @@ import type {
 import { api } from '../api';
 import { useI18n } from '../i18n';
 import { modelLabel, splitModelRef, visibleModels } from '../models';
+import { AgentCapabilities } from './AgentCapabilities';
 
 const STEPS = [
   'stepTemplate',
@@ -43,6 +44,7 @@ export function AgentWizard({
   const [model, setModel] = useState('');
   const [skillNames, setSkillNames] = useState<string[]>([]);
   const [mcpServerIds, setMcpServerIds] = useState<string[]>([]);
+  const [plugins, setPlugins] = useState<string[] | null>(null);
   const [error, setError] = useState('');
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: шаблон применяется один раз при загрузке
@@ -74,6 +76,7 @@ export function AgentWizard({
     nextProviders = providers,
   ) {
     setTemplateId(template.id);
+    setPlugins(template.plugins ?? null);
     setName(template.name);
     setEmoji(template.emoji);
     setDescription(template.description);
@@ -121,6 +124,7 @@ export function AgentWizard({
         model: model || null,
         skillNames,
         mcpServerIds: restricted ? [] : mcpServerIds,
+        plugins,
       });
       onCreated(created.id);
     } catch (reason) {
@@ -153,6 +157,29 @@ export function AgentWizard({
         {error && <p className="error-line">{error}</p>}
         {step === 0 && (
           <div className="template-grid">
+            <button
+              type="button"
+              className={
+                templateId === 'custom'
+                  ? 'template active custom'
+                  : 'template custom'
+              }
+              onClick={() => {
+                setTemplateId('custom');
+                setName('');
+                setEmoji('🤖');
+                setDescription('');
+                setSystemPrompt('');
+                setSkillNames([]);
+                setMcpServerIds([]);
+                setPlugins(null);
+                setStep(1);
+              }}
+            >
+              <span>✨</span>
+              <strong>{t('customAgent')}</strong>
+              <small>{t('customAgentHint')}</small>
+            </button>
             {templates.map((template) => (
               <button
                 key={template.id}
@@ -236,42 +263,17 @@ export function AgentWizard({
           </label>
         )}
         {step === 4 && (
-          <div className="check-grid">
-            <p className="hint">{t('agentTools')}</p>
-            {skills.map((skill) => (
-              <label key={skill.name} className="check">
-                <input
-                  type="checkbox"
-                  checked={skillNames.includes(skill.name)}
-                  onChange={(event) =>
-                    setSkillNames((current) =>
-                      event.target.checked
-                        ? [...current, skill.name]
-                        : current.filter((item) => item !== skill.name),
-                    )
-                  }
-                />
-                {skill.name}
-              </label>
-            ))}
-            {!restricted &&
-              servers.map((server) => (
-                <label key={server.id} className="check">
-                  <input
-                    type="checkbox"
-                    checked={mcpServerIds.includes(server.id)}
-                    onChange={(event) =>
-                      setMcpServerIds((current) =>
-                        event.target.checked
-                          ? [...current, server.id]
-                          : current.filter((item) => item !== server.id),
-                      )
-                    }
-                  />
-                  MCP {server.name}
-                </label>
-              ))}
-          </div>
+          <AgentCapabilities
+            skills={skills}
+            servers={servers}
+            skillNames={skillNames}
+            mcpServerIds={mcpServerIds}
+            plugins={plugins}
+            restricted={restricted}
+            onSkills={setSkillNames}
+            onServers={setMcpServerIds}
+            onPlugins={setPlugins}
+          />
         )}
         {step === 5 && (
           <div className="review">

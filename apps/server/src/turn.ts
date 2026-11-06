@@ -8,6 +8,7 @@ import type {
   Locale,
   ProviderKind,
 } from '@mayak/shared';
+import { toolAllowedByPlugins } from '@mayak/shared';
 import { runAgentLoop } from './agent/loop';
 import type { Store, UserRecord } from './db';
 import { isValidCron } from './cron';
@@ -1166,7 +1167,10 @@ async function exposeTools(
       });
     }
   }
-  return tools;
+  // Плагины агента: выключенные группы встроенных инструментов не показываем модели.
+  return tools.filter((tool) =>
+    toolAllowedByPlugins(tool.definition.name, agent.plugins),
+  );
 }
 
 async function searchKey(deps: TurnDeps): Promise<string | undefined> {

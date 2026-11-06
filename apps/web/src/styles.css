@@ -2617,3 +2617,67 @@ input[type="checkbox"]:checked::after {
   padding: 6px 10px;
   cursor: pointer;
 }
+
+/* --- навыки, коннекторы, плагины агента --- */
+.caps {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.caps-section > header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.caps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.cap-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.cap-card:has(input:checked) {
+  border-color: var(--line-strong);
+  background: var(--bg-3);
+}
+.cap-card:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+.cap-card input {
+  margin-top: 3px;
+}
+.cap-card span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cap-card small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+.cap-card .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.cap-card .dot.on {
+  background: #3ecf8e;
+}
+.template.custom {
+  border-style: dashed;
+}

@@ -210,6 +210,8 @@ export interface Agent {
   githubRepos: string[];
   /** Личный агент менеджера (null — общий агент команды). */
   ownerId?: string | null;
+  /** Включённые плагины (встроенные инструменты). null — все. */
+  plugins?: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -224,6 +226,109 @@ export interface AgentInput {
   mcpServerIds?: string[];
   skillNames?: string[];
   githubRepos?: string[];
+  plugins?: string[] | null;
+}
+
+/** Плагины — группы встроенных инструментов агента. */
+export const AGENT_PLUGINS = [
+  {
+    id: 'web',
+    emoji: '🌐',
+    name: 'Интернет',
+    description: 'Поиск в интернете и чтение страниц',
+    tools: ['web_search', 'web_fetch'],
+  },
+  {
+    id: 'stock',
+    emoji: '📦',
+    name: 'Склад',
+    description: 'Наличие и цены из МойСклад (stock_lookup)',
+    tools: ['stock_lookup'],
+  },
+  {
+    id: 'images',
+    emoji: '🎨',
+    name: 'Картинки',
+    description: 'Нарисовать или изменить картинку',
+    tools: ['generate_image'],
+  },
+  {
+    id: 'files',
+    emoji: '🗂',
+    name: 'Рабочая папка',
+    description: 'Файлы, правки и терминал в папке пользователя',
+    tools: [
+      'workspace_list',
+      'workspace_read',
+      'workspace_write',
+      'workspace_edit',
+      'workspace_delete',
+      'shell',
+    ],
+  },
+  {
+    id: 'code',
+    emoji: '🧮',
+    name: 'Код',
+    description: 'Запустить Python или JavaScript в песочнице',
+    tools: ['run_code'],
+  },
+  {
+    id: 'memory',
+    emoji: '🧠',
+    name: 'Память',
+    description: 'Запоминать факты между чатами',
+    tools: ['memory_read', 'memory_write', 'remember', 'recall'],
+  },
+  {
+    id: 'team',
+    emoji: '🧭',
+    name: 'Команда агентов',
+    description: 'Раздать задачи другим агентам, фоновые задачи',
+    tools: ['delegate', 'send_to_agent', 'task'],
+  },
+  {
+    id: 'schedule',
+    emoji: '⏰',
+    name: 'Расписание',
+    description: 'Задачи по расписанию (рутины)',
+    tools: ['create_routine'],
+  },
+  {
+    id: 'pages',
+    emoji: '📄',
+    name: 'Страницы',
+    description: 'Отчёт или страница со ссылкой',
+    tools: ['create_page'],
+  },
+  {
+    id: 'skills',
+    emoji: '🛠',
+    name: 'Свои навыки',
+    description: 'Агент сам пишет и правит навыки',
+    tools: ['skill_manage'],
+  },
+  {
+    id: 'github',
+    emoji: '🐙',
+    name: 'GitHub',
+    description: 'Читать код в подключённых репозиториях',
+    tools: ['github_list_repos', 'github_read_file', 'github_search_code'],
+  },
+] as const;
+
+export type AgentPluginId = (typeof AGENT_PLUGINS)[number]['id'];
+
+/** Инструмент разрешён плагинами агента? Инструменты вне плагинов (ask_user, todo, load_skill, MCP) — всегда. */
+export function toolAllowedByPlugins(
+  tool: string,
+  plugins: string[] | null | undefined,
+): boolean {
+  if (!plugins) return true;
+  const owner = AGENT_PLUGINS.find((plugin) =>
+    (plugin.tools as readonly string[]).includes(tool),
+  );
+  return !owner || plugins.includes(owner.id);
 }
 
 export interface GithubStatus {
@@ -265,6 +370,8 @@ export interface AgentTemplate {
   skillNames?: string[];
   /** MCP-серверы по имени или префиксу (`avito-` — все кабинеты). Не задано — ни одного. */
   mcpNames?: string[];
+  /** Включённые плагины. Не задано — все. */
+  plugins?: string[];
 }
 
 export interface MemoryNote {

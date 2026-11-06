@@ -229,3 +229,14 @@ describe('agents', () => {
     ).toBe(true);
   });
 });
+
+describe('agent plugins', () => {
+  it('hides built-in tools of disabled plugins', async () => {
+    const { toolAllowedByPlugins } = await import('@mayak/shared');
+    expect(toolAllowedByPlugins('web_search', null)).toBe(true);
+    expect(toolAllowedByPlugins('web_search', ['stock'])).toBe(false);
+    expect(toolAllowedByPlugins('stock_lookup', ['stock'])).toBe(true);
+    expect(toolAllowedByPlugins('ask_user', [])).toBe(true);
+    expect(toolAllowedByPlugins('mcp__amocrm__leads_get', [])).toBe(true);
+  });
+});
