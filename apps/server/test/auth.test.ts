@@ -106,6 +106,9 @@ describe('auth and isolation', () => {
     );
     expect(pendingBody.user.role).toBe('manager');
     expect(pendingBody.user.status).toBe('pending');
+    // Сам зарегистрировался — клиент (платит, без коннекторов компании).
+    expect(pendingBody.user.client).toBe(true);
+    expect(adminBody.user.client).toBe(false);
     expect(pendingBody.pending).toBe(true);
     expect(
       pending.headers
@@ -128,7 +131,13 @@ describe('auth and isolation', () => {
 
     const approved = await patch(
       `/api/admin/users/${pendingBody.user.id}`,
-      { status: 'active', agentIds: [agentId], dailyRequestLimit: 1 },
+      {
+        status: 'active',
+        agentIds: [agentId],
+        dailyRequestLimit: 1,
+        // Сотрудник, а не клиент: видит открытые коннекторы и не платит.
+        client: false,
+      },
       adminCookie,
     );
     expect(approved.status).toBe(200);
@@ -145,7 +154,119 @@ describe('auth and isolation', () => {
       { name: 'чужой', kind: 'mock', models: ['mock'] },
       managerCookie,
     );
-    expect(forbidden.status).toBe(403);
+    expect(forbidden.status).toBe(400);
+
+    // Личный провайдер менеджера: виден только ему, админ его не трогает.
+    const internal = await send(
+      '/api/providers',
+      {
+        name: 'локалка',
+        kind: 'openai',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        apiKey: 'k',
+        models: ['llama'],
+      },
+      managerCookie,
+    );
+    expect(internal.status).toBe(400);
+    const personal = await json<{ id: string; owned: boolean }>(
+      await send(
+        '/api/providers',
+        {
+          name: 'Мой OpenAI',
+          kind: 'openai',
+          apiKey: 'sk-proj-personal',
+          models: ['gpt-5-mini'],
+        },
+        managerCookie,
+      ),
+    );
+    expect(personal.owned).toBe(true);
+    const managerCatalog = await json<{ id: string; owned?: boolean }[]>(
+      await get('/api/providers', managerCookie),
+    );
+    expect(managerCatalog.find((row) => row.id === personal.id)?.owned).toBe(
+      true,
+    );
+    const adminCatalog = await json<{ id: string }[]>(
+      await get('/api/providers', adminCookie),
+    );
+    expect(adminCatalog.map((row) => row.id)).not.toContain(personal.id);
+    const adminDelete = await handle.app.request(
+      `/api/providers/${personal.id}`,
+      { method: 'DELETE', headers: { cookie: adminCookie } },
+    );
+    expect(adminDelete.status).toBe(403);
+    const managerChatOwn = await send(
+      '/api/conversations',
+      { locale: 'ru', providerId: personal.id, model: 'gpt-5-mini' },
+      managerCookie,
+    );
+    expect(managerChatOwn.status).toBe(201);
+    const adminUsesIt = await send(
+      '/api/conversations',
+      { locale: 'ru', providerId: personal.id, model: 'gpt-5-mini' },
+      adminCookie,
+    );
+    expect(adminUsesIt.status).toBe(403);
+
+    // Коннекторы: менеджер добавляет свои только по https, общие видит без адреса.
+    const stdio = await send(
+      '/api/mcp',
+      { name: 'my-shell', transport: 'stdio', command: 'bash' },
+      managerCookie,
+    );
+    expect(stdio.status).toBe(400);
+    const local = await send(
+      '/api/mcp',
+      { name: 'my-local', transport: 'http', url: 'http://127.0.0.1:8765/mcp' },
+      managerCookie,
+    );
+    expect(local.status).toBe(400);
+    const sharedList = await json<{ id: string; name: string }[]>(
+      await get('/api/mcp', adminCookie),
+    );
+    const demoMcp = sharedList.find((item) => item.name === 'demo');
+    expect(
+      (await json<{ id: string }[]>(await get('/api/mcp', managerCookie))).some(
+        (item) => item.id === demoMcp?.id,
+      ),
+    ).toBe(false);
+    const opened = await patch(
+      `/api/mcp/${demoMcp?.id}`,
+      { forManagers: true },
+      adminCookie,
+    );
+    expect(opened.status).toBe(200);
+    const managerMcp = await json<
+      { id: string; command: string; url: string; forManagers: boolean }[]
+    >(await get('/api/mcp', managerCookie));
+    const visible = managerMcp.find((item) => item.id === demoMcp?.id);
+    expect(visible?.forManagers).toBe(true);
+    expect(visible?.command).toBe('');
+    // Клиент (сам зарегистрировался) общих коннекторов не видит, даже открытых менеджерам.
+    await patch(
+      `/api/admin/users/${pendingBody.user.id}`,
+      { client: true },
+      adminCookie,
+    );
+    expect(
+      (await json<{ id: string }[]>(await get('/api/mcp', managerCookie))).some(
+        (item) => item.id === demoMcp?.id,
+      ),
+    ).toBe(false);
+    await patch(
+      `/api/admin/users/${pendingBody.user.id}`,
+      { client: false },
+      adminCookie,
+    );
+    const managerEdit = await patch(
+      `/api/mcp/${demoMcp?.id}`,
+      { enabled: false },
+      managerCookie,
+    );
+    expect(managerEdit.status).toBe(403);
+    expect((await get('/api/mcp/config', managerCookie)).status).toBe(403);
 
     const catalog = await json<{ id: string; models: string[] }[]>(
       await get('/api/providers', adminCookie),

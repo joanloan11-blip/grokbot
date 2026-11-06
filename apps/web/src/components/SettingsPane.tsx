@@ -1,21 +1,34 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DEEPSEEK_BASE_URL,
   DEEPSEEK_MODELS,
   type McpServerInput,
   type McpServerPublic,
+  type DiscoverResult,
+  type FreeCatalog,
+  type FreeProvider,
   type ProviderInput,
   type ProviderKind,
   type ProviderPublic,
+  guessProviderFromModel,
+  guessProvidersFromKey,
   type Skill,
   type SkillSummary,
 } from '@mayak/shared';
 import { api } from '../api';
+import { availableCount } from '../models';
 import { useI18n, useTheme } from '../i18n';
 import { GithubPane } from './GithubPane';
+import { BillingSettingsPanel } from './BillingPane';
 import { IconMenu } from './icons';
 
-export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'github' | 'general';
+export type SettingsTab =
+  | 'providers'
+  | 'mcp'
+  | 'skills'
+  | 'github'
+  | 'billing'
+  | 'general';
 
 const KINDS: ProviderKind[] = [
   'openai',
@@ -31,19 +44,51 @@ export function SettingsPane({
   onMenu,
   onProvidersChanged,
   shareModels = false,
+  personal = false,
 }: {
   tab: SettingsTab;
   onTab: (tab: SettingsTab) => void;
   onMenu: () => void;
   onProvidersChanged: () => void;
   shareModels?: boolean;
+  /** Менеджер: только свои модели (личные ключи), без остальных настроек. */
+  personal?: boolean;
 }) {
   const { t } = useI18n();
+  if (personal)
+    return (
+      <section className="settings">
+        <header className="topbar">
+          <button
+            className="icon-btn menu-btn"
+            type="button"
+            onClick={onMenu}
+            aria-label={t('menu')}
+          >
+            <IconMenu />
+          </button>
+          <div>
+            <h1>{t('myModels')}</h1>
+            <p className="muted">{t('myModelsLead')}</p>
+          </div>
+        </header>
+        <div className="settings-body">
+          <ProvidersPanel
+            onChanged={onProvidersChanged}
+            shareModels={false}
+            personal
+          />
+          <h2 className="spend-h">{t('myConnectors')}</h2>
+          <McpPanel personal />
+        </div>
+      </section>
+    );
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'providers', label: t('tabProviders') },
     { id: 'mcp', label: t('tabMcp') },
     { id: 'skills', label: t('tabSkills') },
     { id: 'github', label: t('tabGithub') },
+    { id: 'billing', label: 'Оплата' },
     { id: 'general', label: t('tabGeneral') },
   ];
   return (
@@ -83,9 +128,171 @@ export function SettingsPane({
         {tab === 'mcp' && <McpPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'github' && <GithubPane />}
-        {tab === 'general' && <GeneralPanel />}
+        {tab === 'billing' && <BillingSettingsPanel />}
+        {tab === 'general' && (
+          <>
+            <GeneralPanel />
+            <ImagesPanel />
+            <MoyskladPanel />
+          </>
+        )}
       </div>
     </section>
+  );
+}
+
+/** Метки умений моделей провайдера после проверки. */
+function CapsLine({ provider }: { provider: ProviderPublic }) {
+  const { t } = useI18n();
+  const caps = provider.caps ?? {};
+  const checked = provider.models.filter((model) => caps[model]);
+  if (!checked.length) return null;
+  return (
+    <div className="caps-line">
+      {provider.models.map((model) => {
+        const item = caps[model];
+        if (!item) return null;
+        const state =
+          item.ok === false
+            ? 'down'
+            : item.tools === true
+              ? 'tools'
+              : item.tools === false
+                ? 'text'
+                : 'unknown';
+        return (
+          <span
+            key={model}
+            className={`cap cap-${state}`}
+            title={item.error || new Date(item.checkedAt).toLocaleString()}
+          >
+            {model}
+            <em>
+              {state === 'down'
+                ? t('capDown')
+                : state === 'tools'
+                  ? t('capTools')
+                  : state === 'text'
+                    ? t('capNoTools')
+                    : '?'}
+            </em>
+          </span>
+        );
+      })}
+      <p className="hint">{t('capLegend')}</p>
+    </div>
+  );
+}
+
+function FreeCatalogView({
+  onPick,
+  canRefresh,
+}: {
+  onPick: (item: FreeProvider) => void;
+  canRefresh: boolean;
+}) {
+  const { t } = useI18n();
+  const [catalog, setCatalog] = useState<FreeCatalog | null>(null);
+  const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    void api
+      .freeProviders()
+      .then(setCatalog)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : t('error')),
+      );
+  }, [t]);
+  if (!catalog) return error ? <p className="error-line">{error}</p> : null;
+  return (
+    <div className="free-catalog card">
+      <p className="hint">
+        {t('freeLead')}{' '}
+        <a href={catalog.source} target="_blank" rel="noreferrer">
+          awesome-free-llm-apis
+        </a>
+        {catalog.lastUpdated && ` · ${catalog.lastUpdated}`}
+        {canRefresh && (
+          <>
+            {' · '}
+            <button
+              type="button"
+              className="link-btn"
+              disabled={refreshing}
+              onClick={() => {
+                setRefreshing(true);
+                setError('');
+                void api
+                  .refreshFreeProviders()
+                  .then(setCatalog)
+                  .catch((reason: unknown) =>
+                    setError(
+                      reason instanceof Error ? reason.message : t('error'),
+                    ),
+                  )
+                  .finally(() => setRefreshing(false));
+              }}
+            >
+              {refreshing ? t('testing') : t('freeRefresh')}
+            </button>
+          </>
+        )}
+      </p>
+      {error && <p className="error-line">{error}</p>}
+      <ul className="free-list">
+        {catalog.providers.map((item) => (
+          <li key={item.id}>
+            <div className="free-top">
+              <strong>
+                {item.flag} {item.name}
+              </strong>
+              <span className="free-tags">
+                {!item.needsKey && (
+                  <span className="pill on">{t('freeNoKey')}</span>
+                )}
+                {item.viaProxy && (
+                  <span className="pill">{t('freeProxy')}</span>
+                )}
+              </span>
+            </div>
+            <p className="muted">{item.description}</p>
+            {item.notes.length > 0 && (
+              <ul className="free-notes">
+                {item.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            )}
+            <p className="free-models">
+              {item.models
+                .slice(0, 6)
+                .map((model) => model.id)
+                .join(', ')}
+              {item.models.length > 6 ? ` +${item.models.length - 6}` : ''}
+            </p>
+            <div className="row-actions">
+              {item.keyUrl && item.needsKey && (
+                <a
+                  className="ghost slim"
+                  href={item.keyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('freeGetKey')}
+                </a>
+              )}
+              <button
+                type="button"
+                className="primary-btn slim"
+                onClick={() => onPick(item)}
+              >
+                {t('freeConnect')}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -107,9 +314,11 @@ async function toggleShared(
 function ProvidersPanel({
   onChanged,
   shareModels,
+  personal = false,
 }: {
   onChanged: () => void;
   shareModels: boolean;
+  personal?: boolean;
 }) {
   const { t } = useI18n();
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
@@ -119,10 +328,115 @@ function ProvidersPanel({
   const [error, setError] = useState('');
   const [testNote, setTestNote] = useState('');
   const [testing, setTesting] = useState(false);
+  // Автоопределение: тип/адрес меняем сами, пока пользователь их не трогал.
+  const [touched, setTouched] = useState({
+    kind: false,
+    baseUrl: false,
+    name: false,
+  });
+  const [found, setFound] = useState<DiscoverResult | null>(null);
+  const [freeOpen, setFreeOpen] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
+  const discoverSeq = useRef(0);
+  const autoName = useRef('');
+
+  const runDiscover = useCallback(
+    async (form: NonNullable<typeof editing>, flags: typeof touched) => {
+      const seq = ++discoverSeq.current;
+      setDiscovering(true);
+      try {
+        const result = await api.discoverProvider({
+          apiKey: form.apiKey?.trim() || undefined,
+          baseUrl:
+            flags.baseUrl || flags.kind ? form.baseUrl?.trim() : undefined,
+          kind: flags.kind ? form.kind : undefined,
+          models: (form.models ?? [])
+            .map((item) => item.trim())
+            .filter(Boolean),
+          providerId: form.id,
+        });
+        if (seq !== discoverSeq.current) return;
+        setFound(result);
+        setEditing((current) => {
+          if (!current) return current;
+          const next = { ...current };
+          if (!flags.kind) next.kind = result.kind;
+          if (!flags.baseUrl && !flags.kind) next.baseUrl = result.baseUrl;
+          if (
+            !flags.name &&
+            result.name &&
+            (!current.name.trim() || current.name === autoName.current)
+          ) {
+            next.name = result.name;
+            autoName.current = result.name;
+          }
+          const picked = (current.models ?? [])
+            .map((item) => item.trim())
+            .filter(Boolean);
+          const working = result.working ?? [];
+          if (result.verified && picked.length === 0) {
+            // Предлагаем только модели, которые ответили на пробный запрос.
+            next.models = (working.length ? working : result.models).slice(
+              0,
+              3,
+            );
+          }
+          return next;
+        });
+      } catch (reason) {
+        if (seq === discoverSeq.current)
+          setFound({
+            kind: form.kind,
+            baseUrl: form.baseUrl ?? '',
+            name: '',
+            models: [],
+            verified: false,
+            error: reason instanceof Error ? reason.message : t('error'),
+          });
+      } finally {
+        if (seq === discoverSeq.current) setDiscovering(false);
+      }
+    },
+    [t],
+  );
+
+  // Ключ введён → через паузу определяем провайдера и грузим модели.
+  const keyValue = editing?.apiKey?.trim() ?? '';
+  useEffect(() => {
+    if (!editing || keyValue.length < 10) return;
+    const timer = window.setTimeout(
+      () => void runDiscover(editing, touched),
+      700,
+    );
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyValue]);
+
+  const toggleModel = (model: string) => {
+    if (!editing) return;
+    const list = (editing.models ?? [])
+      .map((item) => item.trim())
+      .filter(Boolean);
+    setEditing({
+      ...editing,
+      models: list.includes(model)
+        ? list.filter((item) => item !== model)
+        : [...list, model],
+    });
+  };
 
   const load = useCallback(async () => {
-    setProviders(await api.providers());
-  }, []);
+    const list = await api.providers();
+    // В «Моих моделях» — только свои ключи; общие модели менеджер видит в чате.
+    setProviders(personal ? list.filter((row) => row.owned) : list);
+  }, [personal]);
+  // Пока идёт проверка моделей — обновляем список раз в 4 секунды.
+  const anyChecking = providers.some((item) => item.checking);
+  useEffect(() => {
+    if (!anyChecking) return;
+    const timer = setInterval(() => void load().catch(() => undefined), 4000);
+    return () => clearInterval(timer);
+  }, [anyChecking, load]);
   useEffect(() => {
     void load().catch((reason: unknown) =>
       setError(reason instanceof Error ? reason.message : t('error')),
@@ -142,10 +456,16 @@ function ProvidersPanel({
       enabled: editing.enabled !== false,
     };
     if (editing.apiKey?.trim()) payload.apiKey = editing.apiKey.trim();
+    const keyFromProviderId =
+      !payload.apiKey && !editing.hasApiKey
+        ? found?.keyFrom?.providerId
+        : undefined;
     try {
-      if (editing.id) await api.updateProvider(editing.id, payload);
-      else await api.createProvider(payload);
+      if (editing.id)
+        await api.updateProvider(editing.id, { ...payload, keyFromProviderId });
+      else await api.createProvider({ ...payload, keyFromProviderId });
       setEditing(null);
+      setFound(null);
       await load();
       onChanged();
     } catch (reason) {
@@ -174,7 +494,9 @@ function ProvidersPanel({
         <button
           type="button"
           className="primary-btn"
-          onClick={() =>
+          onClick={() => {
+            setTouched({ kind: false, baseUrl: false, name: false });
+            setFound(null);
             setEditing({
               name: '',
               kind: 'openai',
@@ -182,12 +504,53 @@ function ProvidersPanel({
               models: [''],
               enabled: true,
               apiKey: '',
-            })
-          }
+            });
+          }}
         >
           {t('addProvider')}
         </button>
+        <button
+          type="button"
+          className={freeOpen ? 'ghost active' : 'ghost'}
+          onClick={() => setFreeOpen((value) => !value)}
+        >
+          {t('freeProviders')}
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={anyChecking}
+          onClick={() =>
+            void api
+              .checkAllModels()
+              .then(() => setTimeout(() => void load(), 1500))
+              .catch((reason: unknown) =>
+                setError(reason instanceof Error ? reason.message : t('error')),
+              )
+          }
+        >
+          {anyChecking ? t('capChecking') : t('capCheckAll')}
+        </button>
       </div>
+      {freeOpen && (
+        <FreeCatalogView
+          canRefresh={!personal}
+          onPick={(item) => {
+            setFreeOpen(false);
+            setTouched({ kind: true, baseUrl: true, name: true });
+            setFound(null);
+            setEditing({
+              name: item.name,
+              kind: item.kind,
+              baseUrl: item.baseUrl,
+              models: item.models.map((model) => model.id),
+              enabled: true,
+              apiKey: '',
+            });
+          }}
+        />
+      )}
+      {personal && <p className="hint">{t('myModelsHint')}</p>}
       {error && <p className="error-line">{error}</p>}
       {testNote && <p className="note">{testNote}</p>}
       {editing && (
@@ -202,9 +565,10 @@ function ProvidersPanel({
             {t('providerName')}
             <input
               value={editing.name}
-              onChange={(event) =>
-                setEditing({ ...editing, name: event.target.value })
-              }
+              onChange={(event) => {
+                setTouched((current) => ({ ...current, name: true }));
+                setEditing({ ...editing, name: event.target.value });
+              }}
               required
             />
           </label>
@@ -212,17 +576,20 @@ function ProvidersPanel({
             {t('providerKind')}
             <select
               value={editing.kind}
-              onChange={(event) =>
+              onChange={(event) => {
+                setTouched((current) => ({ ...current, kind: true }));
                 setEditing(
                   applyKindPreset(editing, event.target.value as ProviderKind),
-                )
-              }
+                );
+              }}
             >
-              {KINDS.map((kind) => (
-                <option key={kind} value={kind}>
-                  {kindLabel(kind, t)}
-                </option>
-              ))}
+              {KINDS.filter((kind) => !personal || kind !== 'mock').map(
+                (kind) => (
+                  <option key={kind} value={kind}>
+                    {kindLabel(kind, t)}
+                  </option>
+                ),
+              )}
             </select>
           </label>
           {editing.kind === 'openai' && (
@@ -238,9 +605,10 @@ function ProvidersPanel({
                 <input
                   value={editing.baseUrl ?? ''}
                   placeholder={placeholderUrl(editing.kind)}
-                  onChange={(event) =>
-                    setEditing({ ...editing, baseUrl: event.target.value })
-                  }
+                  onChange={(event) => {
+                    setTouched((current) => ({ ...current, baseUrl: true }));
+                    setEditing({ ...editing, baseUrl: event.target.value });
+                  }}
                 />
               </label>
               <label>
@@ -256,7 +624,17 @@ function ProvidersPanel({
                 />
               </label>
               <p className="hint">
-                {editing.hasApiKey ? t('apiKeySaved') : t('apiKeyHint')}
+                {editing.hasApiKey ? t('apiKeySaved') : t('apiKeyHint')}{' '}
+                {!touched.kind &&
+                  keyValue.length >= 6 &&
+                  guessProvidersFromKey(keyValue)[0] && (
+                    <span className="detected">
+                      {t('detectedAs')}:{' '}
+                      {guessProvidersFromKey(keyValue)
+                        .map((item) => item.name)
+                        .join(' / ')}
+                    </span>
+                  )}
               </p>
             </>
           )}
@@ -265,15 +643,114 @@ function ProvidersPanel({
             <textarea
               rows={3}
               value={(editing.models ?? []).join('\n')}
-              onChange={(event) =>
-                setEditing({
-                  ...editing,
-                  models: event.target.value.split('\n'),
-                })
-              }
+              onChange={(event) => {
+                const models = event.target.value.split('\n');
+                let next = { ...editing, models };
+                // Своя модель без ключа: тип провайдера угадываем по имени модели.
+                if (!touched.kind && !keyValue && !editing.id) {
+                  const guess = models
+                    .map(guessProviderFromModel)
+                    .find(Boolean);
+                  if (guess) {
+                    const keepName =
+                      touched.name ||
+                      (next.name.trim() !== '' &&
+                        next.name !== autoName.current);
+                    if (!keepName) autoName.current = guess.name;
+                    next = {
+                      ...next,
+                      kind: guess.kind,
+                      baseUrl: touched.baseUrl ? next.baseUrl : guess.baseUrl,
+                      name: keepName ? next.name : guess.name,
+                    };
+                  }
+                }
+                setEditing(next);
+              }}
+              onBlur={() => {
+                if (!keyValue && !editing.hasApiKey && !editing.id)
+                  void runDiscover(editing, touched);
+              }}
             />
           </label>
           <p className="hint">{t('modelsHint')}</p>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="ghost slim"
+              disabled={discovering}
+              onClick={() => void runDiscover(editing, touched)}
+            >
+              {discovering ? t('modelsLoading') : t('loadModels')}
+            </button>
+            {found?.keyFrom && !keyValue && !editing.hasApiKey && (
+              <span className="hint">
+                {t('keyFrom')} «{found.keyFrom.name}»
+              </span>
+            )}
+            {found?.error && <span className="fault">{found.error}</span>}
+            {found?.failed?.some((model) =>
+              (editing.models ?? []).map((item) => item.trim()).includes(model),
+            ) && (
+              <button
+                type="button"
+                className="ghost slim"
+                onClick={() =>
+                  setEditing({
+                    ...editing,
+                    models: (editing.models ?? [])
+                      .map((item) => item.trim())
+                      .filter((item) => item && !found.failed?.includes(item)),
+                  })
+                }
+              >
+                {t('keepWorking')}
+              </button>
+            )}
+          </div>
+          {found?.failed && found.failed.length > 0 && (
+            <p className="hint">
+              {t('modelsFailed')}: {found.failed.join(', ')}
+            </p>
+          )}
+          {found?.verified && found.models.length > 0 && (
+            <div className="model-chips">
+              {found.models.map((model) => {
+                const on = (editing.models ?? [])
+                  .map((item) => item.trim())
+                  .includes(model);
+                return (
+                  <button
+                    key={model}
+                    type="button"
+                    className={[
+                      'chip',
+                      on ? 'on' : '',
+                      found.working?.includes(model) ? 'ok' : '',
+                      found.failed?.includes(model) ? 'bad' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    title={
+                      found.failed?.includes(model)
+                        ? t('modelFailed')
+                        : found.working?.includes(model)
+                          ? t('modelWorks')
+                          : undefined
+                    }
+                    onClick={() => toggleModel(model)}
+                  >
+                    {found.working?.includes(model)
+                      ? '✓ '
+                      : found.failed?.includes(model)
+                        ? '✕ '
+                        : ''}
+                    {model}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <label className="check">
             <input
               type="checkbox"
@@ -353,11 +830,22 @@ function ProvidersPanel({
             ) : (
               <p className="models">{provider.models.join(', ') || '—'}</p>
             )}
+            <CapsLine provider={provider} />
+            {provider.kind !== 'mock' && (
+              <p className="hint avail-line">
+                {provider.needsKey && !provider.hasApiKey
+                  ? t('capNeedKey')
+                  : `${t('capInChat')}: ${availableCount(provider)} / ${provider.models.length}`}
+                {provider.checking ? ` · ${t('capChecking')}` : ''}
+              </p>
+            )}
             <div className="row-actions">
               <button
                 type="button"
                 className="ghost slim"
-                onClick={() =>
+                onClick={() => {
+                  setTouched({ kind: true, baseUrl: true, name: true });
+                  setFound(null);
                   setEditing({
                     id: provider.id,
                     name: provider.name,
@@ -367,8 +855,8 @@ function ProvidersPanel({
                     enabled: provider.enabled,
                     apiKey: '',
                     hasApiKey: provider.hasApiKey,
-                  })
-                }
+                  });
+                }}
               >
                 {t('edit')}
               </button>
@@ -379,6 +867,23 @@ function ProvidersPanel({
                 onClick={() => void test(provider.id)}
               >
                 {testing ? t('testing') : t('test')}
+              </button>
+              <button
+                type="button"
+                className="ghost slim"
+                disabled={provider.checking}
+                onClick={() =>
+                  void api
+                    .checkModels(provider.id)
+                    .then(() => load())
+                    .catch((reason: unknown) =>
+                      setError(
+                        reason instanceof Error ? reason.message : t('error'),
+                      ),
+                    )
+                }
+              >
+                {provider.checking ? t('capChecking') : t('capCheck')}
               </button>
               <button
                 type="button"
@@ -400,7 +905,7 @@ function ProvidersPanel({
   );
 }
 
-function McpPanel() {
+function McpPanel({ personal = false }: { personal?: boolean }) {
   const { t } = useI18n();
   const [servers, setServers] = useState<McpServerPublic[]>([]);
   const [configText, setConfigText] = useState('');
@@ -408,7 +913,7 @@ function McpPanel() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<McpServerInput>({
     name: '',
-    transport: 'stdio',
+    transport: personal ? 'http' : 'stdio',
     command: 'node',
     args: [],
     url: '',
@@ -416,10 +921,14 @@ function McpPanel() {
   });
 
   const load = useCallback(async () => {
+    if (personal) {
+      setServers((await api.mcp()).filter((row) => row.owned));
+      return;
+    }
     const [list, file] = await Promise.all([api.mcp(), api.mcpConfig()]);
     setServers(list);
     setConfigText(JSON.stringify(file, null, 2));
-  }, []);
+  }, [personal]);
   useEffect(() => {
     void load().catch((reason: unknown) =>
       setError(reason instanceof Error ? reason.message : t('error')),
@@ -438,7 +947,7 @@ function McpPanel() {
       setOpen(false);
       setForm({
         name: '',
-        transport: 'stdio',
+        transport: personal ? 'http' : 'stdio',
         command: 'node',
         args: [],
         url: '',
@@ -480,7 +989,8 @@ function McpPanel() {
               required
             />
           </label>
-          <label>
+          {personal && <p className="hint">{t('mcpPersonalHint')}</p>}
+          <label hidden={personal}>
             {t('transport')}
             <select
               value={form.transport}
@@ -534,7 +1044,11 @@ function McpPanel() {
                 {t('url')}
                 <input
                   value={form.url ?? ''}
-                  placeholder="http://127.0.0.1:3000/mcp"
+                  placeholder={
+                    personal
+                      ? 'https://example.com/mcp'
+                      : 'http://127.0.0.1:3000/mcp'
+                  }
                   onChange={(event) =>
                     setForm({ ...form, url: event.target.value })
                   }
@@ -610,6 +1124,22 @@ function McpPanel() {
                 />
                 {t('enabled')}
               </label>
+              {!personal && !server.owned && (
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(server.forManagers)}
+                    onChange={(event) =>
+                      void api
+                        .updateMcp(server.id, {
+                          forManagers: event.target.checked,
+                        } as never)
+                        .then(load)
+                    }
+                  />
+                  {t('mcpForManagers')}
+                </label>
+              )}
               <button
                 type="button"
                 className="ghost slim danger-text"
@@ -623,6 +1153,7 @@ function McpPanel() {
       </ul>
       <form
         className="card form"
+        hidden={personal}
         onSubmit={(event) => {
           event.preventDefault();
           setError('');
@@ -803,6 +1334,203 @@ function SkillsPanel() {
         )}
       </div>
     </div>
+  );
+}
+
+function ImagesPanel() {
+  const { t } = useI18n();
+  const [data, setData] = useState<Awaited<
+    ReturnType<typeof api.imageSettings>
+  > | null>(null);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const load = useCallback(async () => setData(await api.imageSettings()), []);
+  useEffect(() => {
+    void load().catch((reason: unknown) =>
+      setError(reason instanceof Error ? reason.message : t('error')),
+    );
+  }, [load, t]);
+  if (!data) return null;
+  const save = async (patch: Parameters<typeof api.saveImageSettings>[0]) => {
+    setError('');
+    setSaved(false);
+    try {
+      await api.saveImageSettings(patch);
+      await load();
+      setSaved(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('error'));
+    }
+  };
+  return (
+    <div className="panel card form">
+      <h3>
+        {t('imagesTitle')}{' '}
+        <span className={data.enabled ? 'pill on' : 'pill'}>
+          {data.enabled ? t('moyskladConnected') : t('moyskladOff')}
+        </span>
+      </h3>
+      <p className="hint">{t('imagesLead')}</p>
+      {data.providers.length === 0 ? (
+        <p className="fault">{t('imagesNoProvider')}</p>
+      ) : (
+        <>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={data.enabled}
+              onChange={(event) => void save({ enabled: event.target.checked })}
+            />
+            {t('imagesEnabled')}
+          </label>
+          <label>
+            {t('imagesProvider')}
+            <select
+              value={data.providerId ?? ''}
+              onChange={(event) =>
+                void save({ providerId: event.target.value })
+              }
+            >
+              {data.providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {t('imagesModel')}
+            <select
+              value={data.model}
+              onChange={(event) => void save({ model: event.target.value })}
+            >
+              {[
+                'gpt-image-2',
+                'gpt-image-1.5',
+                'gpt-image-1',
+                'gpt-image-1-mini',
+              ].map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {t('imagesQuality')}
+            <select
+              value={data.quality}
+              onChange={(event) => void save({ quality: event.target.value })}
+            >
+              <option value="low">{t('qualityLow')}</option>
+              <option value="medium">{t('qualityMedium')}</option>
+              <option value="high">{t('qualityHigh')}</option>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+          <label>
+            {t('imagesLimit')}
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              defaultValue={data.dailyLimit}
+              onBlur={(event) => {
+                const next = Number(event.target.value);
+                if (next !== data.dailyLimit && next >= 1)
+                  void save({ dailyLimit: next });
+              }}
+            />
+          </label>
+          <p className="hint">
+            {t('imagesUsed')}: {data.usedToday}
+          </p>
+        </>
+      )}
+      {saved && <p className="note">{t('saved')}</p>}
+      {error && <p className="fault">{error}</p>}
+    </div>
+  );
+}
+
+function MoyskladPanel() {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<{
+    connected: boolean;
+    account?: string;
+    error?: string;
+  } | null>(null);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    void api
+      .moysklad()
+      .then(setStatus)
+      .catch(() => setStatus({ connected: false }));
+  }, []);
+  async function save(next: string) {
+    setBusy(true);
+    setError('');
+    try {
+      setStatus(await api.saveMoysklad(next));
+      setToken('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('error'));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form
+      className="panel card form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save(token);
+      }}
+    >
+      <h3>
+        {t('moyskladTitle')}{' '}
+        <span className={status?.connected ? 'pill on' : 'pill'}>
+          {status?.connected
+            ? `${t('moyskladConnected')}${status.account ? ` · ${status.account}` : ''}`
+            : t('moyskladOff')}
+        </span>
+      </h3>
+      <p className="hint">{t('moyskladLead')}</p>
+      <label>
+        {t('moyskladToken')}
+        <input
+          type="password"
+          autoComplete="off"
+          value={token}
+          placeholder={status?.connected ? '••••••' : ''}
+          onChange={(event) => setToken(event.target.value)}
+        />
+      </label>
+      {(error || status?.error) && (
+        <p className="fault">{error || status?.error}</p>
+      )}
+      <div className="row-actions">
+        <button
+          className="primary-btn"
+          type="submit"
+          disabled={busy || !token.trim()}
+        >
+          {t('moyskladSave')}
+        </button>
+        {status?.connected && (
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => void save('')}
+          >
+            {t('moyskladDisconnect')}
+          </button>
+        )}
+      </div>
+    </form>
   );
 }
 

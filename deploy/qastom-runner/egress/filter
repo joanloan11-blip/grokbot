@@ -1,0 +1,9 @@
+(^|\.)npmjs\.org$
+(^|\.)npmjs\.com$
+(^|\.)yarnpkg\.com$
+(^|\.)pnpm\.io$
+(^|\.)nodejs\.org$
+(^|\.)pypi\.org$
+(^|\.)pythonhosted\.org$
+(^|\.)github\.com$
+(^|\.)githubusercontent\.com$

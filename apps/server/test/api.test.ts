@@ -137,6 +137,111 @@ describe('HTTP API', () => {
     ).toBe(true);
   });
 
+  it('compares two models side by side and adopts one answer', async () => {
+    const mock = await demoProvider();
+    const conversation = await demoConversation();
+    const response = await post(
+      `/api/conversations/${conversation.id}/compare`,
+      {
+        content: 'сравни меня',
+        locale: 'ru',
+        lanes: [
+          { providerId: mock.id, model: 'mock' },
+          { providerId: mock.id, model: 'mock' },
+        ],
+      },
+    );
+    expect(response.status).toBe(200);
+    const events = await readEvents(response);
+    const start = events.find((event) => event.type === 'lanes');
+    if (start?.type !== 'lanes') throw new Error('no lanes');
+    expect(start.lanes).toHaveLength(2);
+    const finals = events.filter(
+      (event) =>
+        event.type === 'lane' &&
+        event.event.type === 'message' &&
+        event.event.message.role === 'assistant' &&
+        event.event.message.meta,
+    );
+    expect(finals).toHaveLength(2);
+    // Основной чат не тронут, пока ответ не выбран; колонки не видны в списке.
+    const before = (await (
+      await handle.app.request(`/api/conversations/${conversation.id}`)
+    ).json()) as { messages: ChatMessage[] };
+    expect(before.messages).toHaveLength(0);
+    const list = (await (
+      await handle.app.request('/api/conversations')
+    ).json()) as { id: string }[];
+    expect(
+      list.some((item) => item.id === start.lanes[0]!.conversationId),
+    ).toBe(false);
+
+    const adopt = await post(
+      `/api/conversations/${conversation.id}/compare/adopt`,
+      { lane: start.lanes[1]!.conversationId },
+    );
+    expect(adopt.status).toBe(200);
+    const adopted = (await adopt.json()) as { messages: ChatMessage[] };
+    expect(adopted.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(adopted.messages[1]!.meta?.model).toBe('mock');
+    const again = await post(
+      `/api/conversations/${conversation.id}/compare/adopt`,
+      { lane: start.lanes[0]!.conversationId },
+    );
+    expect(again.status).toBe(404);
+  });
+
+  it('пишет файл в папку на компьютере через браузер (local_fs)', async () => {
+    const mock = await demoProvider();
+    const conversation = await demoConversation();
+    const response = await post(
+      `/api/conversations/${conversation.id}/messages`,
+      {
+        content:
+          'tool workspace_write {"path":"notes/a.md","content":"привет"}',
+        locale: 'ru',
+        providerId: mock.id,
+        model: 'mock',
+        localFolder: 'Документы',
+      },
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const seen: { op: string; args: Record<string, unknown> }[] = [];
+    const results: string[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let split = buffer.indexOf('\n\n');
+      while (split !== -1) {
+        const block = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+        const line = block.split('\n').find((item) => item.startsWith('data:'));
+        split = buffer.indexOf('\n\n');
+        if (!line) continue;
+        const event = JSON.parse(line.slice(5).trim()) as ClientEvent;
+        if (event.type === 'local_fs') {
+          seen.push({ op: event.op, args: event.args });
+          const answer = await post(`/api/local-fs/${event.id}`, {
+            result: { before: '', created: true },
+          });
+          expect(answer.status).toBe(200);
+        }
+        if (event.type === 'message' && event.message.role === 'tool')
+          results.push(event.message.content);
+      }
+    }
+    expect(seen).toEqual([
+      { op: 'write', args: { path: 'notes/a.md', content: 'привет' } },
+    ]);
+    expect(results[0]).toMatch(/^DIFF:/);
+  });
+
   it('loads a skill through the agent loop', async () => {
     const conversation = await demoConversation();
     const events = await readEvents(
@@ -197,6 +302,35 @@ describe('HTTP API', () => {
     expect(
       followUp && followUp.type === 'message' ? followUp.message.content : '',
     ).toContain('ping-from-test');
+  });
+
+  it('shows a connector catalog instead of every MCP schema when there are many tools', async () => {
+    await handle.runtime.store.setSetting('lazy_mcp_threshold', '0');
+    const conversation = await demoConversation();
+    const listed = await readEvents(
+      await post(`/api/conversations/${conversation.id}/messages`, {
+        content: 'tool connector_tools {"connector":"demo"}',
+      }),
+    );
+    const schema = listed.find(
+      (event) => event.type === 'message' && event.message.role === 'tool',
+    );
+    expect(
+      schema && schema.type === 'message' ? schema.message.content : '',
+    ).toContain('"name":"echo"');
+    const called = await readEvents(
+      await post(`/api/conversations/${conversation.id}/messages`, {
+        content:
+          'tool connector_call {"connector":"demo","tool":"echo","arguments":{"text":"lazy-ok"}}',
+      }),
+    );
+    const result = called.find(
+      (event) => event.type === 'message' && event.message.role === 'tool',
+    );
+    expect(
+      result && result.type === 'message' ? result.message.content : '',
+    ).toContain('lazy-ok');
+    await handle.runtime.store.setSetting('lazy_mcp_threshold', '');
   });
 
   it('redacts MCP env values in the exported config', async () => {

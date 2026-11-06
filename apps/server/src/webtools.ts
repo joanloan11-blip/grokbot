@@ -175,7 +175,8 @@ export async function webSearch(input: {
   const base = input.searxngUrl?.replace(/\/$/, '');
   if (!base)
     throw new Error('Поиск не настроен. Укажите SearXNG, Brave или Tavily.');
-  await assertPublicUrl(base);
+  // Адрес SearXNG задаёт администратор (или SEARXNG_URL), обычно это контейнер
+  // во внутренней сети сервера, поэтому проверку на внутренние адреса не делаем.
   const response = await fetchImpl(
     `${base}/search?q=${encodeURIComponent(query)}&format=json`,
     { headers: { Accept: 'application/json' } },

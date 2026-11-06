@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import type { Context, Hono } from 'hono';
 import type { AppConfig } from './config';
 import type { Store, UserRecord } from './db';
 import { HttpError, badRequest } from './errors';
 import { extractUploadText } from './files';
-import { encryptSecret } from './github/secret';
+import { decryptSecret, encryptSecret } from './github/secret';
+import { checkMoyskladToken } from './moysklad';
+import { IMAGE_QUALITIES, imagesUsedToday, readImageSettings } from './images';
 import type { McpManager } from './mcp/manager';
 import { runSandboxed } from './sandbox';
 import { deliverToAgent, type TurnDeps } from './turn';
@@ -29,6 +32,69 @@ export function registerExtraRoutes(
       throw new HttpError(403, 'Только для администратора');
     return user;
   };
+
+  app.get('/api/search', async (c) => {
+    const user = await deps.actor(c);
+    const query = (c.req.query('q') ?? '').trim();
+    return c.json(await deps.store.searchMessages(user.id, query));
+  });
+
+  app.post('/api/transcribe', async (c) => {
+    await deps.actor(c);
+    const base = (process.env.WHISPER_URL ?? '').replace(/\/$/, '');
+    if (!base)
+      return c.json(
+        { error: 'Распознавание речи не настроено (WHISPER_URL)' },
+        503,
+      );
+    const body = await c.req.parseBody();
+    const file = body.file;
+    if (
+      !file ||
+      typeof file === 'string' ||
+      typeof file.arrayBuffer !== 'function'
+    )
+      throw badRequest('Приложите аудио в поле file');
+    if (file.size > 20_000_000) throw badRequest('Аудио больше 20 МБ');
+    const raw = Buffer.from(await file.arrayBuffer());
+    const wav = await toWav(raw).catch(() => undefined);
+    const form = new FormData();
+    const language = c.req.query('lang') === 'en' ? 'en' : 'ru';
+    let url = `${base}/inference`;
+    const headers: Record<string, string> = {};
+    if (base.endsWith('/v1')) {
+      // OpenAI-совместимый Whisper API.
+      url = `${base}/audio/transcriptions`;
+      form.append('model', process.env.WHISPER_MODEL || 'whisper-1');
+      if (process.env.WHISPER_API_KEY)
+        headers.authorization = `Bearer ${process.env.WHISPER_API_KEY}`;
+    }
+    form.append(
+      'file',
+      new Blob([wav ?? raw], {
+        type: wav ? 'audio/wav' : file.type || 'audio/webm',
+      }),
+      wav ? 'voice.wav' : file.name || 'voice.webm',
+    );
+    form.append('response_format', 'json');
+    form.append('language', language);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(180_000),
+    }).catch(() => undefined);
+    if (!response?.ok)
+      return c.json({ error: 'Сервис распознавания не ответил' }, 502);
+    const data = (await response.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    const text =
+      typeof data.text === 'string'
+        ? data.text.replace(/\[[^\]]*\]/g, '').trim()
+        : '';
+    return c.json({ text });
+  });
 
   app.get('/api/tasks', async (c) => {
     const user = await deps.actor(c);
@@ -62,6 +128,7 @@ export function registerExtraRoutes(
       headers: {
         'content-type': file.mime || 'application/octet-stream',
         'content-disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
+        'x-content-type-options': 'nosniff',
       },
     });
   });
@@ -102,7 +169,57 @@ export function registerExtraRoutes(
       path: stored,
       text,
     });
-    return c.json({ id, name: file.name, text: text.slice(0, 4000) }, 201);
+    return c.json(
+      {
+        id,
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        text: text.slice(0, 4000),
+      },
+      201,
+    );
+  });
+
+  /** Сообщение из чата текущего пользователя (или 404). */
+  const ownMessage = async (userId: string, id: string) => {
+    const message = await deps.store.getMessage(id);
+    const chat = message
+      ? await deps.store.getConversation(message.conversationId, userId)
+      : undefined;
+    if (!message || !chat || chat.userId !== userId)
+      throw new HttpError(404, 'Сообщение не найдено');
+    return message;
+  };
+
+  // Правка текста ответа (или своего сообщения) без повторного запроса к модели.
+  app.patch('/api/messages/:id', async (c) => {
+    const user = await deps.actor(c);
+    const message = await ownMessage(user.id, c.req.param('id'));
+    if (message.role !== 'assistant' && message.role !== 'user')
+      throw badRequest('Это сообщение менять нельзя');
+    const body = await deps.readBody(c);
+    const content =
+      isRecord(body) && typeof body.content === 'string' ? body.content : '';
+    if (!content.trim()) throw badRequest('Текст не может быть пустым');
+    await deps.store.updateMessageContent(
+      message.id,
+      content.slice(0, 100_000),
+    );
+    return c.json({ ...message, content: content.slice(0, 100_000) });
+  });
+
+  // «Изменить и отправить заново»: удалить своё сообщение и всё после него.
+  app.post('/api/messages/:id/rewind', async (c) => {
+    const user = await deps.actor(c);
+    const message = await ownMessage(user.id, c.req.param('id'));
+    if (message.role !== 'user')
+      throw badRequest('Заново отправить можно только своё сообщение');
+    const removed = await deps.store.deleteMessagesFrom(message);
+    return c.json({
+      ok: true,
+      removed,
+      attachments: (message.attachments ?? []).map((file) => file.id),
+    });
   });
 
   app.post('/api/messages/:id/reactions', async (c) => {
@@ -155,7 +272,98 @@ export function registerExtraRoutes(
       approvals: (await deps.store.getSetting('approvals_enabled')) === '1',
       approvalAuto: (await deps.store.getSetting('approval_auto')) || '',
       telegram: Boolean(await deps.store.getSetting('telegram_token')),
+      moysklad: Boolean(await deps.store.getSetting('moysklad_token')),
     });
+  });
+
+  // Картинки: провайдер, модель, качество и дневной лимит на пользователя.
+  app.get('/api/admin/images', async (c) => {
+    const user = await admin(c);
+    const settings = await readImageSettings(deps.store);
+    const providers = (await deps.store.listProviders())
+      .filter((row) => row.kind === 'openai' && row.apiKey)
+      .map((row) => ({ id: row.id, name: row.name, baseUrl: row.baseUrl }));
+    return c.json({
+      ...settings,
+      providers,
+      usedToday: await imagesUsedToday(deps.store, user.id),
+    });
+  });
+
+  app.put('/api/admin/images', async (c) => {
+    await admin(c);
+    const body = await deps.readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON');
+    if (typeof body.enabled === 'boolean')
+      await deps.store.setSetting('images_enabled', body.enabled ? '1' : '0');
+    if (typeof body.providerId === 'string') {
+      const provider = await deps.store.getProvider(body.providerId);
+      if (!provider || provider.kind !== 'openai')
+        throw badRequest('Нужен OpenAI-совместимый провайдер');
+      await deps.store.setSetting('image_provider_id', provider.id);
+    }
+    if (
+      typeof body.model === 'string' &&
+      /^[\w.:-]{2,80}$/.test(body.model.trim())
+    )
+      await deps.store.setSetting('image_model', body.model.trim());
+    if (
+      typeof body.quality === 'string' &&
+      (IMAGE_QUALITIES as readonly string[]).includes(body.quality)
+    )
+      await deps.store.setSetting('image_quality', body.quality);
+    if (
+      typeof body.dailyLimit === 'number' &&
+      body.dailyLimit >= 1 &&
+      body.dailyLimit <= 1000
+    )
+      await deps.store.setSetting(
+        'image_daily_limit',
+        String(Math.floor(body.dailyLimit)),
+      );
+    return c.json(await readImageSettings(deps.store));
+  });
+
+  // МойСклад: токен только на запись, наружу не отдаётся. Пустая строка — отключить.
+  app.put('/api/admin/moysklad', async (c) => {
+    await admin(c);
+    const body = await deps.readBody(c);
+    const token =
+      isRecord(body) && typeof body.token === 'string' ? body.token.trim() : '';
+    if (!token) {
+      await deps.store.setSetting('moysklad_token', '');
+      return c.json({ ok: true, connected: false });
+    }
+    let who: string;
+    try {
+      who = await checkMoyskladToken(token);
+    } catch (error) {
+      throw badRequest(
+        error instanceof Error ? error.message : 'МойСклад не ответил',
+      );
+    }
+    await deps.store.setSetting(
+      'moysklad_token',
+      encryptSecret(token, deps.config.jwtSecret),
+    );
+    return c.json({ ok: true, connected: true, account: who });
+  });
+
+  app.get('/api/admin/moysklad', async (c) => {
+    await admin(c);
+    const stored = await deps.store.getSetting('moysklad_token');
+    if (!stored) return c.json({ connected: false });
+    try {
+      const account = await checkMoyskladToken(
+        decryptSecret(stored, deps.config.jwtSecret),
+      );
+      return c.json({ connected: true, account });
+    } catch (error) {
+      return c.json({
+        connected: false,
+        error: error instanceof Error ? error.message : 'ошибка',
+      });
+    }
   });
 
   app.put('/api/admin/search', async (c) => {
@@ -282,4 +490,43 @@ function escapeHtml(value: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/** Перекодирует запись браузера (webm/ogg) в WAV 16 кГц mono для whisper.cpp. */
+function toWav(input: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'ffmpeg',
+      [
+        '-loglevel',
+        'error',
+        '-i',
+        'pipe:0',
+        '-ar',
+        '16000',
+        '-ac',
+        '1',
+        '-c:a',
+        'pcm_s16le',
+        '-f',
+        'wav',
+        'pipe:1',
+      ],
+      { stdio: ['pipe', 'pipe', 'ignore'] },
+    );
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && chunks.length) resolve(Buffer.concat(chunks));
+      else reject(new Error('ffmpeg failed'));
+    });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(input);
+  });
 }

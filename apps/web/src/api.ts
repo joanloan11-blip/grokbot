@@ -1,8 +1,18 @@
 import type {
+  BillingSettings,
+  BillingState,
+  Attachment,
+  DiscoverResult,
+  ProviderKind,
   ChatMessage,
+  UsageMeter,
+  FreeCatalog,
   ClientEvent,
   PublicUser,
   UsageRow,
+  SpendReport,
+  KeyBalance,
+  ModelPrice,
   GithubPreview,
   GithubRepoInfo,
   GithubStatus,
@@ -17,15 +27,22 @@ import type {
   McpServerInput,
   McpServerPublic,
   McpServersFile,
+  Project,
+  ProjectInput,
   ProviderInput,
   ProviderPublic,
+  SearchHit,
   Skill,
   SkillSummary,
 } from '@mayak/shared';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has('content-type'))
+  if (
+    init?.body &&
+    !(init.body instanceof FormData) &&
+    !headers.has('content-type')
+  )
     headers.set('content-type', 'application/json');
   let response: Response;
   try {
@@ -57,6 +74,82 @@ export class ApiError extends Error {
 
 export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
+  usageMeter: () => request<UsageMeter>('/api/usage/meter'),
+  billing: () => request<BillingState>('/api/billing'),
+  localFsReply: (id: string, body: { result?: unknown; error?: string }) =>
+    request<{ ok: boolean }>(`/api/local-fs/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  billingRefresh: () =>
+    request<BillingState>('/api/billing/refresh', { method: 'POST' }),
+  billingPay: (
+    body:
+      | { kind: 'topup'; amountRub: number }
+      | { kind: 'plan'; planId: string },
+  ) =>
+    request<{ id: string; url: string }>('/api/billing/pay', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  billingAutorenew: (on: boolean) =>
+    request<BillingState>('/api/billing/autorenew', {
+      method: 'POST',
+      body: JSON.stringify({ on }),
+    }),
+  billingSettings: () => request<BillingSettings>('/api/admin/billing'),
+  saveBillingSettings: (
+    body: Partial<BillingSettings> & { secretKey?: string },
+  ) =>
+    request<BillingSettings>('/api/admin/billing', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  userBilling: (id: string) =>
+    request<BillingState>(`/api/admin/billing/users/${id}`),
+  creditUser: (
+    id: string,
+    body: { amountRub?: number; note?: string; resetTrial?: boolean },
+  ) =>
+    request<BillingState>(`/api/admin/billing/users/${id}/credit`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  budgets: (userId: string) =>
+    request<{ day: number | null; week: number | null }>(
+      `/api/admin/budgets/${userId}`,
+    ),
+  saveBudgets: (
+    userId: string,
+    body: { day?: number | null; week?: number | null },
+  ) =>
+    request<{ ok: boolean }>(`/api/admin/budgets/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  checkAllModels: () =>
+    request<{ started: number }>('/api/providers/check-all', {
+      method: 'POST',
+    }),
+  checkModels: (id: string) =>
+    request<{ started: boolean }>(`/api/providers/${id}/check`, {
+      method: 'POST',
+    }),
+  freeProviders: () => request<FreeCatalog>('/api/free-providers'),
+  refreshFreeProviders: () =>
+    request<FreeCatalog>('/api/admin/free-providers/refresh', {
+      method: 'POST',
+    }),
+  editMessage: (id: string, content: string) =>
+    request<ChatMessage>(`/api/messages/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    }),
+  rewindMessage: (id: string) =>
+    request<{ ok: boolean; attachments: string[] }>(
+      `/api/messages/${id}/rewind`,
+      { method: 'POST' },
+    ),
   authConfig: () => request<{ required: boolean }>('/api/auth/config'),
   me: () => request<{ user: PublicUser }>('/api/auth/me'),
   register: (body: { email: string; password: string; name?: string }) =>
@@ -76,6 +169,26 @@ export const api = {
     }),
   logout: () =>
     request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  forgotPassword: (body: { email: string; locale: Locale }) =>
+    request<{ ok: boolean; mail: boolean }>('/api/auth/forgot', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  resetPassword: (body: { token: string; password: string }) =>
+    request<{ ok: boolean; user?: PublicUser; pending?: boolean }>(
+      '/api/auth/reset',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  resetLink: (userId: string) =>
+    request<{ link: string; expiresAt: string }>(
+      `/api/admin/users/${userId}/reset-link`,
+      {
+        method: 'POST',
+      },
+    ),
   team: () => request<PublicUser[]>('/api/admin/users'),
   inviteUser: (body: {
     email: string;
@@ -104,6 +217,7 @@ export const api = {
       agentIds?: string[];
       modelsRestricted?: boolean;
       models?: { providerId: string; model: string }[];
+      client?: boolean;
     },
   ) =>
     request<PublicUser>(`/api/admin/users/${id}`, {
@@ -111,6 +225,22 @@ export const api = {
       body: JSON.stringify(body),
     }),
   usage: () => request<UsageRow[]>('/api/admin/usage'),
+  spend: (period: SpendReport['period'], scope: SpendReport['scope']) =>
+    request<SpendReport>(`/api/usage/report?period=${period}&scope=${scope}`),
+  balances: () => request<KeyBalance[]>('/api/admin/usage/balances'),
+  prices: () =>
+    request<{
+      defaults: Record<string, ModelPrice>;
+      overrides: Record<string, ModelPrice>;
+    }>('/api/admin/prices'),
+  savePrices: (overrides: Record<string, ModelPrice>) =>
+    request<{
+      defaults: Record<string, ModelPrice>;
+      overrides: Record<string, ModelPrice>;
+    }>('/api/admin/prices', {
+      method: 'PUT',
+      body: JSON.stringify({ overrides }),
+    }),
   githubStatus: () => request<GithubStatus>('/api/github/status'),
   saveGithubToken: (token: string) =>
     request<GithubStatus>('/api/github/token', {
@@ -145,12 +275,26 @@ export const api = {
       body: JSON.stringify({ mode }),
     }),
   providers: () => request<ProviderPublic[]>('/api/providers'),
-  createProvider: (input: ProviderInput) =>
+  discoverProvider: (body: {
+    apiKey?: string;
+    baseUrl?: string;
+    kind?: ProviderKind;
+    models?: string[];
+    providerId?: string;
+  }) =>
+    request<DiscoverResult>('/api/providers/discover', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  createProvider: (input: ProviderInput & { keyFromProviderId?: string }) =>
     request<ProviderPublic>('/api/providers', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  updateProvider: (id: string, input: Partial<ProviderInput>) =>
+  updateProvider: (
+    id: string,
+    input: Partial<ProviderInput> & { keyFromProviderId?: string },
+  ) =>
     request<ProviderPublic>(`/api/providers/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -201,7 +345,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  updateAgent: (id: string, input: AgentInput) =>
+  updateAgent: (id: string, input: AgentInput & { shared?: boolean }) =>
     request<Agent>(`/api/agents/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -256,11 +400,59 @@ export const api = {
         ? `/api/conversations?agentId=${encodeURIComponent(agentId)}`
         : '/api/conversations',
     ),
+  projects: () => request<Project[]>('/api/projects'),
+  createProject: (input: ProjectInput & { name: string }) =>
+    request<Project>('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateProject: (id: string, input: ProjectInput) =>
+    request<Project>(`/api/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteProject: (id: string) =>
+    request<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
+  projectConversations: (projectId: string) =>
+    request<Conversation[]>(
+      `/api/conversations?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  imageSettings: () =>
+    request<{
+      enabled: boolean;
+      providerId: string | null;
+      model: string;
+      quality: string;
+      dailyLimit: number;
+      usedToday: number;
+      providers: { id: string; name: string; baseUrl: string }[];
+    }>('/api/admin/images'),
+  saveImageSettings: (body: {
+    enabled?: boolean;
+    providerId?: string;
+    model?: string;
+    quality?: string;
+    dailyLimit?: number;
+  }) =>
+    request<{ enabled: boolean }>('/api/admin/images', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  moysklad: () =>
+    request<{ connected: boolean; account?: string; error?: string }>(
+      '/api/admin/moysklad',
+    ),
+  saveMoysklad: (token: string) =>
+    request<{ connected: boolean; account?: string }>('/api/admin/moysklad', {
+      method: 'PUT',
+      body: JSON.stringify({ token }),
+    }),
   createConversation: (body: {
     locale: Locale;
     agentId?: string;
     providerId?: string;
     model?: string;
+    projectId?: string | null;
   }) =>
     request<Conversation>('/api/conversations', {
       method: 'POST',
@@ -280,6 +472,31 @@ export const api = {
     }),
   deleteConversation: (id: string) =>
     request<{ ok: boolean }>(`/api/conversations/${id}`, { method: 'DELETE' }),
+  uploadFile: async (
+    conversationId: string,
+    file: File,
+  ): Promise<Attachment> => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return request<Attachment>(`/api/conversations/${conversationId}/files`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+  search: (query: string) =>
+    request<SearchHit[]>(`/api/search?q=${encodeURIComponent(query)}`),
+  transcribe: async (audio: Blob, locale: Locale): Promise<string> => {
+    const form = new FormData();
+    form.append('file', audio, 'voice.webm');
+    const data = await request<{ text: string }>(
+      `/api/transcribe?lang=${locale}`,
+      {
+        method: 'POST',
+        body: form,
+      },
+    );
+    return data.text;
+  },
 };
 
 export async function streamMessage(
@@ -289,11 +506,45 @@ export async function streamMessage(
     providerId?: string | null;
     model?: string | null;
     locale: Locale;
+    attachments?: string[];
+    /** Имя папки на компьютере: агент работает с файлами через браузер. */
+    localFolder?: string;
   },
   onEvent: (event: ClientEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/conversations/${id}/messages`, {
+  return streamSse(`/api/conversations/${id}/messages`, body, onEvent, signal);
+}
+
+/** Сравнение: тот же вопрос 2–3 моделям, события приходят с номером колонки. */
+export async function streamCompare(
+  id: string,
+  body: {
+    content: string;
+    locale: Locale;
+    lanes: { providerId: string; model: string }[];
+    attachments?: string[];
+  },
+  onEvent: (event: ClientEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return streamSse(`/api/conversations/${id}/compare`, body, onEvent, signal);
+}
+
+export function adoptCompare(id: string, lane: string) {
+  return request<{ conversation: Conversation; messages: ChatMessage[] }>(
+    `/api/conversations/${id}/compare/adopt`,
+    { method: 'POST', body: JSON.stringify({ lane }) },
+  );
+}
+
+async function streamSse(
+  url: string,
+  body: unknown,
+  onEvent: (event: ClientEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

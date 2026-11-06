@@ -13,10 +13,34 @@ export function createMockClient(): LLMClient {
   return {
     async *stream(input): AsyncGenerator<ProviderEvent> {
       const chunks = replyFor(input.messages, input.tools);
+      // Похоже на реальный провайдер: перед done приходит расход токенов.
+      const output = chunks.reduce(
+        (sum, event) =>
+          sum +
+          (event.type === 'text'
+            ? event.delta.length
+            : event.type === 'tool_call_delta'
+              ? (event.argumentsDelta ?? '').length
+              : 0),
+        0,
+      );
+      const input_ = input.messages.reduce(
+        (sum, message) => sum + message.content.length,
+        0,
+      );
+      chunks.splice(chunks.length - 1, 0, {
+        type: 'usage',
+        inputTokens: Math.ceil(input_ / 4),
+        outputTokens: Math.ceil(output / 4),
+        cachedTokens: 0,
+      });
       for (const event of chunks) {
         yield event;
         if (event.type === 'text' && !process.env.VITEST) {
           await delay(12);
+        }
+        if (event.type === 'reasoning' && !process.env.VITEST) {
+          await delay(250);
         }
       }
     },
@@ -39,7 +63,10 @@ function replyFor(
   const user = [...messages]
     .reverse()
     .find((message) => message.role === 'user');
-  const text = (user?.content ?? '').trim();
+  // Метку времени из withClock демо-модель не считает частью команды.
+  const text = (user?.content ?? '')
+    .replace(/^\[(?:Сейчас|Now):[^\]]*\]\n/, '')
+    .trim();
   const toolCmd = text.match(/^tool\s+(\S+)\s*([\s\S]*)$/i);
   if (toolCmd?.[1]) {
     const found = findTool(tools, toolCmd[1]);
@@ -49,6 +76,26 @@ function replyFor(
         `Инструмент «${toolCmd[1]}» не найден.\n\n${toolList(tools)}`,
       );
     return toolEvents(found.name, args);
+  }
+
+  // «think 5» — демо размышлений: модель «думает» 5 секунд, потом отвечает.
+  const thinkCmd = text.match(/^(?:think|подумай)\s+(\d+)\s*$/i);
+  if (thinkCmd?.[1]) {
+    const seconds = Math.min(30, Number(thinkCmd[1]));
+    const thoughts: ProviderEvent[] = [];
+    const lines = [
+      'Разбираю вопрос и что именно нужно пользователю.',
+      'Проверяю, какие инструменты могут помочь.',
+      'Сравниваю варианты ответа, отбрасываю слабые.',
+      'Собираю ответ коротко и по делу.',
+    ];
+    const steps = process.env.VITEST ? 2 : seconds * 4;
+    for (let i = 0; i < steps; i++)
+      thoughts.push({
+        type: 'reasoning',
+        delta: `${lines[i % lines.length]} `,
+      });
+    return [...thoughts, ...textEvents('Подумал и готов ответить.')];
   }
 
   const skillCmd = text.match(/^(?:skill|навык)\s+(\S+)\s*$/i);
@@ -74,7 +121,7 @@ function replyFor(
 
   return textEvents(
     [
-      'Я демо-модель Маяка и работаю без внешнего API.',
+      'Я демо-модель QASTOM AGENT и работаю без внешнего API.',
       `Вы написали: «${text || '…'}».`,
       '',
       'Команды демо-модели:',

@@ -19,7 +19,7 @@
   },
   "build": {
     "appId": "app.mayak.desktop",
-    "productName": "Mayak",
+    "productName": "QASTOM AGENT",
     "executableName": "mayak",
     "directories": {
       "output": "release"

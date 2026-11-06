@@ -1,3 +1,4 @@
+import { isKeylessUrl } from '../free-llm';
 import type { ProviderRow } from '../db';
 import { createAnthropicClient } from './anthropic';
 import { createGeminiClient } from './gemini';
@@ -25,6 +26,11 @@ export function createClient(provider: ProviderRow): LLMClient {
   });
 }
 
-export function providerNeedsKey(kind: ProviderRow['kind']): boolean {
-  return kind !== 'mock';
+/** Нужен ли ключ: демо и анонимные бесплатные API (Kilo, LLM7, OVHcloud) работают без него. */
+export function providerNeedsKey(
+  kind: ProviderRow['kind'],
+  baseUrl = '',
+): boolean {
+  if (kind === 'mock') return false;
+  return !isKeylessUrl(baseUrl);
 }

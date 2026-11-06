@@ -1,3 +1,4 @@
+import { fitBody, llmFetch, proxyFor } from './http';
 import { isRecord, jsonObject } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -46,7 +47,7 @@ export async function* streamGemini(options: {
     ];
   }
 
-  const response = await fetch(
+  const response = await llmFetch(
     geminiStreamUrl(options.baseUrl, options.model),
     {
       method: 'POST',
@@ -54,7 +55,11 @@ export async function* streamGemini(options: {
         'x-goog-api-key': options.apiKey,
         'content-type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        proxyFor(geminiStreamUrl(options.baseUrl, options.model))
+          ? fitBody(body)
+          : body,
+      ),
       signal: options.signal,
     },
   );
@@ -68,6 +73,7 @@ export async function* streamGemini(options: {
   }
 
   let toolIndex = 0;
+  let usage: Extract<ProviderEvent, { type: 'usage' }> | undefined;
   for await (const message of readSse(response)) {
     let json: unknown;
     try {
@@ -82,6 +88,17 @@ export async function* streamGemini(options: {
         message: String(json.error.message ?? 'Ошибка Gemini'),
       };
       return;
+    }
+    if (isRecord(json.usageMetadata)) {
+      const meta = json.usageMetadata;
+      usage = {
+        type: 'usage',
+        inputTokens: Number(meta.promptTokenCount ?? 0) || 0,
+        outputTokens:
+          (Number(meta.candidatesTokenCount ?? 0) || 0) +
+          (Number(meta.thoughtsTokenCount ?? 0) || 0),
+        cachedTokens: Number(meta.cachedContentTokenCount ?? 0) || 0,
+      };
     }
     const candidate = Array.isArray(json.candidates)
       ? json.candidates[0]
@@ -109,6 +126,7 @@ export async function* streamGemini(options: {
       }
     }
   }
+  if (usage) yield usage;
   yield { type: 'done' };
 }
 
@@ -128,7 +146,15 @@ function toGeminiContents(messages: ModelMessage[]): {
   for (const message of messages) {
     if (message.role === 'system') continue;
     if (message.role === 'user') {
-      contents.push({ role: 'user', parts: [{ text: message.content }] });
+      contents.push({
+        role: 'user',
+        parts: [
+          ...(message.images ?? []).map((image) => ({
+            inlineData: { mimeType: image.mime, data: image.data },
+          })),
+          { text: message.content },
+        ],
+      });
       continue;
     }
     if (message.role === 'assistant') {

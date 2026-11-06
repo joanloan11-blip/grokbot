@@ -16,6 +16,8 @@ export interface ModelMessage {
   toolCalls?: ModelToolCall[];
   toolCallId?: string;
   name?: string;
+  /** Картинки для моделей с поддержкой зрения (base64 без префикса data:). */
+  images?: { mime: string; data: string }[];
 }
 
 export type ProviderEvent =
@@ -27,6 +29,13 @@ export type ProviderEvent =
       id?: string;
       name?: string;
       argumentsDelta?: string;
+    }
+  | {
+      type: 'usage';
+      inputTokens: number;
+      outputTokens: number;
+      /** Сколько входных токенов взято из кэша (дешевле). */
+      cachedTokens?: number;
     }
   | { type: 'done'; finishReason?: string }
   | { type: 'error'; message: string };
