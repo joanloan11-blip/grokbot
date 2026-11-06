@@ -18,6 +18,7 @@ import { AgentEditor } from './components/AgentEditor';
 import { ProjectDialog } from './components/ProjectDialog';
 import { AgentWizard } from './components/AgentWizard';
 import { AuthScreen } from './components/AuthScreen';
+import { Landing } from './components/Landing';
 import { ChatPane } from './components/ChatPane';
 import {
   BeaconMark,
@@ -64,6 +65,8 @@ function Gate() {
   const [ready, setReady] = useState(false);
   const [required, setRequired] = useState(false);
   const [user, setUser] = useState<PublicUser | null>(null);
+  // Гость видит главную страницу; кнопки «Войти»/«Регистрация» открывают форму.
+  const [authMode, setAuthMode] = useState<'login' | 'register' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,7 +100,23 @@ function Gate() {
 
   if (!ready) return null;
   const resetLink = new URLSearchParams(window.location.search).has('reset');
-  if (required && (!user || resetLink)) return <AuthScreen onUser={setUser} />;
+  const inviteOrReset = new URLSearchParams(window.location.search);
+  if (required && (!user || resetLink)) {
+    if (!authMode && !resetLink && !inviteOrReset.has('invite'))
+      return (
+        <Landing
+          onLogin={() => setAuthMode('login')}
+          onRegister={() => setAuthMode('register')}
+        />
+      );
+    return (
+      <AuthScreen
+        onUser={setUser}
+        initialMode={authMode ?? 'login'}
+        onBack={resetLink ? undefined : () => setAuthMode(null)}
+      />
+    );
+  }
   return <Shell user={user} onLogout={onLogout} />;
 }
 

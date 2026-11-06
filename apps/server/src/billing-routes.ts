@@ -5,6 +5,7 @@ import {
   billingState,
   manualCredit,
   publicBillingSettings,
+  readBillingSettings,
   saveBillingSettings,
   startPayment,
   syncPayment,
@@ -32,6 +33,16 @@ export function registerBillingRoutes(
     return user;
   };
   const webhookUrl = (c: Context) => `${deps.siteUrl(c)}/api/public/yookassa`;
+
+  // Для главной страницы: пробный период и тарифы (без входа).
+  app.get('/api/public/plans', async (c) => {
+    const settings = await readBillingSettings(store);
+    return c.json({
+      enabled: settings.enabled,
+      trialUsd: settings.trialUsd,
+      plans: settings.plans,
+    });
+  });
 
   app.get('/api/billing', async (c) => {
     const user = await deps.actor(c);

@@ -24,10 +24,19 @@ function clearResetFromUrl() {
   }
 }
 
-export function AuthScreen({ onUser }: { onUser: (user: PublicUser) => void }) {
+export function AuthScreen({
+  onUser,
+  initialMode = 'login',
+  onBack,
+}: {
+  onUser: (user: PublicUser) => void;
+  initialMode?: 'login' | 'register';
+  /** Вернуться на главную страницу с описанием. */
+  onBack?: () => void;
+}) {
   const { t, locale, setLocale } = useI18n();
   const initialReset = resetTokenFromUrl();
-  const [mode, setMode] = useState<Mode>(initialReset ? 'reset' : 'login');
+  const [mode, setMode] = useState<Mode>(initialReset ? 'reset' : initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [repeat, setRepeat] = useState('');
@@ -102,6 +111,11 @@ export function AuthScreen({ onUser }: { onUser: (user: PublicUser) => void }) {
 
   return (
     <div className="auth-wrap">
+      {onBack && (
+        <button type="button" className="auth-back" onClick={onBack}>
+          ← На главную
+        </button>
+      )}
       <form
         className="auth-card form"
         onSubmit={(event) => {
