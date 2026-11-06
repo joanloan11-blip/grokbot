@@ -194,6 +194,54 @@ describe('HTTP API', () => {
     expect(again.status).toBe(404);
   });
 
+  it('пишет файл в папку на компьютере через браузер (local_fs)', async () => {
+    const mock = await demoProvider();
+    const conversation = await demoConversation();
+    const response = await post(
+      `/api/conversations/${conversation.id}/messages`,
+      {
+        content:
+          'tool workspace_write {"path":"notes/a.md","content":"привет"}',
+        locale: 'ru',
+        providerId: mock.id,
+        model: 'mock',
+        localFolder: 'Документы',
+      },
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const seen: { op: string; args: Record<string, unknown> }[] = [];
+    const results: string[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let split = buffer.indexOf('\n\n');
+      while (split !== -1) {
+        const block = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+        const line = block.split('\n').find((item) => item.startsWith('data:'));
+        split = buffer.indexOf('\n\n');
+        if (!line) continue;
+        const event = JSON.parse(line.slice(5).trim()) as ClientEvent;
+        if (event.type === 'local_fs') {
+          seen.push({ op: event.op, args: event.args });
+          const answer = await post(`/api/local-fs/${event.id}`, {
+            result: { before: '', created: true },
+          });
+          expect(answer.status).toBe(200);
+        }
+        if (event.type === 'message' && event.message.role === 'tool')
+          results.push(event.message.content);
+      }
+    }
+    expect(seen).toEqual([
+      { op: 'write', args: { path: 'notes/a.md', content: 'привет' } },
+    ]);
+    expect(results[0]).toMatch(/^DIFF:/);
+  });
+
   it('loads a skill through the agent loop', async () => {
     const conversation = await demoConversation();
     const events = await readEvents(

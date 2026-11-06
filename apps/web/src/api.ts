@@ -76,6 +76,11 @@ export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
   usageMeter: () => request<UsageMeter>('/api/usage/meter'),
   billing: () => request<BillingState>('/api/billing'),
+  localFsReply: (id: string, body: { result?: unknown; error?: string }) =>
+    request<{ ok: boolean }>(`/api/local-fs/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   billingRefresh: () =>
     request<BillingState>('/api/billing/refresh', { method: 'POST' }),
   billingPay: (
@@ -502,6 +507,8 @@ export async function streamMessage(
     model?: string | null;
     locale: Locale;
     attachments?: string[];
+    /** Имя папки на компьютере: агент работает с файлами через браузер. */
+    localFolder?: string;
   },
   onEvent: (event: ClientEvent) => void,
   signal: AbortSignal,

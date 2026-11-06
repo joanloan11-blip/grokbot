@@ -3345,3 +3345,13 @@ input[type="checkbox"]:checked::after {
 .composer-orbit.busy .orbit-tail {
   stroke-width: 2;
 }
+.storage-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 220px;
+}
+.storage-switch .compare-chip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

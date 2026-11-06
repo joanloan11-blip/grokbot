@@ -11,6 +11,13 @@ import { useI18n } from '../i18n';
 import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
 import { MatrixRain } from './MatrixRain';
+import {
+  ensurePermission,
+  localFsSupported,
+  pickFolder,
+  runLocalOp,
+  savedFolder,
+} from '../local-fs';
 import { ComposerOrbit } from './ComposerOrbit';
 import { OPEN_BILLING_EVENT } from './BillingPane';
 import { USAGE_EVENT } from './UsageMeter';
@@ -89,6 +96,16 @@ export function ChatPane({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [compareOn, setCompareOn] = useState(false);
+  // Где агент хранит файлы: в облаке (сервер) или в папке на компьютере.
+  const [folder, setFolder] =
+    useState<Awaited<ReturnType<typeof savedFolder>>>(null);
+  const [workLocal, setWorkLocal] = useState(() => {
+    try {
+      return localStorage.getItem('qastom-work-local') === '1';
+    } catch {
+      return false;
+    }
+  });
   const [extraModels, setExtraModels] = useState<string[]>([]);
   const [compare, setCompare] = useState<CompareView | null>(null);
   const [adopting, setAdopting] = useState(false);
@@ -104,6 +121,38 @@ export function ChatPane({
   const box = useRef<HTMLTextAreaElement>(null);
 
   const choices = useMemo(() => flattenChoices(providers), [providers]);
+
+  useEffect(() => {
+    if (localFsSupported()) void savedFolder().then(setFolder);
+  }, []);
+
+  function chooseLocal(on: boolean) {
+    setWorkLocal(on);
+    try {
+      localStorage.setItem('qastom-work-local', on ? '1' : '0');
+    } catch {
+      // настройка просто не запомнится
+    }
+  }
+
+  async function toggleStorage() {
+    if (workLocal) {
+      chooseLocal(false);
+      return;
+    }
+    const handle = folder ?? (await pickFolder());
+    if (!handle) return;
+    setFolder(handle);
+    chooseLocal(true);
+  }
+
+  async function changeFolder() {
+    const handle = await pickFolder();
+    if (handle) {
+      setFolder(handle);
+      chooseLocal(true);
+    }
+  }
 
   useEffect(() => {
     if (conversationId) createdRef.current = null;
@@ -465,6 +514,13 @@ export function ChatPane({
       setStreaming('');
       setReasoning('');
       setPendingTools([]);
+      const local = workLocal && folder ? folder : null;
+      if (local && !(await ensurePermission(local))) {
+        setError(
+          'Нет доступа к папке на компьютере — разрешите доступ или переключитесь на облако.',
+        );
+        return;
+      }
       await streamMessage(
         id,
         {
@@ -473,8 +529,20 @@ export function ChatPane({
           model: selected.model,
           locale,
           attachments: pendingFiles.map((file) => file.id),
+          localFolder: local?.name,
         },
         (event) => {
+          if (event.type === 'local_fs' && local) {
+            void runLocalOp(local, event.op, event.args).then(
+              (result) => api.localFsReply(event.id, { result }),
+              (reason: unknown) =>
+                api.localFsReply(event.id, {
+                  error:
+                    reason instanceof Error ? reason.message : String(reason),
+                }),
+            );
+            return;
+          }
           if (event.type === 'text')
             setStreaming((current) => current + event.delta);
           if (event.type === 'reasoning')
@@ -698,6 +766,35 @@ export function ChatPane({
             ⚖ {t('compare')}
             {compareOn ? ` · ${1 + extraModels.length}` : ''}
           </button>
+        )}
+        {localFsSupported() && (
+          <span className="storage-switch">
+            <button
+              type="button"
+              className={
+                workLocal && folder ? 'compare-chip on' : 'compare-chip'
+              }
+              title={
+                workLocal && folder
+                  ? `Агент работает с файлами в папке «${folder.name}» на этом компьютере. Нажмите, чтобы вернуться в облако.`
+                  : 'Файлы агента хранятся в облаке (на сервере). Нажмите, чтобы выбрать папку на компьютере.'
+              }
+              onClick={() => void toggleStorage()}
+            >
+              {workLocal && folder ? `💻 ${folder.name}` : '☁ Облако'}
+            </button>
+            {workLocal && folder && (
+              <button
+                type="button"
+                className="icon-btn quiet tiny"
+                title="Выбрать другую папку"
+                aria-label="Выбрать другую папку"
+                onClick={() => void changeFolder()}
+              >
+                ⋯
+              </button>
+            )}
+          </span>
         )}
         <span className="composer-spacer" />
         <button

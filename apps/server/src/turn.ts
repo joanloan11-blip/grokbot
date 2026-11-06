@@ -41,6 +41,7 @@ import { assertBudget } from './meter';
 import { assertCanSpend, chargeTokens } from './billing';
 import { costUsd } from './pricing';
 import { dateLine, withClock } from './clock';
+import { CLOUD_ONLY_TOOLS, type LocalFs, localWorkspaceRuns } from './local-fs';
 import { priceForModel } from './spend';
 import { compactHistory } from './context';
 import { readCaps } from './model-caps';
@@ -93,6 +94,8 @@ export interface TurnInput {
   attachments?: Attachment[];
   /** Эти инструменты модели не показываем (режим сравнения). */
   excludeTools?: string[];
+  /** Рабочая папка — на компьютере пользователя (через браузер). */
+  localFs?: LocalFs;
 }
 
 export async function runTurn(
@@ -152,14 +155,29 @@ export async function runTurn(
 
   const depth = input.depth ?? 0;
   const excluded = new Set(input.excludeTools ?? []);
+  const localRuns = input.localFs ? localWorkspaceRuns(input.localFs) : null;
   const exposed = (
     await exposeTools(deps, agent, userId, depth, conversation.id)
-  ).filter(
-    (tool) =>
-      !excluded.has(tool.definition.name) &&
-      // В сравнении внешние коннекторы тоже выключены: два ответа не должны дважды создавать сделку.
-      !(excluded.size > 0 && tool.definition.description.startsWith('[MCP ')),
-  );
+  )
+    .map((tool) => {
+      const local = localRuns?.[tool.definition.name];
+      if (!local || !input.localFs) return tool;
+      // Те же инструменты, но файлы — в папке на компьютере пользователя.
+      return {
+        definition: {
+          ...tool.definition,
+          description: `${tool.definition.description} (Папка на компьютере пользователя: «${input.localFs.folder}».)`,
+        },
+        run: local,
+      };
+    })
+    .filter(
+      (tool) =>
+        !(localRuns && CLOUD_ONLY_TOOLS.includes(tool.definition.name)) &&
+        !excluded.has(tool.definition.name) &&
+        // В сравнении внешние коннекторы тоже выключены: два ответа не должны дважды создавать сделку.
+        !(excluded.size > 0 && tool.definition.description.startsWith('[MCP ')),
+    );
   // Писать можно только агентам, которые доступны владельцу чата.
   const peers = (
     owner
@@ -298,6 +316,9 @@ export async function runTurn(
               coding,
               context: [
                 dateLine(input.locale),
+                input.localFs
+                  ? `Рабочая папка сейчас — на компьютере пользователя: «${input.localFs.folder}». Инструменты workspace_* читают и пишут файлы прямо там. Терминала и GitHub в этом режиме нет.`
+                  : '',
                 await projectBlock(deps.store, conversation.projectId),
               ]
                 .filter(Boolean)

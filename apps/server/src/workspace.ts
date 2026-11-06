@@ -88,6 +88,15 @@ export function readWorkspaceFile(
     }
     return text;
   }
+  return numberLines(text, relative, options);
+}
+
+/** Текст с номерами строк (как cat -n), по частям для больших файлов. */
+export function numberLines(
+  text: string,
+  relative: string,
+  options: { offset?: number; limit?: number } = {},
+): string {
   if (text.includes('\0')) return `«${relative}» — двоичный файл.`;
   const lines = text.split('\n');
   if (lines.length > 1 && lines.at(-1) === '') lines.pop();
@@ -245,6 +254,37 @@ export function writeWorkspaceFile(
 }
 
 /** Точечная правка: заменяет один фрагмент old на new. */
+/** Замена фрагмента: новый текст или сообщение об ошибке для модели. */
+export function applyEdit(
+  before: string,
+  oldText: string,
+  newText: string,
+  replaceAll = false,
+): { after: string } | { error: string } {
+  if (!oldText)
+    return { error: 'Укажите old — фрагмент, который нужно заменить.' };
+  if (oldText === newText)
+    return { error: 'old и new совпадают — менять нечего.' };
+  const count = before.split(oldText).length - 1;
+  if (count === 0) {
+    // Частая ошибка: модель скопировала номера строк из workspace_read.
+    const hint = /^\s*\d+\t/m.test(oldText)
+      ? ' Похоже, в old попали номера строк из workspace_read — уберите их.'
+      : ' Прочитайте файл заново (workspace_read) и скопируйте фрагмент точно, с отступами.';
+    return { error: `Фрагмент old в файле не найден.${hint}` };
+  }
+  if (count > 1 && !replaceAll)
+    return {
+      error: `Фрагмент old встречается ${count} раз — расширьте его, чтобы он был уникальным, или передайте replace_all.`,
+    };
+  const after = replaceAll
+    ? before.split(oldText).join(newText)
+    : before.replace(oldText, () => newText);
+  if (Buffer.byteLength(after) > WORKSPACE_LIMITS.fileBytes)
+    return { error: 'Файл больше 1 МБ.' };
+  return { after };
+}
+
 export function editWorkspaceFile(
   root: string,
   relative: string,
@@ -255,25 +295,10 @@ export function editWorkspaceFile(
   const full = resolveInside(root, relative);
   if (!fs.existsSync(full)) return `Файла «${relative}» нет.`;
   const before = fs.readFileSync(full, 'utf8');
-  if (!oldText) return 'Укажите old — фрагмент, который нужно заменить.';
-  if (oldText === newText) return 'old и new совпадают — менять нечего.';
-  const count = before.split(oldText).length - 1;
-  if (count === 0) {
-    // Частая ошибка: модель скопировала номера строк из workspace_read.
-    const hint = /^\s*\d+\t/m.test(oldText)
-      ? ' Похоже, в old попали номера строк из workspace_read — уберите их.'
-      : ' Прочитайте файл заново (workspace_read) и скопируйте фрагмент точно, с отступами.';
-    return `Фрагмент old в файле не найден.${hint}`;
-  }
-  if (count > 1 && !replaceAll)
-    return `Фрагмент old встречается ${count} раз — расширьте его, чтобы он был уникальным, или передайте replace_all.`;
-  const after = replaceAll
-    ? before.split(oldText).join(newText)
-    : before.replace(oldText, () => newText);
-  if (Buffer.byteLength(after) > WORKSPACE_LIMITS.fileBytes)
-    return 'Файл больше 1 МБ.';
-  fs.writeFileSync(full, after, 'utf8');
-  return formatDiff(relative, before, after, false);
+  const result = applyEdit(before, oldText, newText, replaceAll);
+  if ('error' in result) return result.error;
+  fs.writeFileSync(full, result.after, 'utf8');
+  return formatDiff(relative, before, result.after, false);
 }
 
 export function deleteWorkspaceFile(root: string, relative: string): string {

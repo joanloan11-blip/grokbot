@@ -548,6 +548,13 @@ export type ClientEvent =
   | { type: 'tool_start'; call: ToolCall }
   | { type: 'error'; message: string }
   | { type: 'done' }
+  /** Запрос к папке на компьютере пользователя: выполняет браузер. */
+  | {
+      type: 'local_fs';
+      id: string;
+      op: string;
+      args: Record<string, unknown>;
+    }
   /** Сравнение моделей: какие колонки запущены. */
   | { type: 'lanes'; lanes: CompareLane[] }
   /** Событие одной колонки сравнения. */

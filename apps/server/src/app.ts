@@ -55,6 +55,7 @@ import { HttpError, badRequest } from './errors';
 import { registerExtraRoutes } from './extra';
 import { registerGithubRoutes } from './github/routes';
 import { registerBillingRoutes } from './billing-routes';
+import { createLocalFs, resolveLocalFs } from './local-fs';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
 import { discoverProvider } from './providers/discover';
@@ -1612,6 +1613,26 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  // Ответ браузера на запрос к папке на компьютере.
+  app.post('/api/local-fs/:id', async (c) => {
+    const user = await actor(c);
+    const body = await readBody(c);
+    const ok = resolveLocalFs(
+      user.id,
+      c.req.param('id'),
+      isRecord(body)
+        ? {
+            result: body.result,
+            error:
+              typeof body.error === 'string'
+                ? body.error.slice(0, 500)
+                : undefined,
+          }
+        : { error: 'Пустой ответ' },
+    );
+    return c.json({ ok }, ok ? 200 : 404);
+  });
+
   const runtimeDeps = { store, mcp, skills, jwtSecret: config.jwtSecret };
   app.post('/api/conversations/:id/messages', async (c) => {
     const user = await actor(c);
@@ -1658,6 +1679,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       explicitModel,
     );
     const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
+    const localFolder =
+      typeof body.localFolder === 'string' && body.localFolder.trim()
+        ? body.localFolder.trim().slice(0, 120)
+        : '';
     return streamSSE(c, async (stream) => {
       const write = async (event: ClientEvent) => {
         await stream.writeSSE({ data: JSON.stringify(event) });
@@ -1675,6 +1700,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
             model: selection.model,
             signal: c.req.raw.signal,
             onEvent: write,
+            // Папка на компьютере: файлы читает и пишет браузер пользователя.
+            localFs: localFolder
+              ? createLocalFs(user.id, localFolder, write)
+              : undefined,
           },
         );
         await write({ type: 'done' });
