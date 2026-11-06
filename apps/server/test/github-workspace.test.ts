@@ -115,3 +115,19 @@ describe('репозиторий GitHub в рабочей папке', () => {
     );
   });
 });
+
+describe('приватные репозитории', () => {
+  it('не скачивает приватный, если он не подключён к агенту, даже с токеном для чтения', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-'));
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({ default_branch: 'main', private: true }),
+      )) as unknown as typeof fetch;
+    const result = await cloneRepo(
+      { root, allow: [], readToken: 'tok', fetchImpl },
+      { repo: 'acme/secret' },
+    );
+    expect(result).toContain('приватный');
+    expect(fs.existsSync(path.join(root, 'repos/secret'))).toBe(false);
+  });
+});

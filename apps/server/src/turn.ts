@@ -919,9 +919,16 @@ async function exposeTools(
     ? `project-${conversationRow.projectId}`
     : agent.id;
   const root = () => workspaceRoot(dataDir, userId, workspaceScope);
+  // Токен администратора нужен и для чтения публичных репозиториев: без него GitHub даёт 60 запросов в час.
+  const githubReadToken =
+    githubToken ??
+    (deps.jwtSecret
+      ? await readGithubToken(deps.store, deps.jwtSecret)
+      : undefined);
   const repoContext = () => ({
     root: root(),
     token: githubToken,
+    readToken: githubReadToken,
     allow: agent.githubRepos,
   });
   const guardAsync = async (run: () => Promise<string>) => {
