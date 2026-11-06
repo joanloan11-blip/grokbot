@@ -43,6 +43,10 @@ export const DEFAULT_PRICES: Record<string, ModelPrice> = {
   'claude-opus-4': { input: 15, cached: 1.5, output: 75 },
   'claude-sonnet-4': { input: 3, cached: 0.3, output: 15 },
   'claude-haiku-4': { input: 1, cached: 0.1, output: 5 },
+  // Новые поколения по умолчанию — по тарифу последних известных моделей.
+  'claude-opus': { input: 5, cached: 0.5, output: 25 },
+  'claude-sonnet': { input: 3, cached: 0.3, output: 15 },
+  'claude-haiku': { input: 1, cached: 0.1, output: 5 },
   // Google
   'gemini-2.5-pro': { input: 1.25, cached: 0.31, output: 10 },
   'gemini-2.5-flash': { input: 0.3, cached: 0.075, output: 2.5 },

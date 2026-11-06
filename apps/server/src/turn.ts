@@ -26,7 +26,12 @@ import type {
   ToolDefinition,
 } from './providers/types';
 import { readGithubToken, runGithubTool } from './github/tools';
-import { cloneRepo, describeChanges, pushRepo } from './github/workspace-repo';
+import {
+  cloneRepo,
+  describeChanges,
+  hasClonedRepos,
+  pushRepo,
+} from './github/workspace-repo';
 import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
@@ -42,6 +47,7 @@ import { asString, clampText, isRecord, jsonObject } from './util';
 import {
   deleteWorkspaceFile,
   editWorkspaceFile,
+  globWorkspace,
   listWorkspace,
   readWorkspaceFile,
   runWorkspaceShell,
@@ -168,6 +174,30 @@ export async function runTurn(
   });
   const toolsOff =
     (await readCaps(deps.store))[provider.id]?.[model]?.tools === false;
+  const toolNames = new Set(exposed.map((tool) => tool.definition.name));
+  // Режим кода: агент с плагином GitHub или уже скачанный в рабочую папку репозиторий.
+  const coding =
+    toolNames.has('workspace_edit') &&
+    ((agent.plugins ?? []).includes('github') ||
+      hasClonedRepos(
+        workspaceRoot(
+          path.dirname(deps.skills.directory),
+          userId,
+          conversation.projectId
+            ? `project-${conversation.projectId}`
+            : agent.id,
+        ),
+      ));
+  const stepsSetting = Number(await deps.store.getSetting('agent_max_steps'));
+  // Код требует десятков шагов: найти, прочитать, поправить, запустить тесты, исправить.
+  const maxSteps =
+    Number.isFinite(stepsSetting) && stepsSetting > 0
+      ? stepsSetting
+      : coding
+        ? 60
+        : toolNames.has('workspace_edit') || toolNames.has('shell')
+          ? 25
+          : 12;
   let pending = '';
   let pendingReasoning = '';
   let finalText = '';
@@ -218,6 +248,7 @@ export async function runTurn(
               persona: agent.systemPrompt,
               context: await projectBlock(deps.store, conversation.projectId),
               peers: depth === 0 ? peers : [],
+              coding,
             },
           ),
         },
@@ -225,11 +256,12 @@ export async function runTurn(
       ],
       // Модели без инструментов (по проверке) сразу получают запрос без них.
       tools: toolsOff ? [] : exposed.map((tool) => tool.definition),
+      maxSteps,
       signal: input.signal,
       limitMessage:
         input.locale === 'en'
-          ? 'Stopped: the agent step limit was reached.'
-          : 'Остановлено: исчерпан лимит шагов агента.',
+          ? 'Stopped: the agent step limit was reached. Say "continue" to resume.'
+          : 'Остановлено: исчерпан лимит шагов агента. Напишите «продолжай», чтобы агент продолжил с того же места.',
       executeTool: async (call) => {
         const tool = exposed.find((item) => item.definition.name === call.name);
         if (!tool) return `Неизвестный инструмент ${call.name}`;
@@ -639,6 +671,7 @@ async function exposeTools(
           enabled: (await deps.store.getSetting('code_sandbox')) === '1',
           language: asString(args.language).trim(),
           code: asString(args.code),
+          root: root(),
         }),
     },
     {
@@ -905,6 +938,7 @@ async function exposeTools(
     'workspace_edit',
     'workspace_delete',
     'workspace_search',
+    'workspace_glob',
     'workspace_download',
     'github_clone',
     'github_changes',
@@ -1126,15 +1160,26 @@ async function exposeTools(
     {
       definition: {
         name: 'workspace_read',
-        description: 'Read a text file from the workspace. Читает файл.',
+        description:
+          'Read a text file from the workspace with line numbers (cat -n format: number, tab, text). For big files pass offset (first line, 1-based) and limit (number of lines). The number and tab are not part of the file: never include them in workspace_edit. Читает файл с номерами строк.',
         inputSchema: {
           type: 'object',
-          properties: { path: { type: 'string' } },
+          properties: {
+            path: { type: 'string' },
+            offset: { type: 'number', description: 'First line, 1-based' },
+            limit: { type: 'number', description: 'Max lines, default 2000' },
+          },
           required: ['path'],
         },
       },
       run: async (args) =>
-        guard(() => readWorkspaceFile(root(), asString(args.path))),
+        guard(() =>
+          readWorkspaceFile(root(), asString(args.path), {
+            offset: typeof args.offset === 'number' ? args.offset : undefined,
+            limit: typeof args.limit === 'number' ? args.limit : undefined,
+            numbered: true,
+          }),
+        ),
     },
     {
       definition: {
@@ -1160,13 +1205,17 @@ async function exposeTools(
       definition: {
         name: 'workspace_edit',
         description:
-          'Replace one unique fragment `old` with `new` in a workspace file. Returns a diff. Точечная правка файла.',
+          'Replace the exact fragment `old` with `new` in a workspace file (read the file first). `old` must be unique unless replace_all is true; include surrounding lines to make it unique and keep indentation exact. Returns a diff. Точечная правка файла.',
         inputSchema: {
           type: 'object',
           properties: {
             path: { type: 'string' },
             old: { type: 'string' },
             new: { type: 'string' },
+            replace_all: {
+              type: 'boolean',
+              description: 'Replace every occurrence (e.g. rename)',
+            },
           },
           required: ['path', 'old', 'new'],
         },
@@ -1178,6 +1227,30 @@ async function exposeTools(
             asString(args.path),
             asString(args.old),
             asString(args.new),
+            args.replace_all === true,
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_glob',
+        description:
+          'Find files by glob pattern, e.g. **/*.ts or src/**/test_*.py. Newest first. Поиск файлов по маске.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string' },
+            path: { type: 'string', description: 'Folder, default .' },
+          },
+          required: ['pattern'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          globWorkspace(
+            root(),
+            asString(args.pattern),
+            asString(args.path) || '.',
           ),
         ),
     },
@@ -1314,10 +1387,17 @@ async function exposeTools(
       definition: {
         name: 'shell',
         description:
-          'Run a shell command in a sandbox with the workspace mounted at /work (no network, 60 s). Disabled until an admin enables the code sandbox. Терминал в песочнице.',
+          'Run a bash command in the sandbox; the current directory is the workspace root (cloned repos are in repos/<name>). Node 22, npm/pnpm/yarn, Python 3 with pip/venv, git, ripgrep. Internet only for npm, PyPI and GitHub. Use it to install dependencies, run tests, linters, builds and scripts. Each call is a fresh shell: chain with && and cd inside the command. Background processes are killed when the command ends. Терминал в песочнице.',
         inputSchema: {
           type: 'object',
-          properties: { command: { type: 'string' } },
+          properties: {
+            command: { type: 'string' },
+            timeout_sec: {
+              type: 'number',
+              description:
+                'Default 120, max 600 (for installs and long test runs)',
+            },
+          },
           required: ['command'],
         },
       },
@@ -1326,6 +1406,10 @@ async function exposeTools(
           enabled: (await deps.store.getSetting('code_sandbox')) === '1',
           root: root(),
           command: asString(args.command),
+          timeoutMs:
+            typeof args.timeout_sec === 'number' && args.timeout_sec > 0
+              ? Math.min(600, args.timeout_sec) * 1000
+              : undefined,
         }),
     },
   );

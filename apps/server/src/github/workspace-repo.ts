@@ -112,6 +112,10 @@ export function blobSha(content: Buffer): string {
     .digest('hex');
 }
 
+export function hasClonedRepos(root: string): boolean {
+  return fs.existsSync(path.join(root, MANIFEST));
+}
+
 function readStates(root: string): Record<string, RepoState> {
   const file = path.join(root, MANIFEST);
   try {

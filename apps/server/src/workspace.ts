@@ -73,15 +73,100 @@ export function listWorkspace(root: string, relative = '.'): string {
   return lines.length ? lines.join('\n') : 'Рабочая папка пуста.';
 }
 
-export function readWorkspaceFile(root: string, relative: string): string {
+export function readWorkspaceFile(
+  root: string,
+  relative: string,
+  options: { offset?: number; limit?: number; numbered?: boolean } = {},
+): string {
   const full = resolveInside(root, relative);
   if (!fs.existsSync(full) || !fs.statSync(full).isFile())
     return `Файла «${relative}» нет.`;
   const text = fs.readFileSync(full, 'utf8');
-  if (text.length > WORKSPACE_LIMITS.readChars) {
-    return `${text.slice(0, WORKSPACE_LIMITS.readChars)}\n… (обрезано, всего ${text.length} символов)`;
+  if (!options.numbered) {
+    if (text.length > WORKSPACE_LIMITS.readChars) {
+      return `${text.slice(0, WORKSPACE_LIMITS.readChars)}\n… (обрезано, всего ${text.length} символов)`;
+    }
+    return text;
   }
-  return text;
+  if (text.includes('\0')) return `«${relative}» — двоичный файл.`;
+  const lines = text.split('\n');
+  if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+  const first = Math.max(1, Math.floor(options.offset ?? 1));
+  const limit = Math.max(1, Math.min(2000, Math.floor(options.limit ?? 2000)));
+  const out: string[] = [];
+  let chars = 0;
+  let last = first - 1;
+  for (let i = first - 1; i < lines.length && out.length < limit; i++) {
+    const line =
+      lines[i]!.length > 2000 ? `${lines[i]!.slice(0, 2000)}…` : lines[i]!;
+    chars += line.length + 8;
+    if (chars > WORKSPACE_LIMITS.readChars) break;
+    out.push(`${String(i + 1).padStart(6)}\t${line}`);
+    last = i + 1;
+  }
+  if (!out.length)
+    return `В файле ${lines.length} строк — offset ${first} за пределами.`;
+  const more =
+    last < lines.length
+      ? `\n… (показаны строки ${first}–${last} из ${lines.length}; дальше — offset ${last + 1})`
+      : '';
+  return out.join('\n') + more;
+}
+
+/** Файлы по маске (**, *, ?), новые сверху. */
+export function globWorkspace(
+  root: string,
+  pattern: string,
+  relative = '.',
+): string {
+  if (!pattern.trim()) return 'Укажите pattern.';
+  const source = pattern
+    .trim()
+    .replace(/^\.\//, '')
+    .split('')
+    .map((char, index, all) => {
+      if (char === '*') {
+        if (all[index + 1] === '*') return '';
+        if (all[index - 1] === '*')
+          return all[index + 1] === '/' ? '(?:.*/)?' : '.*';
+        return '[^/]*';
+      }
+      if (char === '/' && all[index - 1] === '*' && all[index - 2] === '*')
+        return '';
+      if (char === '?') return '[^/]';
+      return char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('');
+  const matcher = new RegExp(`^${source}$`, 'i');
+  const basenameOnly = !pattern.includes('/');
+  const start = resolveInside(root, relative);
+  if (!fs.existsSync(start)) return `Папки «${relative}» нет.`;
+  const found: { rel: string; mtime: number }[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (found.length >= 2000) return;
+      if (['.git', 'node_modules', '.qastom', '.home'].includes(entry.name))
+        continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) {
+        const fromStart = path.relative(start, full).replace(/\\/g, '/');
+        if (matcher.test(basenameOnly ? entry.name : fromStart))
+          found.push({
+            rel: path.relative(root, full).replace(/\\/g, '/'),
+            mtime: fs.statSync(full).mtimeMs,
+          });
+      }
+    }
+  };
+  walk(start);
+  if (!found.length) return `По маске «${pattern}» файлов нет.`;
+  found.sort((a, b) => b.mtime - a.mtime);
+  const shown = found.slice(0, 200).map((item) => item.rel);
+  return (
+    shown.join('\n') +
+    (found.length > 200 ? `\n… и ещё ${found.length - 200}` : '')
+  );
 }
 
 /** Поиск текста или регулярного выражения по файлам рабочей папки (как grep -n). */
@@ -165,16 +250,26 @@ export function editWorkspaceFile(
   relative: string,
   oldText: string,
   newText: string,
+  replaceAll = false,
 ): string {
   const full = resolveInside(root, relative);
   if (!fs.existsSync(full)) return `Файла «${relative}» нет.`;
   const before = fs.readFileSync(full, 'utf8');
   if (!oldText) return 'Укажите old — фрагмент, который нужно заменить.';
+  if (oldText === newText) return 'old и new совпадают — менять нечего.';
   const count = before.split(oldText).length - 1;
-  if (count === 0) return 'Фрагмент old в файле не найден.';
-  if (count > 1)
-    return `Фрагмент old встречается ${count} раз — расширьте его, чтобы он был уникальным.`;
-  const after = before.replace(oldText, () => newText);
+  if (count === 0) {
+    // Частая ошибка: модель скопировала номера строк из workspace_read.
+    const hint = /^\s*\d+\t/m.test(oldText)
+      ? ' Похоже, в old попали номера строк из workspace_read — уберите их.'
+      : ' Прочитайте файл заново (workspace_read) и скопируйте фрагмент точно, с отступами.';
+    return `Фрагмент old в файле не найден.${hint}`;
+  }
+  if (count > 1 && !replaceAll)
+    return `Фрагмент old встречается ${count} раз — расширьте его, чтобы он был уникальным, или передайте replace_all.`;
+  const after = replaceAll
+    ? before.split(oldText).join(newText)
+    : before.replace(oldText, () => newText);
   if (Buffer.byteLength(after) > WORKSPACE_LIMITS.fileBytes)
     return 'Файл больше 1 МБ.';
   fs.writeFileSync(full, after, 'utf8');
@@ -272,9 +367,71 @@ export function unifiedDiff(before: string, after: string): string[] {
   return out;
 }
 
+/** Песочница-раннер (отдельный контейнер) настроена? */
+export function runnerConfigured(): boolean {
+  return Boolean(process.env.RUNNER_URL && process.env.RUNNER_TOKEN);
+}
+
+/** Пользователь и папка агента из пути рабочей папки: …/workspaces/<user>/<scope>. */
+function runnerTarget(root: string): { user: string; scope: string } {
+  const scope = path.basename(root);
+  const user = path.basename(path.dirname(root));
+  return { user, scope };
+}
+
+/** Команда в контейнере-песочнице (runner): свой uid на пользователя, интернет только к npm/PyPI/GitHub. */
+export async function runInRunner(input: {
+  root: string;
+  command: string;
+  stdin?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<string> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const timeoutMs = Math.min(
+    600_000,
+    Math.max(5_000, input.timeoutMs ?? 120_000),
+  );
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${process.env.RUNNER_URL!.replace(/\/$/, '')}/run`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-runner-token': process.env.RUNNER_TOKEN ?? '',
+        },
+        body: JSON.stringify({
+          ...runnerTarget(input.root),
+          command: input.command,
+          stdin: input.stdin,
+          timeoutMs,
+        }),
+        signal: AbortSignal.timeout(timeoutMs + 30_000),
+      },
+    );
+  } catch (error) {
+    return `Песочница недоступна: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const data = (await response.json().catch(() => ({}))) as {
+    output?: string;
+    code?: number | null;
+    timedOut?: boolean;
+    ms?: number;
+    error?: string;
+  };
+  if (!response.ok) return `Песочница: ${data.error ?? response.status}`;
+  const status = data.timedOut
+    ? `остановлено по таймауту ${Math.round(timeoutMs / 1000)} с`
+    : `код выхода ${data.code ?? '—'}`;
+  const seconds = ((data.ms ?? 0) / 1000).toFixed(1);
+  return `$ ${input.command}\n${data.output || '(нет вывода)'}\n[${status}, ${seconds} с]`;
+}
+
 /**
- * Команда терминала в Docker-песочнице с рабочей папкой в /work.
- * Без сети, с лимитами по памяти, CPU и времени.
+ * Команда терминала. Если настроен runner — в нём; иначе в Docker-песочнице
+ * с рабочей папкой в /work (без сети, с лимитами по памяти, CPU и времени).
  */
 export async function runWorkspaceShell(input: {
   enabled: boolean;
@@ -288,6 +445,12 @@ export async function runWorkspaceShell(input: {
   const command = input.command.trim();
   if (!command) return 'Пустая команда.';
   if (command.length > 4000) return 'Команда слишком длинная.';
+  if (runnerConfigured() && !input.spawnImpl)
+    return runInRunner({
+      root: input.root,
+      command,
+      timeoutMs: input.timeoutMs,
+    });
   const spawnImpl = input.spawnImpl ?? spawn;
   const hostRoot = process.env.MAYAK_WORKSPACE_HOST_DIR
     ? path.join(

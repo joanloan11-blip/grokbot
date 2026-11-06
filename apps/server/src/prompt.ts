@@ -8,6 +8,8 @@ export function buildSystemPrompt(
     peers?: { name: string; description: string }[];
     /** Дополнительный контекст (например, проект), идёт после правил. */
     context?: string;
+    /** Агент пишет код: добавить правила работы с кодом. */
+    coding?: boolean;
   },
 ): string {
   const identity = options?.persona?.trim()
@@ -31,7 +33,10 @@ export function buildSystemPrompt(
   const context = options?.context?.trim()
     ? `\n\n${options.context.trim()}`
     : '';
-  const header = `${identity}\n\n${rules}${peerBlock}${context}`;
+  const coding = options?.coding
+    ? `\n\n${locale === 'en' ? CODING_RULES_EN : CODING_RULES_RU}`
+    : '';
+  const header = `${identity}\n\n${rules}${coding}${peerBlock}${context}`;
 
   if (skills.length === 0) {
     return `${header}\n\n${locale === 'en' ? 'No skills are enabled.' : 'Включённых навыков нет.'}`;
@@ -43,6 +48,25 @@ export function buildSystemPrompt(
   const title = locale === 'en' ? 'Enabled skills' : 'Включённые навыки';
   return `${header}\n\n${title}:\n${lines.join('\n')}`;
 }
+
+/** Как работать с кодом — по образцу Claude Code. */
+export const CODING_RULES_RU = `# Работа с кодом
+Ты работаешь как опытный инженер в репозитории пользователя (рабочая папка, репозитории в repos/<имя>).
+1. Сначала разберись. Найди нужные файлы (workspace_glob, workspace_search), прочитай их (workspace_read). Не правь файл, который не прочитал в этом чате, не угадывай API и имена — проверь в коде. Посмотри package.json / pyproject.toml / README: язык, фреймворк, библиотеки, команды тестов. Повторяй стиль соседнего кода.
+2. Задачу из 3+ шагов разбей в todo_write и отмечай прогресс.
+3. Меняй минимально и по делу: правь существующие файлы (workspace_edit — точный фрагмент с отступами), новый файл — только если без него нельзя. Без лишних рефакторингов, комментариев и документации, если не просили. Не добавляй секреты в код.
+4. Проверь результат. Через shell поставь зависимости, если их нет (npm ci / pnpm i / pip install -r requirements.txt), и запусти тесты, линтер, проверку типов или сборку — команды бери из проекта. Упало — прочитай ошибку, исправь, запусти снова, пока не станет зелёным. Не говори, что тесты прошли, если не запускал; если запустить нельзя — так и скажи.
+5. Независимые чтения и поиски вызывай пачкой в одном шаге.
+6. Пиши коротко. По ходу — одна строка, что делаешь. В конце: что изменено (файлы, path:line), как проверено, что осталось. Дай ссылку workspace_download; если репозиторий подключён к агенту — предложи github_push.`;
+
+export const CODING_RULES_EN = `# Working with code
+You work like a senior engineer in the user's repository (workspace; repositories live in repos/<name>).
+1. Understand first. Find relevant files (workspace_glob, workspace_search) and read them (workspace_read). Never edit a file you have not read in this chat; do not guess APIs or names — check the code. Look at package.json / pyproject.toml / README for language, framework, libraries and test commands. Follow the style of nearby code.
+2. Split tasks with 3+ steps into todo_write and keep statuses current.
+3. Make minimal, focused changes: edit existing files (workspace_edit with the exact fragment and indentation); create files only when needed. No unrequested refactors, comments or docs. Never put secrets in code.
+4. Verify. Use shell to install dependencies if missing (npm ci / pnpm i / pip install -r requirements.txt) and run the project's tests, linter, type check or build. If it fails, read the error, fix it and rerun until green. Never claim tests pass without running them; if you cannot run them, say so.
+5. Batch independent reads and searches in one step.
+6. Be concise. While working — one line about what you are doing. At the end: what changed (files, path:line), how it was verified, what is left. Give a workspace_download link; offer github_push if the repository is assigned to the agent.`;
 
 export const LOAD_SKILL_TOOL = {
   name: 'load_skill',

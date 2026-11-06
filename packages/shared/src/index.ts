@@ -266,6 +266,7 @@ export const AGENT_PLUGINS = [
       'workspace_edit',
       'workspace_delete',
       'workspace_search',
+      'workspace_glob',
       'workspace_download',
       'shell',
     ],
