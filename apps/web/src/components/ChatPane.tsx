@@ -11,6 +11,7 @@ import { useI18n } from '../i18n';
 import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
 import { MatrixRain } from './MatrixRain';
+import { ComposerOrbit } from './ComposerOrbit';
 import { OPEN_BILLING_EVENT } from './BillingPane';
 import { USAGE_EVENT } from './UsageMeter';
 import {
@@ -567,6 +568,7 @@ export function ChatPane({
         void send(draft);
       }}
     >
+      <ComposerOrbit busy={busy} />
       {files.length > 0 && (
         <div className="attach-list">
           {files.map((file) => (
