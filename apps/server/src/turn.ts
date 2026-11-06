@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   ClientEvent,
   Locale,
+  MessageMeta,
   ProviderKind,
 } from '@mayak/shared';
 import { toolAllowedByPlugins } from '@mayak/shared';
@@ -37,6 +38,8 @@ import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
+import { costUsd } from './pricing';
+import { priceForModel } from './spend';
 import { compactHistory } from './context';
 import { readCaps } from './model-caps';
 import { formatNews, NEWS_TOPICS, type NewsTopic, newsSearch } from './news';
@@ -86,6 +89,8 @@ export interface TurnInput {
   onEvent?: (event: ClientEvent) => Promise<void>;
   /** Файлы из /api/conversations/:id/files, приложенные к сообщению. */
   attachments?: Attachment[];
+  /** Эти инструменты модели не показываем (режим сравнения). */
+  excludeTools?: string[];
 }
 
 export async function runTurn(
@@ -144,12 +149,14 @@ export async function runTurn(
   if (freshTitle) await emit({ type: 'title', title: freshTitle });
 
   const depth = input.depth ?? 0;
-  const exposed = await exposeTools(
-    deps,
-    agent,
-    userId,
-    depth,
-    conversation.id,
+  const excluded = new Set(input.excludeTools ?? []);
+  const exposed = (
+    await exposeTools(deps, agent, userId, depth, conversation.id)
+  ).filter(
+    (tool) =>
+      !excluded.has(tool.definition.name) &&
+      // В сравнении внешние коннекторы тоже выключены: два ответа не должны дважды создавать сделку.
+      !(excluded.size > 0 && tool.definition.description.startsWith('[MCP ')),
   );
   // Писать можно только агентам, которые доступны владельцу чата.
   const peers = (
@@ -201,6 +208,37 @@ export async function runTurn(
   let pending = '';
   let pendingReasoning = '';
   let finalText = '';
+  // Итог хода для подписи под ответом.
+  const startedAt = Date.now();
+  const totals = {
+    steps: 0,
+    tools: 0,
+    input: 0,
+    output: 0,
+    cached: 0,
+    exact: true,
+  };
+  const price = await priceForModel(deps.store, provider.baseUrl, model).catch(
+    () => null,
+  );
+  const turnMeta = (): MessageMeta => {
+    const cost = costUsd(price, {
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      cachedTokens: totals.cached,
+    });
+    return {
+      model,
+      provider: provider.name,
+      ms: Date.now() - startedAt,
+      steps: totals.steps,
+      tools: totals.tools,
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      costUsd: cost === null ? null : Math.round(cost * 1e6) / 1e6,
+      exact: totals.exact,
+    };
+  };
   try {
     await assertQuota(deps.store, owner);
     await runAgentLoop({
@@ -232,6 +270,11 @@ export async function runTurn(
           });
         },
         after: async (id, usage) => {
+          totals.steps += 1;
+          totals.input += usage.inputTokens;
+          totals.output += usage.outputTokens;
+          totals.cached += usage.cachedTokens;
+          if (!usage.exact) totals.exact = false;
           await deps.store.updateUsageTokens(id, usage);
         },
       }),
@@ -284,17 +327,20 @@ export async function runTurn(
           pendingReasoning += event.delta;
           await emit({ type: 'reasoning', delta: event.delta });
         } else if (event.type === 'tool_start') {
+          totals.tools += 1;
           await emit({ type: 'tool_start', call: event.call });
         } else if (event.type === 'assistant') {
           pending = '';
           pendingReasoning = '';
           finalText = event.content;
+          const final = !event.toolCalls?.length;
           const saved = await deps.store.insertMessage({
             conversationId: conversation.id,
             role: 'assistant',
             content: event.content,
             toolCalls: event.toolCalls,
             reasoning: event.reasoning,
+            meta: final ? turnMeta() : undefined,
           });
           await emit({ type: 'message', message: saved });
         } else if (event.type === 'tool_result') {

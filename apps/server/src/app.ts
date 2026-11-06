@@ -15,6 +15,8 @@ import {
   SECRET_MASK,
   type Attachment,
   type ClientEvent,
+  type CompareLane,
+  COMPARE_BLOCKED_TOOLS,
   type Locale,
   type McpServerConfigEntry,
   type McpServerInput,
@@ -1598,6 +1600,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  const runtimeDeps = { store, mcp, skills, jwtSecret: config.jwtSecret };
   app.post('/api/conversations/:id/messages', async (c) => {
     const user = await actor(c);
     const conversation = await store.getConversation(
@@ -1672,7 +1675,189 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     });
   });
 
-  const runtime = { store, mcp, skills, jwtSecret: config.jwtSecret };
+  // Сравнение моделей: один вопрос — 2–3 модели параллельно, каждая в своём служебном чате
+  // с копией истории. Выбранный ответ переносится в основной чат (/compare/adopt).
+  app.post('/api/conversations/:id/compare', async (c) => {
+    const user = await actor(c);
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Пустое сообщение');
+    const content = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!content) throw badRequest('Пустое сообщение');
+    if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
+    const rawLanes = Array.isArray(body.lanes) ? body.lanes : [];
+    if (rawLanes.length < 2 || rawLanes.length > 3)
+      throw badRequest('Для сравнения выберите 2 или 3 модели');
+    await assertQuota(store, user);
+    const picks: { providerId: string; model: string }[] = [];
+    for (const raw of rawLanes) {
+      if (!isRecord(raw)) throw badRequest('Некорректная модель');
+      const providerId =
+        typeof raw.providerId === 'string' ? raw.providerId : undefined;
+      await denyForeignProvider(user, providerId);
+      picks.push(
+        await requireAllowedModel(
+          user,
+          providerId,
+          typeof raw.model === 'string' ? raw.model : undefined,
+          true,
+        ),
+      );
+    }
+    const attachments: Attachment[] = [];
+    if (Array.isArray(body.attachments)) {
+      for (const id of body.attachments.slice(0, 10)) {
+        if (typeof id !== 'string') continue;
+        const file = await store.getUpload(id, user.id);
+        if (file)
+          attachments.push({ id: file.id, name: file.name, mime: file.mime });
+      }
+    }
+    const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
+    const history = await store.listMessages(conversation.id);
+    const lanes: CompareLane[] = [];
+    for (const pick of picks) {
+      const lane = await store.insertConversation({
+        title: conversation.title,
+        agentId: conversation.agentId,
+        userId: user.id,
+        providerId: pick.providerId,
+        model: pick.model,
+        projectId: conversation.projectId,
+        internal: true,
+      });
+      for (const message of history)
+        await store.insertMessage({
+          conversationId: lane.id,
+          role: message.role,
+          content: message.content,
+          toolCalls: message.toolCalls,
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          reasoning: message.reasoning,
+          attachments: message.attachments,
+          meta: message.meta,
+        });
+      lanes.push({ conversationId: lane.id, ...pick });
+    }
+    const group = lanes.map((lane) => lane.conversationId);
+    for (const lane of lanes)
+      await store.setSetting(
+        `compare:${lane.conversationId}`,
+        JSON.stringify({ main: conversation.id, from: history.length, group }),
+      );
+    return streamSSE(c, async (stream) => {
+      let queue = Promise.resolve();
+      // Колонки пишут в один поток по очереди, чтобы события не перемешались внутри кадра.
+      const write = (event: ClientEvent) => {
+        queue = queue.then(() =>
+          stream.writeSSE({ data: JSON.stringify(event) }),
+        );
+        return queue;
+      };
+      await write({ type: 'lanes', lanes });
+      await Promise.all(
+        lanes.map(async (lane, index) => {
+          const laneWrite = async (event: ClientEvent) => {
+            if (
+              event.type === 'text' ||
+              event.type === 'reasoning' ||
+              event.type === 'message' ||
+              event.type === 'tool_start' ||
+              event.type === 'error'
+            )
+              await write({ type: 'lane', lane: index, event });
+          };
+          try {
+            await runTurn(runtimeDeps, {
+              conversationId: lane.conversationId,
+              content,
+              attachments,
+              locale,
+              userId: user.id,
+              providerId: lane.providerId,
+              model: lane.model,
+              signal: c.req.raw.signal,
+              onEvent: laneWrite,
+              excludeTools: COMPARE_BLOCKED_TOOLS,
+            });
+          } catch (error) {
+            if (isAbort(error)) return;
+            await write({
+              type: 'lane',
+              lane: index,
+              event: {
+                type: 'error',
+                message:
+                  error instanceof Error ? error.message : 'Ошибка агента',
+              },
+            }).catch(() => undefined);
+          }
+          await write({ type: 'lane', lane: index, event: { type: 'done' } });
+        }),
+      );
+      await write({ type: 'done' }).catch(() => undefined);
+    });
+  });
+
+  // Взять ответ одной колонки: перенести вопрос и ответ в основной чат, колонки удалить.
+  app.post('/api/conversations/:id/compare/adopt', async (c) => {
+    const user = await actor(c);
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    const body = await readBody(c);
+    const laneId =
+      isRecord(body) && typeof body.lane === 'string' ? body.lane : '';
+    const raw = laneId
+      ? await store.getSetting(`compare:${laneId}`)
+      : undefined;
+    const info = raw
+      ? (JSON.parse(raw) as { main: string; from: number; group: string[] })
+      : undefined;
+    const lane = laneId
+      ? await store.getConversation(laneId, user.id)
+      : undefined;
+    if (!info || info.main !== conversation.id || !lane)
+      return c.json({ error: 'Сравнение не найдено или уже завершено' }, 404);
+    const laneMessages = (await store.listMessages(lane.id)).slice(info.from);
+    for (const message of laneMessages)
+      await store.insertMessage({
+        conversationId: conversation.id,
+        role: message.role,
+        content: message.content,
+        toolCalls: message.toolCalls,
+        toolCallId: message.toolCallId,
+        toolName: message.toolName,
+        reasoning: message.reasoning,
+        attachments: message.attachments,
+        meta: message.meta,
+      });
+    const defaultTitle =
+      !conversation.title || /^(Новый чат|New chat)$/i.test(conversation.title);
+    const updated = await store.updateConversation(conversation.id, {
+      providerId: lane.providerId,
+      model: lane.model,
+      ...(defaultTitle && lane.title ? { title: lane.title } : {}),
+    });
+    for (const id of info.group) {
+      await store.setSetting(`compare:${id}`, '');
+      const sibling = await store.getConversation(id, user.id);
+      if (sibling) await store.deleteConversation(sibling.id);
+    }
+    return c.json({
+      conversation: updated,
+      messages: await store.listMessages(conversation.id),
+    });
+  });
+
+  const runtime = runtimeDeps;
   registerGithubRoutes(app, {
     store,
     mcp,

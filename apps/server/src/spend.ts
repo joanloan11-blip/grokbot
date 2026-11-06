@@ -210,3 +210,16 @@ export async function buildSpendReport(
       .sort(byCost),
   };
 }
+
+/** Цена модели этого провайдера: бесплатная по каталогу или из таблицы цен. */
+export async function priceForModel(
+  store: Store,
+  baseUrl: string,
+  model: string,
+) {
+  const [catalog, prices] = await Promise.all([
+    readFreeCatalog(store),
+    priceTable(store),
+  ]);
+  return freePriceFor(catalog, baseUrl, model) || priceFor(model, prices);
+}

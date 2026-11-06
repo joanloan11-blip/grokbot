@@ -456,7 +456,25 @@ export interface ChatMessage {
   reasoning?: string;
   /** Файлы, приложенные к сообщению пользователя. */
   attachments?: Attachment[];
+  /** Итог хода под ответом: модель, время, шаги, токены, цена. */
+  meta?: MessageMeta;
   createdAt: string;
+}
+
+export interface MessageMeta {
+  model: string;
+  provider?: string;
+  /** Время хода, мс. */
+  ms: number;
+  /** Шагов агента (обращений к модели). */
+  steps: number;
+  tools: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** null — цена модели неизвестна. */
+  costUsd: number | null;
+  /** Токены посчитаны провайдером, а не оценены. */
+  exact: boolean;
 }
 
 export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -527,7 +545,46 @@ export type ClientEvent =
   | { type: 'title'; title: string }
   | { type: 'tool_start'; call: ToolCall }
   | { type: 'error'; message: string }
+  | { type: 'done' }
+  /** Сравнение моделей: какие колонки запущены. */
+  | { type: 'lanes'; lanes: CompareLane[] }
+  /** Событие одной колонки сравнения. */
+  | { type: 'lane'; lane: number; event: LaneEvent };
+
+export interface CompareLane {
+  conversationId: string;
+  providerId: string;
+  model: string;
+}
+
+/** События колонки — те же, что у обычного чата, кроме вложенных колонок. */
+export type LaneEvent =
+  | { type: 'text'; delta: string }
+  | { type: 'reasoning'; delta: string }
+  | { type: 'message'; message: ChatMessage }
+  | { type: 'tool_start'; call: ToolCall }
+  | { type: 'error'; message: string }
   | { type: 'done' };
+
+/** Инструменты, которые в режиме сравнения выключены: колонки не должны менять одни и те же файлы. */
+export const COMPARE_BLOCKED_TOOLS = [
+  'workspace_write',
+  'workspace_edit',
+  'workspace_delete',
+  'shell',
+  'run_code',
+  'github_clone',
+  'github_push',
+  'skill_manage',
+  'create_routine',
+  'send_to_agent',
+  'delegate',
+  'task',
+  'generate_image',
+  'memory_write',
+  'remember',
+  'connector_call',
+];
 
 /** Подставляется вместо секретов в ответах API. При сохранении такое значение не затирает секрет. */
 export const SECRET_MASK = '••••••';

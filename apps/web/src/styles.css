@@ -1,42 +1,49 @@
 :root {
+  /* QASTOM: графит + лайм. Лайм — только действия и «живое» (агент работает, лучший ответ). */
   color-scheme: dark;
-  --bg: #000000;
-  --bg-2: #0d0d0d;
-  --bg-3: #1a1a1a;
-  --bg-4: #141414;
-  --line: rgba(255, 255, 255, 0.09);
-  --line-strong: rgba(255, 255, 255, 0.16);
-  --text: #f4f4f5;
-  --muted: #8b8b90;
-  --amber: #f4f4f5;
-  --amber-ink: #0a0a0a;
-  --sea: #c9c9ce;
-  --accent: #f0b429;
+  --bg: #0c0d0b;
+  --bg-2: #131411;
+  --bg-3: #1f211c;
+  --bg-4: #171814;
+  --line: rgba(230, 255, 200, 0.08);
+  --line-strong: rgba(230, 255, 200, 0.16);
+  --text: #eef2e8;
+  --muted: #878c7f;
+  --amber: #c6f432;
+  --amber-ink: #0c1400;
+  --sea: #c4c9bb;
+  --accent: #c6f432;
+  --accent-soft: rgba(198, 244, 50, 0.1);
+  --warn: #f0b429;
   --danger: #ff6b5e;
-  --user: #1f1f22;
-  --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --user: #1a1b17;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
   --sans: "Manrope", "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --brand: "Unbounded", "Manrope", sans-serif;
   --serif: var(--sans);
   --radius: 16px;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #ffffff;
-  --bg-2: #f7f7f8;
-  --bg-3: #ececee;
-  --bg-4: #f2f2f3;
-  --line: rgba(0, 0, 0, 0.09);
-  --line-strong: rgba(0, 0, 0, 0.18);
-  --text: #0d0d0d;
-  --muted: #6b6b70;
-  --amber: #0d0d0d;
-  --amber-ink: #ffffff;
-  --sea: #3f3f46;
-  --accent: #b7791f;
+  --bg: #f7f8f3;
+  --bg-2: #eff1ea;
+  --bg-3: #e3e6dc;
+  --bg-4: #f2f4ee;
+  --line: rgba(20, 30, 0, 0.09);
+  --line-strong: rgba(20, 30, 0, 0.18);
+  --text: #11140c;
+  --muted: #676c5f;
+  --amber: #b5e61d;
+  --amber-ink: #0c1400;
+  --sea: #3b4033;
+  --accent: #4d7c0f;
+  --accent-soft: rgba(120, 180, 20, 0.14);
+  --warn: #b7791f;
   --danger: #c0392b;
-  --user: #f0f0f2;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+  --user: #ffffff;
+  --shadow: 0 10px 30px rgba(20, 30, 0, 0.07);
 }
 
 * {
@@ -2004,7 +2011,7 @@ input[type="checkbox"]:checked::after {
   font-variant-numeric: tabular-nums;
 }
 .spend .warn {
-  color: var(--accent);
+  color: var(--warn);
 }
 .spend-sub {
   margin-top: 12px;
@@ -2056,8 +2063,8 @@ input[type="checkbox"]:checked::after {
   padding: 4px 6px;
 }
 .chip.bad-price {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--warn);
+  border-color: var(--warn);
 }
 @media (max-width: 640px) {
   .spend-row summary,
@@ -2260,15 +2267,15 @@ input[type="checkbox"]:checked::after {
 
 /* --- знак QASTOM AGENT --- */
 .qmark .q-bg {
-  fill: var(--text);
+  fill: var(--amber);
 }
 .qmark .q-ring {
   fill: none;
-  stroke: var(--bg);
+  stroke: var(--amber-ink);
   stroke-width: 3;
 }
 .qmark .q-tail {
-  stroke: var(--accent);
+  stroke: var(--amber-ink);
   stroke-width: 3.2;
   stroke-linecap: round;
   fill: none;
@@ -2436,8 +2443,8 @@ input[type="checkbox"]:checked::after {
 }
 .meter-ring .fill.mid,
 .meter-bar.mid > span {
-  stroke: var(--accent);
-  background: var(--accent);
+  stroke: var(--warn);
+  background: var(--warn);
 }
 .meter-ring .fill.high,
 .meter-bar.high > span {
@@ -2684,4 +2691,235 @@ input[type="checkbox"]:checked::after {
 
 [hidden] {
   display: none !important;
+}
+
+/* ============================================================
+   Направление A: графит + лайм, Unbounded для знака, моно для цифр
+   ============================================================ */
+.brand strong {
+  font-family: var(--brand);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+}
+.bubble.user {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 18px 18px 6px 18px;
+}
+/* Кнопки своего сообщения — под пузырём, а не внутри: пузырь не раздувается. */
+.bubble.user .msg-actions {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+}
+.msg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.msg-meta .meta-model {
+  color: var(--text);
+  font-weight: 500;
+}
+.msg-meta .meta-cost {
+  color: var(--accent);
+  font-weight: 500;
+}
+.side-head > span:first-child,
+.side-head > strong,
+.side-head > h2,
+.side-head > h3 {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.tool header,
+.tool pre,
+.tool code {
+  font-family: var(--mono);
+}
+.tool.running {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.primary-btn,
+.composer .send:not(.stop):not(:disabled) {
+  background: var(--amber);
+  color: var(--amber-ink);
+}
+.hints button {
+  font-size: 0.85rem;
+}
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.side-label {
+  font-family: var(--mono);
+  font-size: 0.66rem !important;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.rail-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rail-btn.active::before {
+  background: var(--accent);
+}
+.hero .welcome h1 {
+  font-family: var(--brand);
+  font-weight: 700;
+  font-size: clamp(1.5rem, 2.8vw, 2rem);
+  letter-spacing: -0.02em;
+}
+
+/* Сравнение моделей */
+.compare-chip {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.compare-chip:hover {
+  border-color: var(--accent);
+}
+.compare-chip.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.compare-chip.ghosty {
+  border-style: dashed;
+  color: var(--muted);
+}
+.compare-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.compare {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  align-items: start;
+}
+.compare.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.compare.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.lane {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.lane:hover {
+  border-color: var(--line-strong);
+}
+.lane header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+.lane-badge {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0 6px;
+}
+.lane-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.lane-steps li::before {
+  content: "✓ ";
+  color: var(--accent);
+}
+.lane-steps li.run::before {
+  content: "◌ ";
+  color: var(--muted);
+}
+.lane-body {
+  font-size: 0.95rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.lane .msg-meta {
+  margin-top: 0;
+}
+.lane-take {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 9px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lane-take:hover:not(:disabled) {
+  background: var(--amber);
+  color: var(--amber-ink);
+}
+.lane-take:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.compare-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .compare.cols-2,
+  .compare.cols-3 {
+    grid-template-columns: 1fr;
+  }
+  .compare-extra .composer-model {
+    max-width: 120px;
+  }
+}
+@media (max-width: 760px) {
+  .composer-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
 }

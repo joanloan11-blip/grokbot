@@ -137,6 +137,63 @@ describe('HTTP API', () => {
     ).toBe(true);
   });
 
+  it('compares two models side by side and adopts one answer', async () => {
+    const mock = await demoProvider();
+    const conversation = await demoConversation();
+    const response = await post(
+      `/api/conversations/${conversation.id}/compare`,
+      {
+        content: 'сравни меня',
+        locale: 'ru',
+        lanes: [
+          { providerId: mock.id, model: 'mock' },
+          { providerId: mock.id, model: 'mock' },
+        ],
+      },
+    );
+    expect(response.status).toBe(200);
+    const events = await readEvents(response);
+    const start = events.find((event) => event.type === 'lanes');
+    if (start?.type !== 'lanes') throw new Error('no lanes');
+    expect(start.lanes).toHaveLength(2);
+    const finals = events.filter(
+      (event) =>
+        event.type === 'lane' &&
+        event.event.type === 'message' &&
+        event.event.message.role === 'assistant' &&
+        event.event.message.meta,
+    );
+    expect(finals).toHaveLength(2);
+    // Основной чат не тронут, пока ответ не выбран; колонки не видны в списке.
+    const before = (await (
+      await handle.app.request(`/api/conversations/${conversation.id}`)
+    ).json()) as { messages: ChatMessage[] };
+    expect(before.messages).toHaveLength(0);
+    const list = (await (
+      await handle.app.request('/api/conversations')
+    ).json()) as { id: string }[];
+    expect(
+      list.some((item) => item.id === start.lanes[0]!.conversationId),
+    ).toBe(false);
+
+    const adopt = await post(
+      `/api/conversations/${conversation.id}/compare/adopt`,
+      { lane: start.lanes[1]!.conversationId },
+    );
+    expect(adopt.status).toBe(200);
+    const adopted = (await adopt.json()) as { messages: ChatMessage[] };
+    expect(adopted.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(adopted.messages[1]!.meta?.model).toBe('mock');
+    const again = await post(
+      `/api/conversations/${conversation.id}/compare/adopt`,
+      { lane: start.lanes[0]!.conversationId },
+    );
+    expect(again.status).toBe(404);
+  });
+
   it('loads a skill through the agent loop', async () => {
     const conversation = await demoConversation();
     const events = await readEvents(

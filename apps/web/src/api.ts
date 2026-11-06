@@ -468,7 +468,38 @@ export async function streamMessage(
   onEvent: (event: ClientEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/conversations/${id}/messages`, {
+  return streamSse(`/api/conversations/${id}/messages`, body, onEvent, signal);
+}
+
+/** Сравнение: тот же вопрос 2–3 моделям, события приходят с номером колонки. */
+export async function streamCompare(
+  id: string,
+  body: {
+    content: string;
+    locale: Locale;
+    lanes: { providerId: string; model: string }[];
+    attachments?: string[];
+  },
+  onEvent: (event: ClientEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return streamSse(`/api/conversations/${id}/compare`, body, onEvent, signal);
+}
+
+export function adoptCompare(id: string, lane: string) {
+  return request<{ conversation: Conversation; messages: ChatMessage[] }>(
+    `/api/conversations/${id}/compare/adopt`,
+    { method: 'POST', body: JSON.stringify({ lane }) },
+  );
+}
+
+async function streamSse(
+  url: string,
+  body: unknown,
+  onEvent: (event: ClientEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

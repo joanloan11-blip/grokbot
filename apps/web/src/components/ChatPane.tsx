@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChatMessage,
+  MessageMeta,
   Conversation,
   ProviderPublic,
   ToolCall,
 } from '@mayak/shared';
-import { api, streamMessage } from '../api';
+import { adoptCompare, api, streamCompare, streamMessage } from '../api';
 import { useI18n } from '../i18n';
 import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
@@ -43,6 +44,23 @@ interface Choice {
   kind: ProviderPublic['kind'];
 }
 
+interface LaneView {
+  key: string;
+  conversationId: string;
+  text: string;
+  reasoning: string;
+  tools: ToolCall[];
+  doneTools: number;
+  final?: ChatMessage;
+  error?: string;
+  done: boolean;
+}
+
+interface CompareView {
+  question: string;
+  lanes: LaneView[];
+}
+
 export function ChatPane({
   conversationId,
   agentId,
@@ -67,6 +85,10 @@ export function ChatPane({
   const [editingTitle, setEditingTitle] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [files, setFiles] = useState<PendingFile[]>([]);
+  const [compareOn, setCompareOn] = useState(false);
+  const [extraModels, setExtraModels] = useState<string[]>([]);
+  const [compare, setCompare] = useState<CompareView | null>(null);
+  const [adopting, setAdopting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -93,6 +115,7 @@ export function ChatPane({
     setBusy(false);
     setError('');
     setConfirmDelete(false);
+    setCompare(null);
     if (!skipReload.current) setFiles([]);
     if (!conversationId) {
       setMessages([]);
@@ -266,7 +289,155 @@ export function ChatPane({
     },
   };
 
+  function toggleCompare() {
+    if (compareOn) {
+      setCompareOn(false);
+      return;
+    }
+    if (extraModels.length === 0) {
+      const other = choices.find((item) => keyOf(item) !== choice);
+      setExtraModels(other ? [keyOf(other)] : []);
+    }
+    setCompareOn(true);
+  }
+
+  function patchLane(index: number, patch: (lane: LaneView) => LaneView) {
+    setCompare((current) =>
+      current
+        ? {
+            ...current,
+            lanes: current.lanes.map((lane, i) =>
+              i === index ? patch(lane) : lane,
+            ),
+          }
+        : current,
+    );
+  }
+
+  async function sendCompare(text: string) {
+    const content = text.trim();
+    const keys = [...new Set([choice, ...extraModels].filter(Boolean))];
+    const picks = keys
+      .map((key) => choices.find((item) => keyOf(item) === key))
+      .filter((item): item is Choice => Boolean(item));
+    if (!content || busy || uploading) return;
+    if (picks.length < 2) {
+      setError(t('compareNeedTwo'));
+      return;
+    }
+    setError('');
+    setBusy(true);
+    setDraft('');
+    const pendingFiles = files;
+    setFiles([]);
+    setCompare({
+      question: content,
+      lanes: picks.map((pick) => ({
+        key: keyOf(pick),
+        conversationId: '',
+        text: '',
+        reasoning: '',
+        tools: [],
+        doneTools: 0,
+        done: false,
+      })),
+    });
+    try {
+      const id = await ensureConversation();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await streamCompare(
+        id,
+        {
+          content,
+          locale,
+          lanes: picks.map((pick) => ({
+            providerId: pick.providerId,
+            model: pick.model,
+          })),
+          attachments: pendingFiles.map((file) => file.id),
+        },
+        (event) => {
+          if (event.type === 'lanes')
+            setCompare((current) =>
+              current
+                ? {
+                    ...current,
+                    lanes: current.lanes.map((lane, i) => ({
+                      ...lane,
+                      conversationId: event.lanes[i]?.conversationId ?? '',
+                    })),
+                  }
+                : current,
+            );
+          if (event.type === 'error') setError(event.message);
+          if (event.type !== 'lane') return;
+          const inner = event.event;
+          patchLane(event.lane, (lane) => {
+            if (inner.type === 'text')
+              return { ...lane, text: lane.text + inner.delta };
+            if (inner.type === 'reasoning')
+              return { ...lane, reasoning: lane.reasoning + inner.delta };
+            if (inner.type === 'tool_start')
+              return { ...lane, tools: [...lane.tools, inner.call] };
+            if (inner.type === 'error')
+              return { ...lane, error: inner.message, done: true };
+            if (inner.type === 'done') return { ...lane, done: true };
+            if (inner.type === 'message') {
+              if (inner.message.role === 'tool')
+                return { ...lane, doneTools: lane.doneTools + 1 };
+              if (inner.message.role === 'assistant')
+                return inner.message.meta
+                  ? { ...lane, final: inner.message, text: '', reasoning: '' }
+                  : { ...lane, text: '', reasoning: '' };
+            }
+            return lane;
+          });
+        },
+        controller.signal,
+      );
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError'))
+        setError(reason instanceof Error ? reason.message : t('error'));
+    } finally {
+      setBusy(false);
+      abortRef.current = null;
+      setCompare((current) =>
+        current
+          ? {
+              ...current,
+              lanes: current.lanes.map((lane) => ({ ...lane, done: true })),
+            }
+          : current,
+      );
+      window.dispatchEvent(new Event(USAGE_EVENT));
+    }
+  }
+
+  async function adopt(lane: LaneView) {
+    const id = conversationId ?? createdRef.current;
+    if (!id || !lane.conversationId || adopting) return;
+    setAdopting(true);
+    try {
+      const result = await adoptCompare(id, lane.conversationId);
+      setMessages(result.messages);
+      setTitle(result.conversation.title);
+      onConversation(result.conversation);
+      setChoice(lane.key);
+      setCompare(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('error'));
+    } finally {
+      setAdopting(false);
+    }
+  }
+
   async function send(text: string, reuseAttachments?: string[]) {
+    if (compareOn && !reuseAttachments) {
+      await sendCompare(text);
+      return;
+    }
+    setCompare(null);
     const typed = text.trim();
     const pendingFiles = reuseAttachments
       ? reuseAttachments.map((id) => ({ id }))
@@ -381,7 +552,8 @@ export function ChatPane({
     { label: t('hintRoutineLabel'), text: t('hintRoutineText') },
     { label: t('hintCodeLabel'), text: t('hintCodeText') },
   ];
-  const isEmpty = messages.length === 0 && !streaming && !reasoning && !busy;
+  const isEmpty =
+    messages.length === 0 && !streaming && !reasoning && !busy && !compare;
 
   const composer = (
     <form
@@ -461,6 +633,61 @@ export function ChatPane({
           className="composer-model"
           onChange={(next) => void persistChoice(next, conversationId)}
         />
+        {choices.length > 1 && (
+          <button
+            type="button"
+            className={compareOn ? 'compare-chip on' : 'compare-chip'}
+            title={t('compareTitle')}
+            aria-pressed={compareOn}
+            onClick={toggleCompare}
+          >
+            ⚖ {t('compare')}
+            {compareOn ? ` · ${1 + extraModels.length}` : ''}
+          </button>
+        )}
+        {compareOn &&
+          extraModels.map((key, index) => (
+            <span key={`extra-${index}`} className="compare-extra">
+              <ModelSelect
+                providers={providers}
+                value={key}
+                label={t('modelLabel')}
+                className="composer-model"
+                onChange={(next) =>
+                  setExtraModels((current) =>
+                    current.map((item, i) => (i === index ? next : item)),
+                  )
+                }
+              />
+              <button
+                type="button"
+                className="icon-btn quiet tiny"
+                aria-label={t('compareRemove')}
+                title={t('compareRemove')}
+                onClick={() => {
+                  const next = extraModels.filter((_, i) => i !== index);
+                  setExtraModels(next);
+                  if (next.length === 0) setCompareOn(false);
+                }}
+              >
+                <IconClose />
+              </button>
+            </span>
+          ))}
+        {compareOn && extraModels.length < 2 && choices.length > 2 && (
+          <button
+            type="button"
+            className="compare-chip ghosty"
+            onClick={() => {
+              const used = new Set([choice, ...extraModels]);
+              const other = choices.find((item) => !used.has(keyOf(item)));
+              if (other)
+                setExtraModels((current) => [...current, keyOf(other)]);
+            }}
+          >
+            {t('compareAdd')}
+          </button>
+        )}
         <span className="composer-spacer" />
         <button
           type="button"
@@ -613,7 +840,16 @@ export function ChatPane({
                   labelDone={t('toolDone')}
                 />
               ))}
+              {compare && (
+                <CompareBlock
+                  view={compare}
+                  providers={providers}
+                  adopting={adopting}
+                  onAdopt={(lane) => void adopt(lane)}
+                />
+              )}
               {busy &&
+                !compare &&
                 !streaming &&
                 !reasoning &&
                 pendingTools.length === 0 && (
@@ -740,6 +976,7 @@ function renderMessages(
           <ReasoningBlock text={message.reasoning} label={t('reasoning')} />
         )}
         {message.content && <EditableText message={message} edit={edit} />}
+        {message.meta && <MetaLine meta={message.meta} />}
         {calls.map((call) => {
           const result = messages.find(
             (item) => item.role === 'tool' && item.toolCallId === call.id,
@@ -841,6 +1078,159 @@ async function copyToClipboard(text: string): Promise<boolean> {
     area.remove();
     return ok;
   }
+}
+
+/** Колонки сравнения: один вопрос — несколько моделей рядом. */
+function CompareBlock({
+  view,
+  providers,
+  adopting,
+  onAdopt,
+}: {
+  view: CompareView;
+  providers: ProviderPublic[];
+  adopting: boolean;
+  onAdopt: (lane: LaneView) => void;
+}) {
+  const { t } = useI18n();
+  const finished = view.lanes.filter((lane) => lane.final?.meta);
+  const settled = view.lanes.every((lane) => lane.done);
+  const allDone = settled && finished.length > 1;
+  // Значок — только если колонка заметно лучше остальных, а не при ничьей.
+  const best = (
+    value: (lane: LaneView) => number | null,
+    margin: number,
+  ): LaneView | undefined => {
+    if (!allDone) return undefined;
+    const scored = finished
+      .map((lane) => ({ lane, score: value(lane) }))
+      .filter(
+        (item): item is { lane: LaneView; score: number } =>
+          item.score !== null,
+      )
+      .sort((a, b) => a.score - b.score);
+    if (scored.length < 2) return undefined;
+    const [first, second] = scored;
+    return second!.score - first!.score > Math.max(margin, second!.score * 0.1)
+      ? first!.lane
+      : undefined;
+  };
+  const fastest = best((lane) => lane.final?.meta?.ms ?? null, 500);
+  const cheapest = best((lane) => lane.final?.meta?.costUsd ?? null, 0.000_01);
+  const label = (key: string) => {
+    const [providerId, ...rest] = key.split(':');
+    const model = rest.join(':');
+    const provider = providers.find((item) => item.id === providerId);
+    return provider ? modelLabel(provider, model, t) : model;
+  };
+  return (
+    <>
+      <article className="bubble user">
+        <MarkdownView text={view.question} />
+      </article>
+      <div className={`compare cols-${view.lanes.length}`}>
+        {view.lanes.map((lane) => (
+          <div key={lane.key + lane.conversationId} className="lane">
+            <header>
+              <strong>{label(lane.key)}</strong>
+              {lane === fastest && (
+                <span className="lane-badge">{t('compareFastest')}</span>
+              )}
+              {lane === cheapest && (
+                <span className="lane-badge">{t('compareCheapest')}</span>
+              )}
+            </header>
+            {lane.tools.length > 0 && (
+              <ul className="lane-steps">
+                {lane.tools.map((call, index) => (
+                  <li
+                    key={call.id}
+                    className={index < lane.doneTools ? 'ok' : 'run'}
+                  >
+                    {call.name}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="lane-body">
+              {lane.final ? (
+                <MarkdownView text={lane.final.content} />
+              ) : lane.text ? (
+                <MarkdownView text={lane.text} />
+              ) : !lane.done ? (
+                <p className="thinking">
+                  <i />
+                  {t('compareWaiting')}
+                </p>
+              ) : null}
+              {lane.error && <p className="error-line">{lane.error}</p>}
+            </div>
+            {lane.final?.meta && <MetaLine meta={lane.final.meta} />}
+            {lane.final && (
+              <button
+                type="button"
+                className="lane-take"
+                disabled={adopting || !settled}
+                onClick={() => onAdopt(lane)}
+              >
+                {t('compareTake')}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      <p className="compare-note">{t('compareNote')}</p>
+    </>
+  );
+}
+
+const compact = (value: number) =>
+  value >= 1000
+    ? `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`
+    : `${value}`;
+
+/** Цена ответа: центы с двумя значащими цифрами, иначе доллары. */
+export function formatCost(usd: number): string {
+  if (usd === 0) return '$0';
+  if (usd < 0.01) return `$${usd.toPrecision(2)}`;
+  return `$${usd.toFixed(usd < 1 ? 3 : 2)}`;
+}
+
+/** Подпись под ответом: модель, время, шаги, токены и цена хода. */
+function MetaLine({ meta }: { meta: MessageMeta }) {
+  const { t } = useI18n();
+  const seconds = meta.ms / 1000;
+  return (
+    <div
+      className="msg-meta"
+      title={meta.exact ? undefined : t('metaEstimate')}
+    >
+      <span className="meta-model">{meta.model}</span>
+      <span>
+        {seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} {t('metaSec')}
+      </span>
+      {meta.steps > 1 && (
+        <span>
+          {meta.steps} {t('metaSteps')}
+        </span>
+      )}
+      {meta.tools > 0 && (
+        <span>
+          {meta.tools} {t('metaTools')}
+        </span>
+      )}
+      <span>
+        {compact(meta.inputTokens)} → {compact(meta.outputTokens)}{' '}
+        {t('metaTokens')}
+        {meta.exact ? '' : ' ≈'}
+      </span>
+      {meta.costUsd !== null && (
+        <span className="meta-cost">
+          {meta.costUsd === 0 ? t('metaFree') : formatCost(meta.costUsd)}
+        </span>
+      )}
+    </div>
+  );
 }
 
 /** Текст сообщения с кнопками «Копировать» и «Изменить». */

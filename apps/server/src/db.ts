@@ -4,6 +4,7 @@ import type {
   AgentInput,
   Attachment,
   ChatMessage,
+  MessageMeta,
   Conversation,
   McpServerInput,
   MemoryNote,
@@ -156,6 +157,7 @@ interface MessageSql {
   tool_name: string | null;
   reasoning: string | null;
   attachments_json?: string | null;
+  meta_json?: string | null;
   created_at: string;
 }
 
@@ -397,6 +399,11 @@ export class Store {
       'messages',
       'attachments_json',
       'ALTER TABLE messages ADD COLUMN attachments_json TEXT',
+    );
+    await add(
+      'messages',
+      'meta_json',
+      'ALTER TABLE messages ADD COLUMN meta_json TEXT',
     );
     await add(
       'users',
@@ -1127,11 +1134,12 @@ export class Store {
       toolName: input.toolName,
       reasoning: input.reasoning?.trim() ? input.reasoning : undefined,
       attachments: input.attachments?.length ? input.attachments : undefined,
-      createdAt: nowIso(),
+      meta: input.meta,
+      createdAt: messageStamp(),
     };
     await this.sql.run(
-      `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, attachments_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning, attachments_json, meta_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.conversationId,
@@ -1142,6 +1150,7 @@ export class Store {
         row.toolName ?? null,
         row.reasoning ?? null,
         row.attachments ? JSON.stringify(row.attachments) : null,
+        row.meta ? JSON.stringify(row.meta) : null,
         row.createdAt,
       ],
     );
@@ -2563,8 +2572,27 @@ function mapMessage(row: MessageSql): ChatMessage {
     toolName: row.tool_name ?? undefined,
     reasoning: row.reasoning?.trim() ? row.reasoning : undefined,
     attachments: parseAttachments(row.attachments_json),
+    meta: parseMeta(row.meta_json),
     createdAt: row.created_at,
   };
+}
+
+let lastMessageStamp = 0;
+/** Время сообщения строго по возрастанию: сообщения одной миллисекунды не меняются местами. */
+function messageStamp(): string {
+  const now = Date.now();
+  lastMessageStamp = now > lastMessageStamp ? now : lastMessageStamp + 1;
+  return new Date(lastMessageStamp).toISOString();
+}
+
+function parseMeta(json: string | null | undefined): MessageMeta | undefined {
+  if (!json) return undefined;
+  try {
+    const value = JSON.parse(json) as MessageMeta;
+    return value && typeof value.model === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseAttachments(
