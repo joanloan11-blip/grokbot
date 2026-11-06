@@ -2969,3 +2969,83 @@ input[type="checkbox"]:checked::after {
     display: none;
   }
 }
+
+/* «Матрица» поверх размышлений: лаймовые символы стекают сверху, как штора */
+.reasoning.live {
+  position: relative;
+  overflow: hidden;
+  min-height: 130px;
+  background: var(--bg-2);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.matrix-rain {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.8;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.85) 30%, rgba(0, 0, 0, 0.3) 70%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.85) 30%, rgba(0, 0, 0, 0.3) 70%, transparent 100%);
+}
+.reasoning.live summary,
+.reasoning.live .reasoning-body {
+  position: relative;
+  z-index: 1;
+}
+.reasoning.live summary {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.reasoning.live .reasoning-body {
+  max-height: 220px;
+  overflow: auto;
+  color: var(--text);
+  text-shadow:
+    0 0 4px var(--bg-2),
+    0 0 8px var(--bg-2),
+    0 0 12px var(--bg-2);
+}
+.thinking-matrix {
+  position: relative;
+  overflow: hidden;
+  height: 96px;
+  border-radius: 12px;
+  background: var(--bg-2);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  display: flex;
+  align-items: flex-end;
+  padding: 10px 12px;
+}
+.thinking-matrix.small {
+  height: 72px;
+}
+.thinking-matrix > span {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-shadow: 0 0 6px var(--bg-2);
+}
+.thinking-matrix > span i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: matrix-pulse 1.2s ease-in-out infinite;
+}
+@keyframes matrix-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}

@@ -10,6 +10,7 @@ import { adoptCompare, api, streamCompare, streamMessage } from '../api';
 import { useI18n } from '../i18n';
 import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
+import { MatrixRain } from './MatrixRain';
 import { USAGE_EVENT } from './UsageMeter';
 import {
   BeaconMark,
@@ -834,6 +835,7 @@ export function ChatPane({
                       text={reasoning}
                       label={t('reasoning')}
                       open
+                      live={!streaming}
                     />
                   )}
                   {streaming && <MarkdownView text={streaming} />}
@@ -863,10 +865,13 @@ export function ChatPane({
                 !streaming &&
                 !reasoning &&
                 pendingTools.length === 0 && (
-                  <p className="thinking">
-                    <i />
-                    {t('thinking')}
-                  </p>
+                  <div className="thinking-matrix">
+                    <MatrixRain />
+                    <span>
+                      <i />
+                      {t('thinking')}
+                    </span>
+                  </div>
                 )}
               {error && (
                 <p className="error-line">
@@ -1168,10 +1173,10 @@ function CompareBlock({
               ) : lane.text ? (
                 <MarkdownView text={lane.text} />
               ) : !lane.done ? (
-                <p className="thinking">
-                  <i />
-                  {t('compareWaiting')}
-                </p>
+                <div className="thinking-matrix small">
+                  <MatrixRain />
+                  <span>{t('compareWaiting')}</span>
+                </div>
               ) : null}
               {lane.error && <p className="error-line">{lane.error}</p>}
             </div>
@@ -1453,15 +1458,27 @@ function ReasoningBlock({
   text,
   label,
   open,
+  live,
 }: {
   text: string;
   label: string;
   open?: boolean;
+  /** Модель ещё думает: поверх окна идёт «матрица». */
+  live?: boolean;
 }) {
+  const body = useRef<HTMLDivElement>(null);
+  // Пока модель думает, держим в окне последние строки рассуждения.
+  useEffect(() => {
+    if (live && body.current)
+      body.current.scrollTop = body.current.scrollHeight;
+  }, [live, text]);
   return (
-    <details className="reasoning" open={open}>
+    <details className={live ? 'reasoning live' : 'reasoning'} open={open}>
+      {live && <MatrixRain />}
       <summary>{label}</summary>
-      <div className="reasoning-body">{text}</div>
+      <div className="reasoning-body" ref={body}>
+        {text}
+      </div>
     </details>
   );
 }

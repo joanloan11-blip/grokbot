@@ -39,6 +39,9 @@ export function createMockClient(): LLMClient {
         if (event.type === 'text' && !process.env.VITEST) {
           await delay(12);
         }
+        if (event.type === 'reasoning' && !process.env.VITEST) {
+          await delay(250);
+        }
       }
     },
   };
@@ -70,6 +73,26 @@ function replyFor(
         `Инструмент «${toolCmd[1]}» не найден.\n\n${toolList(tools)}`,
       );
     return toolEvents(found.name, args);
+  }
+
+  // «think 5» — демо размышлений: модель «думает» 5 секунд, потом отвечает.
+  const thinkCmd = text.match(/^(?:think|подумай)\s+(\d+)\s*$/i);
+  if (thinkCmd?.[1]) {
+    const seconds = Math.min(30, Number(thinkCmd[1]));
+    const thoughts: ProviderEvent[] = [];
+    const lines = [
+      'Разбираю вопрос и что именно нужно пользователю.',
+      'Проверяю, какие инструменты могут помочь.',
+      'Сравниваю варианты ответа, отбрасываю слабые.',
+      'Собираю ответ коротко и по делу.',
+    ];
+    const steps = process.env.VITEST ? 2 : seconds * 4;
+    for (let i = 0; i < steps; i++)
+      thoughts.push({
+        type: 'reasoning',
+        delta: `${lines[i % lines.length]} `,
+      });
+    return [...thoughts, ...textEvents('Подумал и готов ответить.')];
   }
 
   const skillCmd = text.match(/^(?:skill|навык)\s+(\S+)\s*$/i);
