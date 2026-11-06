@@ -175,7 +175,7 @@ export async function llmFetch(
  * 32 КБ и больше — обрыв на любом сайте). Пока прокси такой, ужимаем тело запроса:
  * сначала старые длинные результаты инструментов и сообщения, потом описания инструментов.
  */
-export const PROXY_MAX_BODY = Number(process.env.LLM_PROXY_MAX_BODY) || 20_000;
+export const PROXY_MAX_BODY = Number(process.env.LLM_PROXY_MAX_BODY) || 16_000;
 
 type Leaf = {
   holder: Record<string, unknown> | unknown[];
@@ -183,6 +183,8 @@ type Leaf = {
   length: number;
   age: number;
 };
+
+const roleOf = (message: unknown) => (message as { role?: string })?.role;
 
 export function fitBody(
   body: Record<string, unknown>,
@@ -197,68 +199,79 @@ export function fitBody(
         ? body.contents
         : []
   ) as unknown[];
-  // Строки внутри всех сообщений, кроме последнего (вопрос пользователя или свежий результат) и системного.
-  const leaves: Leaf[] = [];
-  const walk = (
-    node: unknown,
-    holder: Leaf['holder'],
-    key: Leaf['key'],
-    age: number,
-  ) => {
-    if (typeof node === 'string') {
-      if (node.length > 400)
-        leaves.push({ holder, key, length: node.length, age });
-      return;
-    }
-    if (Array.isArray(node))
-      node.forEach((item, i) => walk(item, node, i, age));
-    else if (node && typeof node === 'object')
-      for (const [k, v] of Object.entries(node as Record<string, unknown>))
-        walk(v, node as Record<string, unknown>, k, age);
+  // Последний вопрос пользователя не трогаем; системный — тоже.
+  const lastUser = () => {
+    for (let i = list.length - 1; i >= 0; i--)
+      if (roleOf(list[i]) === 'user') return i;
+    return -1;
   };
-  list.slice(0, -1).forEach((message, index) => {
-    const role = (message as { role?: string })?.role;
-    if (role === 'system') return;
-    walk(message, list, index, list.length - index);
-  });
-  const cut = (leaf: Leaf, keep: number) => {
-    const holder = leaf.holder as Record<string | number, unknown>;
-    const value = holder[leaf.key];
-    if (typeof value !== 'string' || value.length <= keep) return;
-    holder[leaf.key] =
-      `${value.slice(0, keep)}\n…[сокращено, было ${value.length} символов]`;
+  const collect = () => {
+    const leaves: Leaf[] = [];
+    const protectedIndex = lastUser();
+    const walk = (
+      node: unknown,
+      holder: Leaf['holder'],
+      key: Leaf['key'],
+      age: number,
+    ) => {
+      if (typeof node === 'string') {
+        if (node.length > 400)
+          leaves.push({ holder, key, length: node.length, age });
+        return;
+      }
+      if (Array.isArray(node))
+        node.forEach((item, i) => walk(item, node, i, age));
+      else if (node && typeof node === 'object')
+        for (const [k, v] of Object.entries(node as Record<string, unknown>))
+          walk(v, node as Record<string, unknown>, k, age);
+    };
+    list.forEach((message, index) => {
+      if (index === protectedIndex || roleOf(message) === 'system') return;
+      walk(message, list, index, list.length - index);
+    });
+    // Старые и длинные — первыми.
+    return leaves.sort((a, b) => b.age * b.length - a.age * a.length);
   };
-  // Старые и длинные — первыми.
-  leaves.sort((a, b) => b.age * b.length - a.age * a.length);
-  for (const keep of [1500, 600, 200]) {
-    for (const leaf of leaves) {
-      cut(leaf, keep);
-      if (size() <= max) return body;
+  const cutAll = (keep: number, onlyOld = false) => {
+    for (const leaf of collect()) {
+      if (onlyOld && leaf.age <= 1) continue;
+      const holder = leaf.holder as Record<string | number, unknown>;
+      const value = holder[leaf.key];
+      if (typeof value === 'string' && value.length > keep)
+        holder[leaf.key] =
+          `${value.slice(0, keep)}\n…[сокращено, было ${value.length} символов]`;
+      if (size() <= max) return true;
     }
-  }
-  // Описания инструментов короче.
-  const tools = Array.isArray(body.tools)
-    ? (body.tools as Record<string, unknown>[])
-    : [];
-  for (const tool of tools) {
-    const fn = (tool.function ?? tool) as Record<string, unknown>;
-    if (typeof fn.description === 'string' && fn.description.length > 120)
-      fn.description = `${fn.description.slice(0, 120)}…`;
-  }
+    return size() <= max;
+  };
+  const shortenTools = (limit: number) => {
+    const tools = Array.isArray(body.tools)
+      ? (body.tools as Record<string, unknown>[])
+      : [];
+    for (const tool of tools) {
+      const fn = (tool.function ?? tool) as Record<string, unknown>;
+      if (typeof fn.description === 'string' && fn.description.length > limit)
+        fn.description = `${fn.description.slice(0, limit)}…`;
+    }
+    return size() <= max;
+  };
+  // Самый старый ход (от вопроса до следующего вопроса), кроме последнего.
+  const dropOldestTurn = () => {
+    const first = list.findIndex((message) => roleOf(message) !== 'system');
+    const protectedIndex = lastUser();
+    if (first < 0 || first >= protectedIndex) return false;
+    let end = first + 1;
+    while (end < protectedIndex && roleOf(list[end]) !== 'user') end++;
+    list.splice(first, end - first);
+    return true;
+  };
+  if (cutAll(1500, true)) return body;
+  if (shortenTools(160)) return body;
+  if (cutAll(3000)) return body;
+  if (cutAll(800)) return body;
+  if (shortenTools(60)) return body;
+  while (size() > max && dropOldestTurn()) {}
   if (size() <= max) return body;
-  // Последнее средство — самые старые сообщения целиком (системное и последнее остаются).
-  while (size() > max && list.length > 3) {
-    const index = list.findIndex(
-      (message, i) =>
-        i > 0 &&
-        i < list.length - 2 &&
-        (message as { role?: string })?.role !== 'system',
-    );
-    if (index < 0) break;
-    list.splice(index, 1);
-    // Ответ инструмента без вызова OpenAI не примет — убираем осиротевшие.
-    while ((list[index] as { role?: string })?.role === 'tool')
-      list.splice(index, 1);
-  }
+  cutAll(250);
   return body;
 }
