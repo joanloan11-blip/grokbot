@@ -42,17 +42,74 @@ export function proxyFor(target: string): string | undefined {
   return match ? proxy : undefined;
 }
 
+/** Сколько ждём заголовков ответа, прежде чем считать соединение зависшим. */
+const HEADERS_TIMEOUT_MS = Number(process.env.LLM_HEADERS_TIMEOUT_MS) || 90_000;
+
+function proxyAgent(proxy: string): ProxyAgent {
+  if (!cached || cached.url !== proxy)
+    cached = {
+      url: proxy,
+      // Короткий keep-alive: прокси молча рвёт простаивающие туннели, и запрос
+      // в «мёртвое» соединение висел до 5 минут, пока undici не сдавался.
+      agent: new ProxyAgent({
+        uri: proxy,
+        connectTimeout: 20_000,
+        headersTimeout: HEADERS_TIMEOUT_MS,
+        bodyTimeout: 120_000,
+        keepAliveTimeout: 4_000,
+        keepAliveMaxTimeout: 10_000,
+      }),
+    };
+  return cached.agent;
+}
+
+async function fetchOnce(
+  url: string,
+  init: RequestInit & { signal?: AbortSignal | null },
+): Promise<Response> {
+  // Свой таймаут на заголовки: срабатывает и без прокси, снимается, как только ответ начался.
+  const timer = new AbortController();
+  const handle = setTimeout(
+    () => timer.abort(new Error('timeout')),
+    HEADERS_TIMEOUT_MS,
+  );
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timer.signal])
+    : timer.signal;
+  try {
+    const proxy = proxyFor(url);
+    if (!proxy) return await fetch(url, { ...init, signal });
+    // undici.fetch с прокси-агентом; ответ совместим с WHATWG Response.
+    return (await undiciFetch(url, {
+      ...(init as Record<string, unknown>),
+      signal,
+      dispatcher: proxyAgent(proxy),
+    } as Parameters<typeof undiciFetch>[1])) as unknown as Response;
+  } catch (error) {
+    if (timer.signal.aborted && !init.signal?.aborted)
+      throw new Error(
+        `Провайдер не ответил за ${Math.round(HEADERS_TIMEOUT_MS / 1000)} с`,
+      );
+    throw error;
+  } finally {
+    clearTimeout(handle);
+  }
+}
+
+/** Запрос к API модели: таймаут на ответ и один повтор при сетевой ошибке. */
 export async function llmFetch(
   url: string,
   init: RequestInit & { signal?: AbortSignal | null },
 ): Promise<Response> {
-  const proxy = proxyFor(url);
-  if (!proxy) return fetch(url, init);
-  if (!cached || cached.url !== proxy)
-    cached = { url: proxy, agent: new ProxyAgent(proxy) };
-  // undici.fetch с прокси-агентом; ответ совместим с WHATWG Response.
-  return (await undiciFetch(url, {
-    ...(init as Record<string, unknown>),
-    dispatcher: cached.agent,
-  } as Parameters<typeof undiciFetch>[1])) as unknown as Response;
+  try {
+    return await fetchOnce(url, init);
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    // Сетевой сбой (оборванное соединение, таймаут) — пробуем ещё раз на новом соединении.
+    await new Promise((resolve) =>
+      setTimeout(resolve, process.env.VITEST ? 1 : 1500),
+    );
+    if (init.signal?.aborted) throw error;
+    return fetchOnce(url, init);
+  }
 }
