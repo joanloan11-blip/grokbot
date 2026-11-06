@@ -3,6 +3,7 @@ import type {
   DiscoverResult,
   ProviderKind,
   ChatMessage,
+  UsageMeter,
   FreeCatalog,
   ClientEvent,
   PublicUser,
@@ -71,6 +72,19 @@ export class ApiError extends Error {
 
 export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
+  usageMeter: () => request<UsageMeter>('/api/usage/meter'),
+  budgets: (userId: string) =>
+    request<{ day: number | null; week: number | null }>(
+      `/api/admin/budgets/${userId}`,
+    ),
+  saveBudgets: (
+    userId: string,
+    body: { day?: number | null; week?: number | null },
+  ) =>
+    request<{ ok: boolean }>(`/api/admin/budgets/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   checkModels: (id: string) =>
     request<{ started: boolean }>(`/api/providers/${id}/check`, {
       method: 'POST',

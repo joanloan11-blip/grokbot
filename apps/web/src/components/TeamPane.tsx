@@ -142,6 +142,11 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
             </p>
           )}
         </form>
+        <div className="card form budget-defaults">
+          <strong>{t('budgetDefaults')}</strong>
+          <p className="hint">{t('budgetDefaultsHint')}</p>
+          <BudgetInputs userId="default" />
+        </div>
         {error && <p className="fault">{error}</p>}
         <div className="team-list">
           {users.map((user) => (
@@ -214,6 +219,7 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                     }}
                   />
                 </label>
+                <BudgetInputs userId={user.id} />
               </div>
               {resetLinks[user.id] && (
                 <p className="muted reset-link">
@@ -305,5 +311,54 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/** Лимиты расходов в долларах: сохраняются при выходе из поля. */
+function BudgetInputs({ userId }: { userId: string }) {
+  const { t } = useI18n();
+  const [value, setValue] = useState<{ day: string; week: string } | null>(
+    null,
+  );
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    void api
+      .budgets(userId)
+      .then((data) =>
+        setValue({
+          day: data.day === null ? '' : String(data.day),
+          week: data.week === null ? '' : String(data.week),
+        }),
+      )
+      .catch(() => setValue({ day: '', week: '' }));
+  }, [userId]);
+  if (!value) return null;
+  const commit = (field: 'day' | 'week', raw: string) => {
+    const text = raw.trim().replace(',', '.');
+    const next = text === '' ? null : Number(text);
+    if (next !== null && !(next >= 0)) return;
+    void api.saveBudgets(userId, { [field]: next }).then(() => {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    });
+  };
+  return (
+    <span className="budget-inputs">
+      {(['day', 'week'] as const).map((field) => (
+        <label key={field}>
+          {field === 'day' ? t('budgetDay') : t('budgetWeek')}
+          <input
+            inputMode="decimal"
+            placeholder="∞"
+            value={value[field]}
+            onChange={(event) =>
+              setValue({ ...value, [field]: event.target.value })
+            }
+            onBlur={(event) => commit(field, event.target.value)}
+          />
+        </label>
+      ))}
+      {saved && <small className="muted">✓</small>}
+    </span>
   );
 }

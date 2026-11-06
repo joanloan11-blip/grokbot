@@ -29,6 +29,7 @@ import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
+import { assertBudget } from './meter';
 import { readCaps } from './model-caps';
 import { DELEGATE_LIMITS, normalizeTasks, runDelegation } from './orchestrator';
 import { decryptSecret } from './github/secret';
@@ -162,6 +163,7 @@ export async function runTurn(
       client: meteredClient(createClient(provider), {
         before: async (messages) => {
           await assertQuota(deps.store, owner);
+          await assertBudget(deps.store, userId);
           const cap = await deps.store.getSetting(`token_limit:${userId}`);
           if (cap && Number(cap) > 0) {
             const used = await deps.store.tokenSumSince(userId, utcDayStart());

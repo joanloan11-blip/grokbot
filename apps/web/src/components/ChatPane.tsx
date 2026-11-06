@@ -9,6 +9,7 @@ import { api, streamMessage } from '../api';
 import { useI18n } from '../i18n';
 import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
+import { USAGE_EVENT } from './UsageMeter';
 import {
   BeaconMark,
   IconArrowUp,
@@ -360,6 +361,7 @@ export function ChatPane({
       setStreaming('');
       setPendingTools([]);
       abortRef.current = null;
+      window.dispatchEvent(new Event(USAGE_EVENT));
     }
   }
 

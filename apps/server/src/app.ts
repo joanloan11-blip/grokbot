@@ -1,3 +1,4 @@
+import { readBudgets, saveBudgets, usageMeter } from './meter';
 import { checkProviderModels, isChecking, readCaps } from './model-caps';
 import { isKeylessUrl } from './free-llm';
 import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
@@ -525,6 +526,53 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       });
     }
     return c.json(usageRows);
+  });
+
+  // Индикатор расхода (как в Codex): % дневного и недельного лимита.
+  app.get('/api/usage/meter', async (c) => {
+    const user = await actor(c);
+    return c.json(await usageMeter(store, user.id));
+  });
+
+  // Лимиты в долларах: общий по умолчанию (userId = 'default') или на пользователя.
+  app.get('/api/admin/budgets/:userId', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const id = c.req.param('userId');
+    if (id === 'default') {
+      const day = Number(await store.getSetting('budget_day_default'));
+      const week = Number(await store.getSetting('budget_week_default'));
+      return c.json({
+        day: day > 0 ? day : null,
+        week: week > 0 ? week : null,
+      });
+    }
+    const own = {
+      day: Number(await store.getSetting(`budget_day:${id}`)) || null,
+      week: Number(await store.getSetting(`budget_week:${id}`)) || null,
+    };
+    return c.json({ ...own, effective: await readBudgets(store, id) });
+  });
+
+  app.put('/api/admin/budgets/:userId', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const id = c.req.param('userId');
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const pick = (value: unknown) =>
+      value === null || value === ''
+        ? null
+        : typeof value === 'number' && Number.isFinite(value) && value >= 0
+          ? Math.round(value * 100) / 100
+          : undefined;
+    await saveBudgets(store, id === 'default' ? '' : id, {
+      day: pick(body.day),
+      week: pick(body.week),
+    });
+    return c.json({ ok: true });
   });
 
   // Расходы: админ видит всех, остальные — только себя.

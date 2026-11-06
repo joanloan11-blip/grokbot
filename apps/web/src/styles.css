@@ -2404,3 +2404,139 @@ input[type="checkbox"]:checked::after {
     display: block;
   }
 }
+
+/* --- индикатор расхода (как в Codex) --- */
+.rail-meter {
+  position: relative;
+}
+.meter-btn {
+  position: relative;
+}
+.meter-ring {
+  width: 30px !important;
+  height: 30px !important;
+  transform: rotate(-90deg);
+  fill: none !important;
+}
+.meter-ring circle {
+  fill: none;
+  stroke-width: 3.2;
+}
+.meter-ring .track {
+  stroke: var(--bg-3);
+}
+.meter-ring .fill {
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease;
+}
+.meter-ring .fill.low,
+.meter-bar.low > span {
+  stroke: var(--text);
+  background: var(--text);
+}
+.meter-ring .fill.mid,
+.meter-bar.mid > span {
+  stroke: var(--accent);
+  background: var(--accent);
+}
+.meter-ring .fill.high,
+.meter-bar.high > span {
+  stroke: var(--danger);
+  background: var(--danger);
+}
+.meter-ring .fill.none {
+  stroke: transparent;
+}
+.meter-num {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: var(--text);
+  pointer-events: none;
+}
+.meter-pop {
+  position: absolute;
+  left: calc(100% + 12px);
+  bottom: 0;
+  width: 280px;
+  z-index: 40;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.meter-title {
+  margin: 0;
+  font-weight: 700;
+}
+.meter-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.meter-top {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+.meter-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+.meter-row small {
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.inline-meter {
+  display: none;
+  margin: 0 4px 8px;
+}
+.inline-meter summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.inline-meter summary::-webkit-details-marker {
+  display: none;
+}
+.inline-meter .meter-ring {
+  width: 22px !important;
+  height: 22px !important;
+}
+.inline-meter .meter-pop {
+  position: static;
+  width: auto;
+  margin-top: 8px;
+}
+@media (max-width: 900px) {
+  .inline-meter {
+    display: block;
+  }
+}
+.budget-inputs {
+  display: inline-flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.budget-inputs input {
+  width: 90px;
+}

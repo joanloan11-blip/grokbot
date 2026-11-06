@@ -35,6 +35,7 @@ import {
 } from './components/icons';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { SpendPane } from './components/SpendPane';
+import { InlineMeter, RailMeter } from './components/UsageMeter';
 import { TeamPane } from './components/TeamPane';
 import { I18nProvider, useI18n } from './i18n';
 
@@ -317,6 +318,7 @@ function Shell({
           <IconFolder />
         </RailButton>
         <span className="rail-gap" />
+        <RailMeter />
         <RailButton
           label={t('spend')}
           active={view.name === 'spend'}
@@ -575,6 +577,7 @@ function Shell({
           </nav>
         </div>
         <div className="side-foot">
+          <InlineMeter />
           {menuOpen && (
             <>
               <button

@@ -167,6 +167,23 @@ export interface SpendReport {
   })[];
 }
 
+/** Индикатор расхода (как в Codex): сколько процентов лимита за день и неделю. */
+export interface UsageWindow {
+  usedUsd: number;
+  tokens: number;
+  calls: number;
+  /** null — лимит не задан. */
+  limitUsd: number | null;
+  /** 0…100+, null — без лимита. */
+  percent: number | null;
+  resetsAt: string;
+}
+
+export interface UsageMeter {
+  day: UsageWindow;
+  week: UsageWindow;
+}
+
 export interface KeyBalance {
   providerId: string;
   name: string;

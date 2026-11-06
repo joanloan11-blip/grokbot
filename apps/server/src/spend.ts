@@ -66,9 +66,9 @@ const byCost = (a: SpendLine, b: SpendLine) =>
  */
 export async function buildSpendReport(
   store: Store,
-  input: { period: SpendReport['period']; userId?: string },
+  input: { period: SpendReport['period']; userId?: string; since?: Date },
 ): Promise<SpendReport> {
-  const since = periodStart(input.period);
+  const since = input.since ?? periodStart(input.period);
   const [rows, prices, agents, users, providers] = await Promise.all([
     store.usageBreakdown(since.toISOString(), input.userId),
     priceTable(store),
