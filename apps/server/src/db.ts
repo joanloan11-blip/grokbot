@@ -407,6 +407,39 @@ export class Store {
     );
     await add(
       'users',
+      'is_client',
+      'ALTER TABLE users ADD COLUMN is_client INTEGER NOT NULL DEFAULT 0',
+    );
+    // Кошелёк клиента: пробные доллары, баланс в копейках, тариф с включённым лимитом.
+    await this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS wallets (
+        user_id TEXT PRIMARY KEY,
+        trial_used_usd REAL NOT NULL DEFAULT 0,
+        balance_kop INTEGER NOT NULL DEFAULT 0,
+        plan_id TEXT,
+        plan_until TEXT,
+        plan_left_kop INTEGER NOT NULL DEFAULT 0,
+        payment_method_id TEXT,
+        autorenew INTEGER NOT NULL DEFAULT 0,
+        spent_kop INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS payments (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        plan_id TEXT,
+        amount_kop INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        credited INTEGER NOT NULL DEFAULT 0,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id, created_at);
+    `);
+    await add(
+      'users',
       'password_changed_at',
       'ALTER TABLE users ADD COLUMN password_changed_at TEXT',
     );
@@ -1638,6 +1671,117 @@ export class Store {
     return rows.map(mapUser);
   }
 
+  async getWallet(userId: string): Promise<Wallet> {
+    const row = (await this.sql.get('SELECT * FROM wallets WHERE user_id = ?', [
+      userId,
+    ])) as WalletSql | undefined;
+    if (row) return mapWallet(row);
+    await this.sql.run(
+      'INSERT INTO wallets (user_id, updated_at) VALUES (?, ?) ON CONFLICT (user_id) DO NOTHING',
+      [userId, nowIso()],
+    );
+    return {
+      userId,
+      trialUsedUsd: 0,
+      balanceKop: 0,
+      planId: null,
+      planUntil: null,
+      planLeftKop: 0,
+      paymentMethodId: null,
+      autorenew: false,
+      spentKop: 0,
+    };
+  }
+
+  async saveWallet(wallet: Wallet): Promise<void> {
+    await this.getWallet(wallet.userId);
+    await this.sql.run(
+      `UPDATE wallets SET trial_used_usd = ?, balance_kop = ?, plan_id = ?, plan_until = ?, plan_left_kop = ?,
+         payment_method_id = ?, autorenew = ?, spent_kop = ?, updated_at = ? WHERE user_id = ?`,
+      [
+        wallet.trialUsedUsd,
+        Math.round(wallet.balanceKop),
+        wallet.planId,
+        wallet.planUntil,
+        Math.round(wallet.planLeftKop),
+        wallet.paymentMethodId,
+        wallet.autorenew ? 1 : 0,
+        Math.round(wallet.spentKop),
+        nowIso(),
+        wallet.userId,
+      ],
+    );
+  }
+
+  async listWallets(): Promise<Wallet[]> {
+    return (
+      (await this.sql.all('SELECT * FROM wallets')) as unknown as WalletSql[]
+    ).map(mapWallet);
+  }
+
+  async insertPayment(input: {
+    id: string;
+    userId: string;
+    kind: string;
+    planId?: string | null;
+    amountKop: number;
+    status: string;
+    description?: string;
+  }): Promise<void> {
+    const now = nowIso();
+    await this.sql.run(
+      `INSERT INTO payments (id, user_id, kind, plan_id, amount_kop, status, credited, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      [
+        input.id,
+        input.userId,
+        input.kind,
+        input.planId ?? null,
+        Math.round(input.amountKop),
+        input.status,
+        input.description ?? null,
+        now,
+        now,
+      ],
+    );
+  }
+
+  async getPayment(id: string): Promise<PaymentRecord | undefined> {
+    const row = (await this.sql.get('SELECT * FROM payments WHERE id = ?', [
+      id,
+    ])) as PaymentSql | undefined;
+    return row ? mapPayment(row) : undefined;
+  }
+
+  async setPaymentStatus(id: string, status: string): Promise<void> {
+    await this.sql.run(
+      'UPDATE payments SET status = ?, updated_at = ? WHERE id = ?',
+      [status, nowIso(), id],
+    );
+  }
+
+  /** Зачислить платёж один раз: true, только если он ещё не был зачислен. */
+  async claimPayment(id: string): Promise<boolean> {
+    const result = await this.sql.run(
+      'UPDATE payments SET credited = 1, updated_at = ? WHERE id = ? AND credited = 0',
+      [nowIso(), id],
+    );
+    return result.changes > 0;
+  }
+
+  async listPayments(userId?: string, limit = 50): Promise<PaymentRecord[]> {
+    const rows = (await (userId
+      ? this.sql.all(
+          'SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+          [userId, limit],
+        )
+      : this.sql.all(
+          'SELECT * FROM payments ORDER BY created_at DESC LIMIT ?',
+          [limit],
+        ))) as unknown as PaymentSql[];
+    return rows.map(mapPayment);
+  }
+
   async insertUser(input: {
     id?: string;
     email: string;
@@ -1646,6 +1790,7 @@ export class Store {
     role: 'admin' | 'manager';
     status: 'active' | 'pending' | 'disabled';
     dailyRequestLimit: number | null;
+    client?: boolean;
   }): Promise<UserRecord> {
     const row: UserRecord = {
       id: input.id ?? newId(),
@@ -1656,11 +1801,12 @@ export class Store {
       status: input.status,
       dailyRequestLimit: input.dailyRequestLimit,
       modelsRestricted: false,
+      client: input.client === true,
       createdAt: nowIso(),
     };
     await this.sql.run(
-      `INSERT INTO users (id, email, name, password_hash, role, status, daily_request_limit, invite_token_hash, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, email, name, password_hash, role, status, daily_request_limit, invite_token_hash, created_at, is_client)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.email,
@@ -1671,6 +1817,7 @@ export class Store {
         row.dailyRequestLimit,
         null,
         row.createdAt,
+        row.client ? 1 : 0,
       ],
     );
     return row;
@@ -1723,6 +1870,7 @@ export class Store {
         | 'status'
         | 'dailyRequestLimit'
         | 'modelsRestricted'
+        | 'client'
       >
     >,
   ): Promise<UserRecord | undefined> {
@@ -1742,9 +1890,10 @@ export class Store {
         patch.modelsRestricted === undefined
           ? current.modelsRestricted
           : patch.modelsRestricted,
+      client: patch.client === undefined ? current.client : patch.client,
     };
     await this.sql.run(
-      `UPDATE users SET name = ?, password_hash = ?, role = ?, status = ?, daily_request_limit = ?, models_restricted = ? WHERE id = ?`,
+      `UPDATE users SET name = ?, password_hash = ?, role = ?, status = ?, daily_request_limit = ?, models_restricted = ?, is_client = ? WHERE id = ?`,
       [
         next.name,
         next.passwordHash,
@@ -1752,6 +1901,7 @@ export class Store {
         next.status,
         next.dailyRequestLimit,
         next.modelsRestricted ? 1 : 0,
+        next.client ? 1 : 0,
         id,
       ],
     );
@@ -2442,6 +2592,8 @@ export interface UserRecord {
   status: 'active' | 'pending' | 'disabled';
   dailyRequestLimit: number | null;
   modelsRestricted: boolean;
+  /** Клиент: зарегистрировался сам, без приглашения. Платит за модели, общих коннекторов не видит. */
+  client: boolean;
   /** Когда пароль меняли последний раз: сессии, выданные раньше, недействительны. */
   passwordChangedAt?: string | null;
   createdAt: string;
@@ -2456,6 +2608,7 @@ interface UserSql {
   status: string;
   daily_request_limit: number | null;
   models_restricted: number | null;
+  is_client?: number | null;
   created_at: string;
 }
 
@@ -2473,6 +2626,7 @@ function mapUser(row: UserSql): UserRecord {
     dailyRequestLimit:
       row.daily_request_limit === null ? null : Number(row.daily_request_limit),
     modelsRestricted: Number(row.models_restricted) === 1,
+    client: Number(row.is_client) === 1,
     passwordChangedAt:
       (row as unknown as { password_changed_at?: string | null })
         .password_changed_at ?? null,
@@ -2583,6 +2737,82 @@ function messageStamp(): string {
   const now = Date.now();
   lastMessageStamp = now > lastMessageStamp ? now : lastMessageStamp + 1;
   return new Date(lastMessageStamp).toISOString();
+}
+
+export interface Wallet {
+  userId: string;
+  trialUsedUsd: number;
+  balanceKop: number;
+  planId: string | null;
+  planUntil: string | null;
+  planLeftKop: number;
+  paymentMethodId: string | null;
+  autorenew: boolean;
+  spentKop: number;
+}
+
+interface WalletSql {
+  user_id: string;
+  trial_used_usd: number;
+  balance_kop: number;
+  plan_id: string | null;
+  plan_until: string | null;
+  plan_left_kop: number;
+  payment_method_id: string | null;
+  autorenew: number;
+  spent_kop: number;
+}
+
+function mapWallet(row: WalletSql): Wallet {
+  return {
+    userId: row.user_id,
+    trialUsedUsd: Number(row.trial_used_usd) || 0,
+    balanceKop: Number(row.balance_kop) || 0,
+    planId: row.plan_id ?? null,
+    planUntil: row.plan_until ?? null,
+    planLeftKop: Number(row.plan_left_kop) || 0,
+    paymentMethodId: row.payment_method_id ?? null,
+    autorenew: Number(row.autorenew) === 1,
+    spentKop: Number(row.spent_kop) || 0,
+  };
+}
+
+export interface PaymentRecord {
+  id: string;
+  userId: string;
+  kind: string;
+  planId: string | null;
+  amountKop: number;
+  status: string;
+  credited: boolean;
+  description: string | null;
+  createdAt: string;
+}
+
+interface PaymentSql {
+  id: string;
+  user_id: string;
+  kind: string;
+  plan_id: string | null;
+  amount_kop: number;
+  status: string;
+  credited: number;
+  description: string | null;
+  created_at: string;
+}
+
+function mapPayment(row: PaymentSql): PaymentRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    kind: row.kind,
+    planId: row.plan_id ?? null,
+    amountKop: Number(row.amount_kop) || 0,
+    status: row.status,
+    credited: Number(row.credited) === 1,
+    description: row.description ?? null,
+    createdAt: row.created_at,
+  };
 }
 
 function parseMeta(json: string | null | undefined): MessageMeta | undefined {

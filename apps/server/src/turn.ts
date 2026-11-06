@@ -38,6 +38,7 @@ import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
+import { assertCanSpend, chargeTokens } from './billing';
 import { costUsd } from './pricing';
 import { priceForModel } from './spend';
 import { compactHistory } from './context';
@@ -246,6 +247,8 @@ export async function runTurn(
         before: async (messages) => {
           await assertQuota(deps.store, owner);
           await assertBudget(deps.store, userId);
+          // Клиент без пробных долларов, тарифа и баланса не тратит платные модели.
+          await assertCanSpend(deps.store, owner, provider, model);
           const cap = await deps.store.getSetting(`token_limit:${userId}`);
           if (cap && Number(cap) > 0) {
             const used = await deps.store.tokenSumSince(userId, utcDayStart());
@@ -276,6 +279,7 @@ export async function runTurn(
           totals.cached += usage.cachedTokens;
           if (!usage.exact) totals.exact = false;
           await deps.store.updateUsageTokens(id, usage);
+          await chargeTokens(deps.store, userId, provider, model, usage);
         },
       }),
       model,
@@ -1461,10 +1465,16 @@ async function exposeTools(
   );
 
   const allowedMcp = new Set(agent.mcpServerIds);
+  const toolOwner = await deps.store.getUser(userId);
   // Чужой личный коннектор не работает, даже если его id попал в агента.
+  // Клиенту (зарегистрировался сам) не работают и общие коннекторы команды.
   const foreign = new Set(
     (await deps.store.listMcp())
-      .filter((row) => row.ownerUserId && row.ownerUserId !== userId)
+      .filter((row) =>
+        toolOwner?.client
+          ? row.ownerUserId !== userId
+          : row.ownerUserId && row.ownerUserId !== userId,
+      )
       .map((row) => row.id),
   );
   const servers = deps.mcp
@@ -1572,9 +1582,21 @@ async function exposeTools(
       }
     }
   }
+  // Клиенту не даём данные компании: склад и репозитории по токену администратора.
+  const companyOnly = new Set([
+    'stock_lookup',
+    'github_list_repos',
+    'github_read_file',
+    'github_search_code',
+    'github_list_issues',
+    'github_list_pulls',
+    'github_push',
+  ]);
   // Плагины агента: выключенные группы встроенных инструментов не показываем модели.
-  return tools.filter((tool) =>
-    toolAllowedByPlugins(tool.definition.name, agent.plugins),
+  return tools.filter(
+    (tool) =>
+      toolAllowedByPlugins(tool.definition.name, agent.plugins) &&
+      !(toolOwner?.client && companyOnly.has(tool.definition.name)),
   );
 }
 

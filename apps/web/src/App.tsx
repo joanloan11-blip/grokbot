@@ -22,6 +22,7 @@ import { ChatPane } from './components/ChatPane';
 import {
   BeaconMark,
   IconBot,
+  IconCard,
   IconChart,
   IconChats,
   IconChip,
@@ -39,6 +40,7 @@ import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { SpendPane } from './components/SpendPane';
 import { InlineMeter, RailMeter } from './components/UsageMeter';
 import { TeamPane } from './components/TeamPane';
+import { BillingPane, OPEN_BILLING_EVENT } from './components/BillingPane';
 import { I18nProvider, useI18n } from './i18n';
 
 type View =
@@ -47,6 +49,7 @@ type View =
   | { name: 'agent' }
   | { name: 'team' }
   | { name: 'spend' }
+  | { name: 'billing' }
   | { name: 'myModels' };
 
 export function App() {
@@ -107,7 +110,17 @@ function Shell({
 }) {
   const { t, locale, setLocale } = useI18n();
   const isAdmin = !user || user.role === 'admin';
-  const [view, setView] = useState<View>({ name: 'chat' });
+  // Возврат с оплаты ЮKassa (?billing=return) — сразу в раздел «Оплата».
+  const [view, setView] = useState<View>(() =>
+    new URLSearchParams(window.location.search).has('billing')
+      ? { name: 'billing' }
+      : { name: 'chat' },
+  );
+  useEffect(() => {
+    const open = () => setView({ name: 'billing' });
+    window.addEventListener(OPEN_BILLING_EVENT, open);
+    return () => window.removeEventListener(OPEN_BILLING_EVENT, open);
+  }, []);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -339,6 +352,15 @@ function Shell({
         >
           <IconChart />
         </RailButton>
+        {user?.client && (
+          <RailButton
+            label="Оплата"
+            active={view.name === 'billing'}
+            onClick={() => setView({ name: 'billing' })}
+          >
+            <IconCard />
+          </RailButton>
+        )}
         {user && user.role !== 'admin' && (
           <RailButton
             label={t('myModels')}
@@ -802,6 +824,8 @@ function Shell({
             personal
             onProvidersChanged={() => void refresh()}
           />
+        ) : view.name === 'billing' ? (
+          <BillingPane onMenu={openNav} />
         ) : view.name === 'spend' ? (
           <SpendPane
             onMenu={openNav}

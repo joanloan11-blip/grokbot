@@ -138,6 +138,16 @@ const stopScheduler = handle.startScheduler();
 // Модели проверяются сами: в выборе в чате — только те, что отвечают.
 const { startModelChecks } = await import('./model-caps');
 const stopModelChecks = startModelChecks(handle.runtime.store);
+// Автопродление тарифов по сохранённой карте — раз в час.
+const { renewDuePlans } = await import('./billing');
+const renewTimer = setInterval(
+  () =>
+    void renewDuePlans(handle.runtime.store, config.jwtSecret).catch(
+      () => undefined,
+    ),
+  3_600_000,
+);
+renewTimer.unref();
 
 const server = serve(
   { fetch: handle.app.fetch, hostname: config.host, port: config.port },
@@ -149,6 +159,7 @@ const server = serve(
 async function shutdown(): Promise<void> {
   stopScheduler();
   stopModelChecks();
+  clearInterval(renewTimer);
   stopTelegram();
   server.close();
   await handle.close();

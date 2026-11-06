@@ -179,3 +179,12 @@ export function IconUsers() {
     </svg>
   );
 }
+
+export function IconCard() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="6" width="18" height="12" rx="2.5" />
+      <path d="M3 10h18M7 15h3" />
+    </svg>
+  );
+}

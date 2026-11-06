@@ -109,6 +109,7 @@ export function toPublicUser(
     agentIds,
     modelsRestricted: user.modelsRestricted,
     models,
+    client: user.client,
     createdAt: user.createdAt,
   };
 }

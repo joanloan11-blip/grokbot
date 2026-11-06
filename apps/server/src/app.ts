@@ -54,6 +54,7 @@ import { type McpRow, Store, type UserRecord, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
 import { registerExtraRoutes } from './extra';
 import { registerGithubRoutes } from './github/routes';
+import { registerBillingRoutes } from './billing-routes';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
 import { discoverProvider } from './providers/discover';
@@ -182,8 +183,15 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       role: first ? 'admin' : 'manager',
       status: first ? 'active' : 'pending',
       dailyRequestLimit: null,
+      // Без приглашения — клиент: платит за модели, общих коннекторов не видит.
+      client: !first,
     });
     if (first) await store.claimOrphans(user.id);
+    else {
+      // Клиенту — основной агент без коннекторов команды.
+      const main = (await store.listAgents()).find((agent) => !agent.ownerId);
+      if (main) await store.setUserAgents(user.id, [main.id]);
+    }
     if (user.status === 'active') {
       setSessionCookie(
         c,
@@ -478,7 +486,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const patch: Partial<
       Pick<
         UserRecord,
-        'name' | 'status' | 'dailyRequestLimit' | 'modelsRestricted'
+        'name' | 'status' | 'dailyRequestLimit' | 'modelsRestricted' | 'client'
       >
     > = {};
     if (typeof body.name === 'string' && body.name.trim())
@@ -497,6 +505,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       patch.dailyRequestLimit = parseLimit(body.dailyRequestLimit);
     if ('modelsRestricted' in body)
       patch.modelsRestricted = body.modelsRestricted === true;
+    if ('client' in body && current.role !== 'admin')
+      patch.client = body.client === true;
     const updated = await store.updateUser(current.id, patch);
     if (!updated) return c.json({ error: 'Пользователь не найден' }, 404);
     if (Array.isArray(body.agentIds)) {
@@ -956,6 +966,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   const usableMcp = async (user: UserRecord) => {
     const rows = await store.listMcp();
     if (user.role === 'admin') return rows.filter((row) => !row.ownerUserId);
+    // Клиенту — только свои коннекторы.
+    if (user.client) return rows.filter((row) => row.ownerUserId === user.id);
     const open = await managerMcpIds();
     return rows.filter((row) =>
       row.ownerUserId ? row.ownerUserId === user.id : open.includes(row.id),
@@ -1875,6 +1887,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     readBody,
     runtime,
   });
+  registerBillingRoutes(app, { store, config, actor, readBody, siteUrl });
 
   if (config.staticDir) {
     const root = path.resolve(config.staticDir);

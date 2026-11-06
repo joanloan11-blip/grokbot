@@ -19,9 +19,16 @@ import { api } from '../api';
 import { availableCount } from '../models';
 import { useI18n, useTheme } from '../i18n';
 import { GithubPane } from './GithubPane';
+import { BillingSettingsPanel } from './BillingPane';
 import { IconMenu } from './icons';
 
-export type SettingsTab = 'providers' | 'mcp' | 'skills' | 'github' | 'general';
+export type SettingsTab =
+  | 'providers'
+  | 'mcp'
+  | 'skills'
+  | 'github'
+  | 'billing'
+  | 'general';
 
 const KINDS: ProviderKind[] = [
   'openai',
@@ -81,6 +88,7 @@ export function SettingsPane({
     { id: 'mcp', label: t('tabMcp') },
     { id: 'skills', label: t('tabSkills') },
     { id: 'github', label: t('tabGithub') },
+    { id: 'billing', label: 'Оплата' },
     { id: 'general', label: t('tabGeneral') },
   ];
   return (
@@ -120,6 +128,7 @@ export function SettingsPane({
         {tab === 'mcp' && <McpPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'github' && <GithubPane />}
+        {tab === 'billing' && <BillingSettingsPanel />}
         {tab === 'general' && (
           <>
             <GeneralPanel />

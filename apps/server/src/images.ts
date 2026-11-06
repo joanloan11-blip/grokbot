@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Store } from './db';
 import { llmFetch } from './providers/http';
+import { assertCanSpend, chargeTokens } from './billing';
 import { isRecord } from './util';
 
 /**
@@ -205,6 +206,16 @@ export async function runImageTool(input: {
     return `Дневной лимит картинок исчерпан (${settings.dailyLimit}). Завтра лимит обновится.`;
   const provider = await input.store.getProvider(settings.providerId);
   if (!provider?.apiKey) return 'У провайдера картинок нет API-ключа.';
+  try {
+    await assertCanSpend(
+      input.store,
+      await input.store.getUser(input.userId),
+      provider,
+      settings.model,
+    );
+  } catch (error) {
+    return error instanceof Error ? error.message : 'Нужна оплата';
+  }
 
   let sources: { name: string; mime: string; bytes: Buffer }[] | undefined;
   if (input.editAttached) {
@@ -262,6 +273,13 @@ export async function runImageTool(input: {
     exact,
     ...usage,
   });
+  await chargeTokens(
+    input.store,
+    input.userId,
+    provider,
+    settings.model,
+    usage,
+  );
   await input.store.setSetting(
     `images_used:${input.userId}:${new Date().toISOString().slice(0, 10)}`,
     String(used + 1),

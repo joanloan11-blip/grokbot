@@ -1,3 +1,4 @@
+import { chargeTokens } from './billing';
 import type { ProviderRow, Store } from './db';
 import { createClient } from './providers/index';
 import type { ModelMessage } from './providers/types';
@@ -150,6 +151,13 @@ export async function compactHistory(
         outputTokens: result.outputTokens,
         exact: result.exact,
       });
+      await chargeTokens(
+        store,
+        input.userId,
+        input.provider,
+        input.model,
+        result,
+      );
     } catch {
       // Не вышло сжать — отправим как есть, чат не должен ломаться.
       return history;

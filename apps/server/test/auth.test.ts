@@ -106,6 +106,9 @@ describe('auth and isolation', () => {
     );
     expect(pendingBody.user.role).toBe('manager');
     expect(pendingBody.user.status).toBe('pending');
+    // Сам зарегистрировался — клиент (платит, без коннекторов компании).
+    expect(pendingBody.user.client).toBe(true);
+    expect(adminBody.user.client).toBe(false);
     expect(pendingBody.pending).toBe(true);
     expect(
       pending.headers
@@ -128,7 +131,13 @@ describe('auth and isolation', () => {
 
     const approved = await patch(
       `/api/admin/users/${pendingBody.user.id}`,
-      { status: 'active', agentIds: [agentId], dailyRequestLimit: 1 },
+      {
+        status: 'active',
+        agentIds: [agentId],
+        dailyRequestLimit: 1,
+        // Сотрудник, а не клиент: видит открытые коннекторы и не платит.
+        client: false,
+      },
       adminCookie,
     );
     expect(approved.status).toBe(200);
@@ -235,6 +244,22 @@ describe('auth and isolation', () => {
     const visible = managerMcp.find((item) => item.id === demoMcp?.id);
     expect(visible?.forManagers).toBe(true);
     expect(visible?.command).toBe('');
+    // Клиент (сам зарегистрировался) общих коннекторов не видит, даже открытых менеджерам.
+    await patch(
+      `/api/admin/users/${pendingBody.user.id}`,
+      { client: true },
+      adminCookie,
+    );
+    expect(
+      (await json<{ id: string }[]>(await get('/api/mcp', managerCookie))).some(
+        (item) => item.id === demoMcp?.id,
+      ),
+    ).toBe(false);
+    await patch(
+      `/api/admin/users/${pendingBody.user.id}`,
+      { client: false },
+      adminCookie,
+    );
     const managerEdit = await patch(
       `/api/mcp/${demoMcp?.id}`,
       { enabled: false },

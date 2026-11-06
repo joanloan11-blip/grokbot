@@ -11,6 +11,7 @@ import { useI18n } from '../i18n';
 import { modelLabel, visibleModels } from '../models';
 import { MarkdownView } from './MarkdownView';
 import { MatrixRain } from './MatrixRain';
+import { OPEN_BILLING_EVENT } from './BillingPane';
 import { USAGE_EVENT } from './UsageMeter';
 import {
   BeaconMark,
@@ -876,6 +877,17 @@ export function ChatPane({
               {error && (
                 <p className="error-line">
                   {error === 'offline' ? t('serverDown') : error}
+                  {/«Оплата»/.test(error) && (
+                    <button
+                      type="button"
+                      className="lane-take pay-link"
+                      onClick={() =>
+                        window.dispatchEvent(new Event(OPEN_BILLING_EVENT))
+                      }
+                    >
+                      Перейти к оплате
+                    </button>
+                  )}
                 </p>
               )}
             </div>

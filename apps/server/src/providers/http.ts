@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import {
+  type Dispatcher,
+  ProxyAgent,
+  Socks5ProxyAgent,
+  fetch as undiciFetch,
+} from 'undici';
 
 /**
  * Запросы к API моделей. Если задан LLM_PROXY_URL (http://user:pass@host:port),
@@ -22,7 +27,7 @@ const DEFAULT_HOSTS = [
   'news.google.com',
 ];
 
-let cached: { url: string; agent: ProxyAgent } | undefined;
+let cached: { url: string; agent: Dispatcher } | undefined;
 
 export function proxyFor(target: string): string | undefined {
   const proxy = process.env.LLM_PROXY_URL?.trim();
@@ -47,22 +52,29 @@ export function proxyFor(target: string): string | undefined {
 /** Сколько ждём заголовков ответа, прежде чем считать соединение зависшим. */
 const HEADERS_TIMEOUT_MS = Number(process.env.LLM_HEADERS_TIMEOUT_MS) || 90_000;
 
-function proxyAgent(proxy: string): ProxyAgent {
-  if (!cached || cached.url !== proxy)
-    cached = {
-      url: proxy,
-      // Короткий keep-alive: прокси молча рвёт простаивающие туннели, и запрос
-      // в «мёртвое» соединение висел до 5 минут, пока undici не сдавался.
-      agent: new ProxyAgent({
-        uri: proxy,
-        connectTimeout: 20_000,
-        // Чуть дольше нашего таймера: пусть сработает он и даст понятную ошибку.
-        headersTimeout: HEADERS_TIMEOUT_MS + 5_000,
-        bodyTimeout: 120_000,
-        keepAliveTimeout: 4_000,
-        keepAliveMaxTimeout: 10_000,
-      }),
+function proxyAgent(proxy: string): Dispatcher {
+  if (!cached || cached.url !== proxy) {
+    const timeouts = {
+      connectTimeout: 20_000,
+      // Чуть дольше нашего таймера: пусть сработает он и даст понятную ошибку.
+      headersTimeout: HEADERS_TIMEOUT_MS + 5_000,
+      bodyTimeout: 120_000,
+      // Короткий keep-alive: прокси молча рвёт простаивающие туннели.
+      keepAliveTimeout: 4_000,
+      keepAliveMaxTimeout: 10_000,
     };
+    let agent: Dispatcher;
+    if (/^socks5h?:\/\//i.test(proxy)) {
+      // SOCKS5: логин и пароль — из адреса socks5://user:pass@host:port.
+      const url = new URL(proxy.replace(/^socks5h:/i, 'socks5:'));
+      agent = new Socks5ProxyAgent(`socks5://${url.host}`, {
+        ...timeouts,
+        username: url.username ? decodeURIComponent(url.username) : undefined,
+        password: url.password ? decodeURIComponent(url.password) : undefined,
+      });
+    } else agent = new ProxyAgent({ uri: proxy, ...timeouts });
+    cached = { url: proxy, agent };
+  }
   return cached.agent;
 }
 

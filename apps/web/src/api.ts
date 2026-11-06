@@ -1,4 +1,6 @@
 import type {
+  BillingSettings,
+  BillingState,
   Attachment,
   DiscoverResult,
   ProviderKind,
@@ -73,6 +75,41 @@ export class ApiError extends Error {
 export const api = {
   health: () => request<{ ok: boolean; auth?: boolean }>('/api/health'),
   usageMeter: () => request<UsageMeter>('/api/usage/meter'),
+  billing: () => request<BillingState>('/api/billing'),
+  billingRefresh: () =>
+    request<BillingState>('/api/billing/refresh', { method: 'POST' }),
+  billingPay: (
+    body:
+      | { kind: 'topup'; amountRub: number }
+      | { kind: 'plan'; planId: string },
+  ) =>
+    request<{ id: string; url: string }>('/api/billing/pay', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  billingAutorenew: (on: boolean) =>
+    request<BillingState>('/api/billing/autorenew', {
+      method: 'POST',
+      body: JSON.stringify({ on }),
+    }),
+  billingSettings: () => request<BillingSettings>('/api/admin/billing'),
+  saveBillingSettings: (
+    body: Partial<BillingSettings> & { secretKey?: string },
+  ) =>
+    request<BillingSettings>('/api/admin/billing', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  userBilling: (id: string) =>
+    request<BillingState>(`/api/admin/billing/users/${id}`),
+  creditUser: (
+    id: string,
+    body: { amountRub?: number; note?: string; resetTrial?: boolean },
+  ) =>
+    request<BillingState>(`/api/admin/billing/users/${id}/credit`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   budgets: (userId: string) =>
     request<{ day: number | null; week: number | null }>(
       `/api/admin/budgets/${userId}`,
@@ -175,6 +212,7 @@ export const api = {
       agentIds?: string[];
       modelsRestricted?: boolean;
       models?: { providerId: string; model: string }[];
+      client?: boolean;
     },
   ) =>
     request<PublicUser>(`/api/admin/users/${id}`, {

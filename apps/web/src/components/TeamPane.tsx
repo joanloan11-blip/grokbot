@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
   Agent,
+  BillingState,
   ProviderPublic,
   PublicUser,
   UsageRow,
@@ -226,6 +227,12 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                   {t('resetLinkHint')} <code>{resetLinks[user.id]}</code>
                 </p>
               )}
+              {user.role !== 'admin' && (
+                <ClientRow
+                  user={user}
+                  onToggle={(client) => void save(user, { client })}
+                />
+              )}
               {user.role !== 'admin' && sharedModels.length > 0 && (
                 <div className="row-actions">
                   <label className="check">
@@ -360,5 +367,76 @@ function BudgetInputs({ userId }: { userId: string }) {
       ))}
       {saved && <small className="muted">✓</small>}
     </span>
+  );
+}
+
+/** Клиент (сам зарегистрировался) или сотрудник; у клиента — баланс и ручное зачисление. */
+function ClientRow({
+  user,
+  onToggle,
+}: {
+  user: PublicUser;
+  onToggle: (client: boolean) => void;
+}) {
+  const [state, setState] = useState<BillingState | null>(null);
+  const [amount, setAmount] = useState('');
+  useEffect(() => {
+    if (user.client)
+      void api.userBilling(user.id).then(setState, () => undefined);
+  }, [user.id, user.client]);
+  return (
+    <div className="row-actions client-row">
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={Boolean(user.client)}
+          onChange={() => onToggle(!user.client)}
+        />
+        Клиент (платит за модели, без коннекторов компании)
+      </label>
+      {user.client && state && (
+        <>
+          <span className="muted mono">
+            пробные ${(state.trial.limitUsd - state.trial.usedUsd).toFixed(2)} ·{' '}
+            {state.plan ? `${state.plan.name} ${state.plan.leftRub} ₽ · ` : ''}
+            баланс {state.balanceRub} ₽
+          </span>
+          <input
+            className="tiny-input"
+            type="number"
+            placeholder="₽"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+          <button
+            type="button"
+            className="ghost slim"
+            disabled={!Number(amount)}
+            onClick={() =>
+              void api
+                .creditUser(user.id, {
+                  amountRub: Number(amount),
+                  note: 'Зачисление администратором',
+                })
+                .then((next) => {
+                  setState(next);
+                  setAmount('');
+                })
+            }
+          >
+            Зачислить
+          </button>
+          <button
+            type="button"
+            className="ghost slim"
+            onClick={() =>
+              void api.creditUser(user.id, { resetTrial: true }).then(setState)
+            }
+          >
+            Сбросить пробные
+          </button>
+        </>
+      )}
+    </div>
   );
 }

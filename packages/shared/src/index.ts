@@ -106,6 +106,8 @@ export interface PublicUser {
   /** false — все модели из общего списка. true — только `models`. */
   modelsRestricted: boolean;
   models: ModelRef[];
+  /** Зарегистрировался сам (клиент): платит за модели, общих коннекторов не видит. */
+  client?: boolean;
   createdAt: string;
 }
 
@@ -761,4 +763,61 @@ export interface DiscoverResult {
   /** Модели, которые провайдер отклонил (удалены, отключены, не для чата). */
   failed?: string[];
   error?: string;
+}
+
+/** Тариф: оплата за период, в цену входит лимит расходов на модели (в рублях по розничной цене). */
+export interface BillingPlan {
+  id: string;
+  name: string;
+  priceRub: number;
+  /** Сколько рублей расходов на платные модели входит в тариф за период. */
+  includedRub: number;
+  days: number;
+  description?: string;
+}
+
+export interface BillingPaymentRow {
+  id: string;
+  kind: 'topup' | 'plan' | 'renew' | 'manual' | string;
+  amountRub: number;
+  status: string;
+  description: string | null;
+  createdAt: string;
+}
+
+/** Что видит пользователь в разделе «Оплата». */
+export interface BillingState {
+  /** Оплата включена администратором и касается этого пользователя (клиент). */
+  applies: boolean;
+  enabled: boolean;
+  trial: { limitUsd: number; usedUsd: number; providers: string };
+  balanceRub: number;
+  plan: { id: string; name: string; until: string; leftRub: number } | null;
+  autorenew: boolean;
+  canAutorenew: boolean;
+  plans: BillingPlan[];
+  topups: number[];
+  payments: BillingPaymentRow[];
+  /** Курс и наценка в одном числе: сколько ₽ стоит $1 расходов модели. */
+  rubPerUsd: number;
+  /** Платные модели сейчас недоступны (пробные исчерпаны, денег нет). */
+  blocked: boolean;
+}
+
+/** Настройки оплаты для администратора (секретный ключ не возвращается). */
+export interface BillingSettings {
+  enabled: boolean;
+  shopId: string;
+  hasSecret: boolean;
+  usdRub: number;
+  markup: number;
+  trialUsd: number;
+  /** Хосты, на которые тратятся пробные доллары (по умолчанию api.openai.com). */
+  trialHosts: string[];
+  plans: BillingPlan[];
+  topups: number[];
+  receipts: boolean;
+  vatCode: number;
+  recurring: boolean;
+  webhookUrl: string;
 }
