@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 
 /**
@@ -54,7 +56,8 @@ function proxyAgent(proxy: string): ProxyAgent {
       agent: new ProxyAgent({
         uri: proxy,
         connectTimeout: 20_000,
-        headersTimeout: HEADERS_TIMEOUT_MS,
+        // Чуть дольше нашего таймера: пусть сработает он и даст понятную ошибку.
+        headersTimeout: HEADERS_TIMEOUT_MS + 5_000,
         bodyTimeout: 120_000,
         keepAliveTimeout: 4_000,
         keepAliveMaxTimeout: 10_000,
@@ -96,20 +99,73 @@ async function fetchOnce(
   }
 }
 
+/** Код ошибки undici/сети: ECONNRESET, UND_ERR_SOCKET, UND_ERR_HEADERS_TIMEOUT… */
+function errorCode(error: unknown): string {
+  const cause = (error as { cause?: { code?: string; message?: string } })
+    ?.cause;
+  return (
+    cause?.code ||
+    cause?.message ||
+    (error instanceof Error ? error.message : String(error))
+  );
+}
+
+/** Запрос, который не прошёл дважды, сохраняем для разбора (без заголовков с ключом). */
+function dumpFailed(
+  url: string,
+  init: RequestInit,
+  codes: string[],
+  ms: number,
+): void {
+  const dir = process.env.DATA_DIR
+    ? path.join(process.env.DATA_DIR, 'debug')
+    : '';
+  const body = typeof init.body === 'string' ? init.body : '';
+  console.warn(
+    `[llm] нет ответа ${new URL(url).host} · ${codes.join(' → ')} · ${body.length} Б тела · ${Math.round(ms / 1000)} с`,
+  );
+  if (!dir || !body) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const files = fs
+      .readdirSync(dir)
+      .filter((name) => name.startsWith('llm-failed-'))
+      .sort();
+    for (const old of files.slice(0, Math.max(0, files.length - 4)))
+      fs.rmSync(path.join(dir, old), { force: true });
+    fs.writeFileSync(
+      path.join(dir, `llm-failed-${Date.now()}.json`),
+      JSON.stringify({ url, codes, ms, body: JSON.parse(body) }),
+    );
+  } catch {
+    // разбор — не главное
+  }
+}
+
 /** Запрос к API модели: таймаут на ответ и один повтор при сетевой ошибке. */
 export async function llmFetch(
   url: string,
   init: RequestInit & { signal?: AbortSignal | null },
 ): Promise<Response> {
+  const started = Date.now();
   try {
     return await fetchOnce(url, init);
-  } catch (error) {
-    if (init.signal?.aborted) throw error;
+  } catch (first) {
+    if (init.signal?.aborted) throw first;
     // Сетевой сбой (оборванное соединение, таймаут) — пробуем ещё раз на новом соединении.
     await new Promise((resolve) =>
       setTimeout(resolve, process.env.VITEST ? 1 : 1500),
     );
-    if (init.signal?.aborted) throw error;
-    return fetchOnce(url, init);
+    if (init.signal?.aborted) throw first;
+    try {
+      return await fetchOnce(url, init);
+    } catch (second) {
+      if (init.signal?.aborted) throw second;
+      const codes = [errorCode(first), errorCode(second)];
+      dumpFailed(url, init, codes, Date.now() - started);
+      throw new Error(
+        `Провайдер не ответил (${codes.at(-1)}). Повторите запрос или выберите другую модель.`,
+      );
+    }
   }
 }
