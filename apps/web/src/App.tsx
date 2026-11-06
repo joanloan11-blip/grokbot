@@ -25,12 +25,14 @@ import {
   IconChart,
   IconChats,
   IconChip,
+  IconClose,
   IconEdit,
   IconFolder,
   IconGear,
   IconPlus,
   IconSearch,
   IconSidebar,
+  IconTrash,
   IconUsers,
 } from './components/icons';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
@@ -135,6 +137,17 @@ function Shell({
     else toggleSidebar(false);
   };
   const [chatQuery, setChatQuery] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const removeChat = async (id: string) => {
+    setConfirmDelete(null);
+    try {
+      await api.deleteConversation(id);
+      setConversations((current) => current.filter((item) => item.id !== id));
+      if (id === activeId) setActiveId(null);
+    } catch {
+      /* чат уже удалён или нет сети — список обновится при следующей загрузке */
+    }
+  };
   const searchRef = useRef<HTMLInputElement>(null);
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   useEffect(() => {
@@ -550,29 +563,66 @@ function Shell({
                   .includes(chatQuery.trim().toLowerCase()),
               )
               .map((conversation) => (
-                <button
+                <div
                   key={conversation.id}
-                  type="button"
                   className={
                     view.name === 'chat' && conversation.id === activeId
-                      ? 'conv active'
-                      : 'conv'
+                      ? 'conv-row active'
+                      : 'conv-row'
                   }
-                  onClick={() => {
-                    if (
-                      projectId &&
-                      conversation.agentId &&
-                      conversation.agentId !== agentId
-                    )
-                      setAgentId(conversation.agentId);
-                    openChat(conversation.id);
-                  }}
                 >
-                  <span>{conversation.title}</span>
-                  <time dateTime={conversation.updatedAt}>
-                    {formatWhen(conversation.updatedAt, locale)}
-                  </time>
-                </button>
+                  <button
+                    type="button"
+                    className={
+                      view.name === 'chat' && conversation.id === activeId
+                        ? 'conv active'
+                        : 'conv'
+                    }
+                    onClick={() => {
+                      if (
+                        projectId &&
+                        conversation.agentId &&
+                        conversation.agentId !== agentId
+                      )
+                        setAgentId(conversation.agentId);
+                      openChat(conversation.id);
+                    }}
+                  >
+                    <span>{conversation.title}</span>
+                    <time dateTime={conversation.updatedAt}>
+                      {formatWhen(conversation.updatedAt, locale)}
+                    </time>
+                  </button>
+                  {confirmDelete === conversation.id ? (
+                    <span className="conv-confirm">
+                      <button
+                        type="button"
+                        className="conv-yes"
+                        onClick={() => void removeChat(conversation.id)}
+                      >
+                        {t('delete')}
+                      </button>
+                      <button
+                        type="button"
+                        className="conv-no"
+                        aria-label={t('cancel')}
+                        onClick={() => setConfirmDelete(null)}
+                      >
+                        <IconClose />
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="conv-del"
+                      title={t('deleteChat')}
+                      aria-label={t('deleteChat')}
+                      onClick={() => setConfirmDelete(conversation.id)}
+                    >
+                      <IconTrash />
+                    </button>
+                  )}
+                </div>
               ))}
           </nav>
         </div>

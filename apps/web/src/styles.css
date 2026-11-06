@@ -2540,3 +2540,80 @@ input[type="checkbox"]:checked::after {
 .budget-inputs input {
   width: 90px;
 }
+
+/* --- удаление чатов в боковой панели --- */
+.conv-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-radius: 10px;
+}
+.conv-row > .conv {
+  flex: 1;
+  min-width: 0;
+}
+.conv-del,
+.conv-no {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.conv-del svg,
+.conv-no svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.conv-row:hover .conv-del,
+.conv-row:focus-within .conv-del,
+.conv-row.active .conv-del {
+  opacity: 1;
+}
+.conv-del:hover {
+  color: var(--danger);
+}
+@media (hover: none) {
+  .conv-del {
+    opacity: 0.7;
+  }
+}
+.conv-confirm {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.conv-confirm .conv-no {
+  position: static;
+  transform: none;
+  opacity: 1;
+}
+.conv-yes {
+  border: 0;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
