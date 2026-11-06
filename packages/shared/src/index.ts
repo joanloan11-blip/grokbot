@@ -235,8 +235,8 @@ export const AGENT_PLUGINS = [
     id: 'web',
     emoji: '🌐',
     name: 'Интернет',
-    description: 'Поиск в интернете и чтение страниц',
-    tools: ['web_search', 'web_fetch'],
+    description: 'Поиск, свежие новости и чтение страниц',
+    tools: ['web_search', 'news_search', 'web_fetch'],
   },
   {
     id: 'stock',

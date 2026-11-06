@@ -16,6 +16,8 @@ const DEFAULT_HOSTS = [
   'api.kilo.ai',
   'openrouter.ai',
   'api.cloudflare.com',
+  // Google News RSS для инструмента news_search.
+  'news.google.com',
 ];
 
 let cached: { url: string; agent: ProxyAgent } | undefined;

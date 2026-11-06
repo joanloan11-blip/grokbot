@@ -32,6 +32,7 @@ import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
 import { readCaps } from './model-caps';
+import { formatNews, NEWS_TOPICS, type NewsTopic, newsSearch } from './news';
 import { DELEGATE_LIMITS, normalizeTasks, runDelegation } from './orchestrator';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
@@ -554,6 +555,37 @@ async function exposeTools(
           return error instanceof Error ? error.message : 'Ошибка поиска';
         }
       },
+    },
+    {
+      definition: {
+        name: 'news_search',
+        description:
+          'Fresh news articles with dates and sources (Google News, fallback RIA/TASS/Lenta). Use it for any news request instead of web_search. Свежие новости по теме или запросу.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Optional keywords, e.g. "рулевые рейки" or "нефть"',
+            },
+            topic: {
+              type: 'string',
+              enum: Object.keys(NEWS_TOPICS),
+              description:
+                'Section when there is no query: top, world, russia, business, technology, science, health, sports',
+            },
+            period: { type: 'string', enum: ['day', 'week'] },
+          },
+        },
+      },
+      run: async (args) =>
+        formatNews(
+          await newsSearch({
+            query: asString(args.query) || undefined,
+            topic: (asString(args.topic) || undefined) as NewsTopic | undefined,
+            period: args.period === 'week' ? 'week' : 'day',
+          }),
+        ),
     },
     {
       definition: {
