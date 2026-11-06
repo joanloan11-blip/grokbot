@@ -1038,20 +1038,26 @@ function ToolCard({
   const { t } = useI18n();
   // Задания для других моделей (подзадачи, сообщения агентам, промпт картинки) не показываем.
   const hidden = PROMPT_TOOLS[name];
+  const special =
+    result?.startsWith('ASK:') ||
+    result?.startsWith('APPROVAL:') ||
+    result?.startsWith('DIFF:') ||
+    result?.startsWith('IMAGE:') ||
+    result?.startsWith('DELEGATE:');
+  const summary = hidden ? '' : toolSummary(args);
+  const live = running && result === undefined;
   return (
-    <div className={running ? 'tool running' : 'tool'}>
+    <div className={live ? 'tool running' : 'tool'}>
+      {live && name !== 'generate_image' && <MatrixRain />}
       <header>
         {hidden ? <strong>{t(hidden)}</strong> : <code>{name}</code>}
+        {summary && <em className="tool-summary">{summary}</em>}
         <span>
-          {running
-            ? labelRunning
-            : result !== undefined
-              ? labelDone
-              : labelArgs}
+          {live ? labelRunning : result !== undefined ? labelDone : labelArgs}
         </span>
       </header>
       {hidden && name === 'delegate' && <DelegateTitles args={args} />}
-      {name === 'generate_image' && running && result === undefined && (
+      {name === 'generate_image' && live && (
         <div className="image-matrix">
           <MatrixRain />
           <span>
@@ -1059,12 +1065,6 @@ function ToolCard({
             {t('imageDrawing')}
           </span>
         </div>
-      )}
-      {!hidden && args && args !== '{}' && (
-        <pre>
-          <em>{labelArgs}</em>
-          {pretty(args)}
-        </pre>
       )}
       {result?.startsWith('ASK:') && onSend && (
         <AskChoices raw={result.slice(4)} onSend={onSend} />
@@ -1075,16 +1075,50 @@ function ToolCard({
       {result?.startsWith('DELEGATE:') && (
         <DelegateView raw={result.slice(9)} />
       )}
-      {result !== undefined &&
-        !result.startsWith('ASK:') &&
-        !result.startsWith('APPROVAL:') &&
-        !result.startsWith('DIFF:') &&
-        !result.startsWith('IMAGE:') &&
-        !result.startsWith('DELEGATE:') && (
-          <div className="tool-result">{result}</div>
+      {/* Сырые аргументы и ответ инструмента — только по клику, чтобы не засорять чат. */}
+      {!live &&
+        !hidden &&
+        !special &&
+        (result !== undefined || args !== '{}') && (
+          <details className="tool-details">
+            <summary>{t('toolDetails')}</summary>
+            {args && args !== '{}' && (
+              <pre>
+                <em>{labelArgs}</em>
+                {pretty(args)}
+              </pre>
+            )}
+            {result !== undefined && (
+              <div className="tool-result">{result}</div>
+            )}
+          </details>
         )}
     </div>
   );
+}
+
+/** Коротко, что делает инструмент: запрос поиска, адрес, путь или команда. */
+function toolSummary(args: string): string {
+  try {
+    const value = JSON.parse(args) as Record<string, unknown>;
+    for (const key of [
+      'query',
+      'url',
+      'command',
+      'path',
+      'pattern',
+      'repo',
+      'name',
+      'title',
+    ]) {
+      const item = value[key];
+      if (typeof item === 'string' && item.trim())
+        return item.length > 90 ? `${item.slice(0, 87)}…` : item;
+    }
+  } catch {
+    // аргументы не JSON — без подписи
+  }
+  return '';
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {

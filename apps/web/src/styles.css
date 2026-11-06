@@ -3090,3 +3090,70 @@ input[type="checkbox"]:checked::after {
   background: var(--accent);
   animation: matrix-pulse 1.2s ease-in-out infinite;
 }
+/* Карточка инструмента: одна строка; пока работает — «шторка» матрицы, подробности по клику */
+.tool {
+  position: relative;
+  background: var(--bg-2);
+  border-left-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.tool.running {
+  min-height: 64px;
+}
+.tool > .matrix-rain {
+  opacity: 0.7;
+}
+.tool > header,
+.tool > .tool-details,
+.tool > .image-matrix {
+  position: relative;
+  z-index: 1;
+}
+.tool header {
+  align-items: center;
+  justify-content: flex-start;
+}
+.tool header > span {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.tool-summary {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 0.8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool.running .tool-summary,
+.tool.running header code {
+  text-shadow: 0 0 6px var(--bg-2), 0 0 10px var(--bg-2);
+}
+.tool-details {
+  padding: 0 12px 8px;
+}
+.tool-details > summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  list-style: none;
+}
+.tool-details > summary::before {
+  content: "▸ ";
+}
+.tool-details[open] > summary::before {
+  content: "▾ ";
+}
+.tool-details .tool-result {
+  max-height: 260px;
+  overflow: auto;
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 6px 0 0;
+}
+.tool-details pre {
+  padding: 6px 0 0;
+  font-size: 0.78rem;
+}
