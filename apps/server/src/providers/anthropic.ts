@@ -1,4 +1,4 @@
-import { llmFetch } from './http';
+import { fitBody, llmFetch, proxyFor } from './http';
 import { isRecord, jsonObject } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -65,7 +65,9 @@ export async function* streamAnthropic(options: {
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(
+      proxyFor(anthropicMessagesUrl(options.baseUrl)) ? fitBody(body) : body,
+    ),
     signal: options.signal,
   });
 

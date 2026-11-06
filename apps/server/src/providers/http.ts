@@ -169,3 +169,96 @@ export async function llmFetch(
     }
   }
 }
+
+/**
+ * Прокси LLM_PROXY_URL рвёт запросы с телом больше ~30 КБ (проверено: 16 КБ проходит,
+ * 32 КБ и больше — обрыв на любом сайте). Пока прокси такой, ужимаем тело запроса:
+ * сначала старые длинные результаты инструментов и сообщения, потом описания инструментов.
+ */
+export const PROXY_MAX_BODY = Number(process.env.LLM_PROXY_MAX_BODY) || 20_000;
+
+type Leaf = {
+  holder: Record<string, unknown> | unknown[];
+  key: string | number;
+  length: number;
+  age: number;
+};
+
+export function fitBody(
+  body: Record<string, unknown>,
+  max = PROXY_MAX_BODY,
+): Record<string, unknown> {
+  const size = () => Buffer.byteLength(JSON.stringify(body));
+  if (size() <= max) return body;
+  const list = (
+    Array.isArray(body.messages)
+      ? body.messages
+      : Array.isArray(body.contents)
+        ? body.contents
+        : []
+  ) as unknown[];
+  // Строки внутри всех сообщений, кроме последнего (вопрос пользователя или свежий результат) и системного.
+  const leaves: Leaf[] = [];
+  const walk = (
+    node: unknown,
+    holder: Leaf['holder'],
+    key: Leaf['key'],
+    age: number,
+  ) => {
+    if (typeof node === 'string') {
+      if (node.length > 400)
+        leaves.push({ holder, key, length: node.length, age });
+      return;
+    }
+    if (Array.isArray(node))
+      node.forEach((item, i) => walk(item, node, i, age));
+    else if (node && typeof node === 'object')
+      for (const [k, v] of Object.entries(node as Record<string, unknown>))
+        walk(v, node as Record<string, unknown>, k, age);
+  };
+  list.slice(0, -1).forEach((message, index) => {
+    const role = (message as { role?: string })?.role;
+    if (role === 'system') return;
+    walk(message, list, index, list.length - index);
+  });
+  const cut = (leaf: Leaf, keep: number) => {
+    const holder = leaf.holder as Record<string | number, unknown>;
+    const value = holder[leaf.key];
+    if (typeof value !== 'string' || value.length <= keep) return;
+    holder[leaf.key] =
+      `${value.slice(0, keep)}\n…[сокращено, было ${value.length} символов]`;
+  };
+  // Старые и длинные — первыми.
+  leaves.sort((a, b) => b.age * b.length - a.age * a.length);
+  for (const keep of [1500, 600, 200]) {
+    for (const leaf of leaves) {
+      cut(leaf, keep);
+      if (size() <= max) return body;
+    }
+  }
+  // Описания инструментов короче.
+  const tools = Array.isArray(body.tools)
+    ? (body.tools as Record<string, unknown>[])
+    : [];
+  for (const tool of tools) {
+    const fn = (tool.function ?? tool) as Record<string, unknown>;
+    if (typeof fn.description === 'string' && fn.description.length > 120)
+      fn.description = `${fn.description.slice(0, 120)}…`;
+  }
+  if (size() <= max) return body;
+  // Последнее средство — самые старые сообщения целиком (системное и последнее остаются).
+  while (size() > max && list.length > 3) {
+    const index = list.findIndex(
+      (message, i) =>
+        i > 0 &&
+        i < list.length - 2 &&
+        (message as { role?: string })?.role !== 'system',
+    );
+    if (index < 0) break;
+    list.splice(index, 1);
+    // Ответ инструмента без вызова OpenAI не примет — убираем осиротевшие.
+    while ((list[index] as { role?: string })?.role === 'tool')
+      list.splice(index, 1);
+  }
+  return body;
+}

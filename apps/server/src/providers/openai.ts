@@ -1,4 +1,4 @@
-import { llmFetch } from './http';
+import { fitBody, llmFetch, proxyFor } from './http';
 import { isRecord } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -70,7 +70,10 @@ export async function* streamOpenAI(options: {
           : {}),
         'content-type': 'application/json',
       },
-      body: JSON.stringify(body),
+      // Через прокси большие тела не проходят — ужимаем историю.
+      body: JSON.stringify(
+        proxyFor(openAiChatUrl(options.baseUrl)) ? fitBody(body) : body,
+      ),
       signal: options.signal,
     });
   const toolKey = `${options.baseUrl}|${options.model}`;

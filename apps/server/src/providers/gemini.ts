@@ -1,4 +1,4 @@
-import { llmFetch } from './http';
+import { fitBody, llmFetch, proxyFor } from './http';
 import { isRecord, jsonObject } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -55,7 +55,11 @@ export async function* streamGemini(options: {
         'x-goog-api-key': options.apiKey,
         'content-type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        proxyFor(geminiStreamUrl(options.baseUrl, options.model))
+          ? fitBody(body)
+          : body,
+      ),
       signal: options.signal,
     },
   );
