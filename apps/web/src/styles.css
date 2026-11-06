@@ -3049,3 +3049,44 @@ input[type="checkbox"]:checked::after {
     opacity: 0.3;
   }
 }
+/* Пока рисуется картинка — «матрица» в рамке будущего изображения */
+.image-matrix {
+  position: relative;
+  overflow: hidden;
+  width: min(360px, 100%);
+  aspect-ratio: 1;
+  margin-top: 8px;
+  border-radius: 14px;
+  background: var(--bg-2);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  display: flex;
+  align-items: flex-end;
+  padding: 12px 14px;
+}
+.image-matrix .matrix-rain {
+  -webkit-mask-image: none;
+  mask-image: none;
+  opacity: 0.85;
+}
+.image-matrix > span {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+.image-matrix > span i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: matrix-pulse 1.2s ease-in-out infinite;
+}

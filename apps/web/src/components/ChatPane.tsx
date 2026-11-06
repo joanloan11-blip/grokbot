@@ -1002,6 +1002,7 @@ function renderMessages(
               name={call.name}
               args={call.arguments}
               result={result?.content}
+              running={!result && edit.busy}
               onSend={onSend}
               labelRunning={t('toolRunning')}
               labelArgs={t('toolArgs')}
@@ -1050,6 +1051,15 @@ function ToolCard({
         </span>
       </header>
       {hidden && name === 'delegate' && <DelegateTitles args={args} />}
+      {name === 'generate_image' && running && result === undefined && (
+        <div className="image-matrix">
+          <MatrixRain />
+          <span>
+            <i />
+            {t('imageDrawing')}
+          </span>
+        </div>
+      )}
       {!hidden && args && args !== '{}' && (
         <pre>
           <em>{labelArgs}</em>
