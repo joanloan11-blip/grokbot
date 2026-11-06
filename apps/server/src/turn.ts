@@ -31,12 +31,13 @@ import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
 import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
+import { compactHistory } from './context';
 import { readCaps } from './model-caps';
 import { formatNews, NEWS_TOPICS, type NewsTopic, newsSearch } from './news';
 import { DELEGATE_LIMITS, normalizeTasks, runDelegation } from './orchestrator';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
-import { asString, clampText, jsonObject } from './util';
+import { asString, clampText, isRecord, jsonObject } from './util';
 import {
   deleteWorkspaceFile,
   editWorkspaceFile,
@@ -149,11 +150,19 @@ export async function runTurn(
   )
     .filter((item) => item.id !== agent.id)
     .map((item) => ({ name: item.name, description: item.description }));
-  const history = await buildHistory(
-    deps.store,
-    await deps.store.listMessages(conversation.id),
-    provider.kind,
-  );
+  // Длинный чат: старое — кратким пересказом, свежее — целиком.
+  const history = await compactHistory(deps.store, {
+    history: await buildHistory(
+      deps.store,
+      await deps.store.listMessages(conversation.id),
+      provider.kind,
+    ),
+    conversationId: conversation.id,
+    provider,
+    model,
+    userId,
+    agentId: agent.id,
+  });
   const toolsOff =
     (await readCaps(deps.store))[provider.id]?.[model]?.tools === false;
   let pending = '';
@@ -1189,20 +1198,109 @@ async function exposeTools(
       .filter((row) => row.ownerUserId && row.ownerUserId !== userId)
       .map((row) => row.id),
   );
-  for (const server of deps.mcp.listConnected()) {
-    if (!allowedMcp.has(server.id) || foreign.has(server.id)) continue;
-    for (const tool of server.tools) {
-      let name = encodeMcpToolName(server.name, tool.name);
-      while (used.has(name)) name = `${name.slice(0, 60)}_${used.size}`;
-      used.add(name);
-      tools.push({
+  const servers = deps.mcp
+    .listConnected()
+    .filter((server) => allowedMcp.has(server.id) && !foreign.has(server.id));
+  const totalMcpTools = servers.reduce(
+    (sum, server) => sum + server.tools.length,
+    0,
+  );
+  const thresholdRaw =
+    (await deps.store.getSetting('lazy_mcp_threshold')) ?? '';
+  const threshold =
+    thresholdRaw.trim() !== '' && Number.isFinite(Number(thresholdRaw))
+      ? Number(thresholdRaw)
+      : LAZY_MCP_THRESHOLD;
+  if (totalMcpTools > threshold) {
+    // Много инструментов: вместо всех схем — каталог коннекторов и два «ленивых» инструмента.
+    // Схемы модель запрашивает только для нужного коннектора — экономия тысяч токенов на шаг.
+    const catalog = servers
+      .map(
+        (server) =>
+          `${server.name}: ${server.tools.map((tool) => tool.name).join(', ')}`,
+      )
+      .join('\n');
+    const byName = (name: string) =>
+      servers.find((server) => server.name === name.trim());
+    used.add('connector_tools');
+    used.add('connector_call');
+    tools.push(
+      {
         definition: {
-          name,
-          description: `[MCP ${server.name}] ${tool.description || tool.name}`,
-          inputSchema: normalizeSchema(tool),
+          name: 'connector_tools',
+          description: `Get parameter schemas of a connector's tools before calling them. Сначала узнай параметры инструментов коннектора.\nConnectors and their tools:\n${catalog}`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              connector: { type: 'string', enum: servers.map((s) => s.name) },
+              tools: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Only these tools (optional)',
+              },
+            },
+            required: ['connector'],
+          },
         },
-        run: (args) => deps.mcp.callTool(server.id, tool.name, args),
-      });
+        run: async (args) => {
+          const server = byName(asString(args.connector));
+          if (!server) return `Нет коннектора «${asString(args.connector)}».`;
+          const only = Array.isArray(args.tools)
+            ? args.tools.map((item) => String(item))
+            : [];
+          const picked = server.tools.filter(
+            (tool) => !only.length || only.includes(tool.name),
+          );
+          return JSON.stringify(
+            picked.map((tool) => ({
+              name: tool.name,
+              description: (tool.description ?? '').slice(0, 300),
+              parameters: normalizeSchema(tool),
+            })),
+          );
+        },
+      },
+      {
+        definition: {
+          name: 'connector_call',
+          description:
+            'Call a connector tool (amoCRM, MoySklad, Avito, browser, …) with arguments that match its schema from connector_tools. Вызвать инструмент коннектора.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              connector: { type: 'string', enum: servers.map((s) => s.name) },
+              tool: { type: 'string' },
+              arguments: { type: 'object' },
+            },
+            required: ['connector', 'tool'],
+          },
+        },
+        run: async (args) => {
+          const server = byName(asString(args.connector));
+          if (!server) return `Нет коннектора «${asString(args.connector)}».`;
+          const toolName = asString(args.tool);
+          if (!server.tools.some((tool) => tool.name === toolName))
+            return `У коннектора ${server.name} нет инструмента «${toolName}». Есть: ${server.tools.map((tool) => tool.name).join(', ')}.`;
+          const callArgs = isRecord(args.arguments) ? args.arguments : {};
+          return deps.mcp.callTool(server.id, toolName, callArgs);
+        },
+      },
+    );
+  } else {
+    for (const server of servers) {
+      for (const tool of server.tools) {
+        let name = encodeMcpToolName(server.name, tool.name);
+        while (used.has(name)) name = `${name.slice(0, 60)}_${used.size}`;
+        used.add(name);
+        tools.push({
+          definition: {
+            name,
+            description: `[MCP ${server.name}] ${tool.description || tool.name}`,
+            inputSchema: normalizeSchema(tool),
+          },
+          run: (args) => deps.mcp.callTool(server.id, tool.name, args),
+        });
+      }
     }
   }
   // Плагины агента: выключенные группы встроенных инструментов не показываем модели.
@@ -1233,6 +1331,7 @@ export async function toolNeedsApproval(
   if (auto.includes('*') || auto.includes(name)) return false;
   return (
     name === 'send_to_agent' ||
+    name === 'connector_call' ||
     name === 'delegate' ||
     name === 'run_code' ||
     name === 'shell' ||
@@ -1313,6 +1412,13 @@ const IMAGE_MIMES = new Set([
   'image/gif',
 ]);
 const MAX_IMAGES = 6;
+/** Больше стольких MCP-инструментов — показываем модели каталог вместо всех схем. */
+const LAZY_MCP_THRESHOLD = 15;
+/** Старые результаты инструментов и файлы в истории обрезаются до стольких символов. */
+const OLD_TOOL_CHARS = 1_500;
+const OLD_FILE_CHARS = 2_000;
+/** Картинки отправляем только из последних N сообщений пользователя. */
+const IMAGE_TURNS = 2;
 const MAX_IMAGE_BYTES = 5_000_000;
 
 /**
@@ -1327,9 +1433,21 @@ export async function buildHistory(
   const vision = supportsVision(kind);
   let imageBudget = MAX_IMAGES;
   const out: ModelMessage[] = [];
+  // Сколько сообщений пользователя уже пройдено от конца: 0 — текущий ход.
+  let userTurns = 0;
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
     const model = toModelMessage(message);
+    const old = userTurns > 0;
+    if (
+      message.role === 'tool' &&
+      old &&
+      model.content.length > OLD_TOOL_CHARS
+    ) {
+      // Старый результат инструмента: начало и пометка, полный текст в истории не нужен.
+      model.content = `${model.content.slice(0, OLD_TOOL_CHARS)}\n…[сокращено для экономии: было ${model.content.length} символов; вызови инструмент снова, если нужны детали]`;
+    }
+    if (message.role === 'user') userTurns++;
     if (message.role === 'user' && message.attachments?.length) {
       const notes: string[] = [];
       for (const attachment of message.attachments) {
@@ -1342,6 +1460,13 @@ export async function buildHistory(
           if (!vision) {
             notes.push(
               `[Изображение ${file.name}: выбранная модель не видит картинки. Чтобы модель её разобрала, выберите OpenAI, Anthropic или Gemini.]`,
+            );
+            continue;
+          }
+          if (userTurns > IMAGE_TURNS) {
+            // Картинку модель уже видела в прошлых ответах — повторно не шлём.
+            notes.push(
+              `[Изображение ${file.name} было приложено раньше — модель уже видела его]`,
             );
             continue;
           }
@@ -1371,7 +1496,7 @@ export async function buildHistory(
         const text = file.text?.trim();
         notes.push(
           text
-            ? `[Файл ${file.name}]\n${text.slice(0, 20_000)}`
+            ? `[Файл ${file.name}]\n${text.slice(0, userTurns > 1 ? OLD_FILE_CHARS : 20_000)}${userTurns > 1 && text.length > OLD_FILE_CHARS ? '\n…[сокращено: полный текст был в начале разговора]' : ''}`
             : `[Файл ${file.name}: текст не извлечён]`,
         );
       }

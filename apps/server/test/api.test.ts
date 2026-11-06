@@ -199,6 +199,35 @@ describe('HTTP API', () => {
     ).toContain('ping-from-test');
   });
 
+  it('shows a connector catalog instead of every MCP schema when there are many tools', async () => {
+    await handle.runtime.store.setSetting('lazy_mcp_threshold', '0');
+    const conversation = await demoConversation();
+    const listed = await readEvents(
+      await post(`/api/conversations/${conversation.id}/messages`, {
+        content: 'tool connector_tools {"connector":"demo"}',
+      }),
+    );
+    const schema = listed.find(
+      (event) => event.type === 'message' && event.message.role === 'tool',
+    );
+    expect(
+      schema && schema.type === 'message' ? schema.message.content : '',
+    ).toContain('"name":"echo"');
+    const called = await readEvents(
+      await post(`/api/conversations/${conversation.id}/messages`, {
+        content:
+          'tool connector_call {"connector":"demo","tool":"echo","arguments":{"text":"lazy-ok"}}',
+      }),
+    );
+    const result = called.find(
+      (event) => event.type === 'message' && event.message.role === 'tool',
+    );
+    expect(
+      result && result.type === 'message' ? result.message.content : '',
+    ).toContain('lazy-ok');
+    await handle.runtime.store.setSetting('lazy_mcp_threshold', '');
+  });
+
   it('redacts MCP env values in the exported config', async () => {
     await post('/api/mcp/import', {
       mcpServers: {
