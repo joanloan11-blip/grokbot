@@ -70,6 +70,8 @@ export function SettingsPane({
             shareModels={false}
             personal
           />
+          <h2 className="spend-h">{t('myConnectors')}</h2>
+          <McpPanel personal />
         </div>
       </section>
     );
@@ -870,7 +872,7 @@ function ProvidersPanel({
   );
 }
 
-function McpPanel() {
+function McpPanel({ personal = false }: { personal?: boolean }) {
   const { t } = useI18n();
   const [servers, setServers] = useState<McpServerPublic[]>([]);
   const [configText, setConfigText] = useState('');
@@ -878,7 +880,7 @@ function McpPanel() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<McpServerInput>({
     name: '',
-    transport: 'stdio',
+    transport: personal ? 'http' : 'stdio',
     command: 'node',
     args: [],
     url: '',
@@ -886,10 +888,14 @@ function McpPanel() {
   });
 
   const load = useCallback(async () => {
+    if (personal) {
+      setServers((await api.mcp()).filter((row) => row.owned));
+      return;
+    }
     const [list, file] = await Promise.all([api.mcp(), api.mcpConfig()]);
     setServers(list);
     setConfigText(JSON.stringify(file, null, 2));
-  }, []);
+  }, [personal]);
   useEffect(() => {
     void load().catch((reason: unknown) =>
       setError(reason instanceof Error ? reason.message : t('error')),
@@ -908,7 +914,7 @@ function McpPanel() {
       setOpen(false);
       setForm({
         name: '',
-        transport: 'stdio',
+        transport: personal ? 'http' : 'stdio',
         command: 'node',
         args: [],
         url: '',
@@ -950,7 +956,8 @@ function McpPanel() {
               required
             />
           </label>
-          <label>
+          {personal && <p className="hint">{t('mcpPersonalHint')}</p>}
+          <label hidden={personal}>
             {t('transport')}
             <select
               value={form.transport}
@@ -1004,7 +1011,11 @@ function McpPanel() {
                 {t('url')}
                 <input
                   value={form.url ?? ''}
-                  placeholder="http://127.0.0.1:3000/mcp"
+                  placeholder={
+                    personal
+                      ? 'https://example.com/mcp'
+                      : 'http://127.0.0.1:3000/mcp'
+                  }
                   onChange={(event) =>
                     setForm({ ...form, url: event.target.value })
                   }
@@ -1080,6 +1091,22 @@ function McpPanel() {
                 />
                 {t('enabled')}
               </label>
+              {!personal && !server.owned && (
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(server.forManagers)}
+                    onChange={(event) =>
+                      void api
+                        .updateMcp(server.id, {
+                          forManagers: event.target.checked,
+                        } as never)
+                        .then(load)
+                    }
+                  />
+                  {t('mcpForManagers')}
+                </label>
+              )}
               <button
                 type="button"
                 className="ghost slim danger-text"
@@ -1093,6 +1120,7 @@ function McpPanel() {
       </ul>
       <form
         className="card form"
+        hidden={personal}
         onSubmit={(event) => {
           event.preventDefault();
           setError('');

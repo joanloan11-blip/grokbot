@@ -2681,3 +2681,7 @@ input[type="checkbox"]:checked::after {
 .template.custom {
   border-style: dashed;
 }
+
+[hidden] {
+  display: none !important;
+}

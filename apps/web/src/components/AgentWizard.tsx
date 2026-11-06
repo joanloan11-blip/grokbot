@@ -123,7 +123,7 @@ export function AgentWizard({
         providerId: providerId || null,
         model: model || null,
         skillNames,
-        mcpServerIds: restricted ? [] : mcpServerIds,
+        mcpServerIds,
         plugins,
       });
       onCreated(created.id);

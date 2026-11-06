@@ -1151,8 +1151,14 @@ async function exposeTools(
   );
 
   const allowedMcp = new Set(agent.mcpServerIds);
+  // Чужой личный коннектор не работает, даже если его id попал в агента.
+  const foreign = new Set(
+    (await deps.store.listMcp())
+      .filter((row) => row.ownerUserId && row.ownerUserId !== userId)
+      .map((row) => row.id),
+  );
   for (const server of deps.mcp.listConnected()) {
-    if (!allowedMcp.has(server.id)) continue;
+    if (!allowedMcp.has(server.id) || foreign.has(server.id)) continue;
     for (const tool of server.tools) {
       let name = encodeMcpToolName(server.name, tool.name);
       while (used.has(name)) name = `${name.slice(0, 60)}_${used.size}`;

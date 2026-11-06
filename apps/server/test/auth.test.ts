@@ -201,6 +201,48 @@ describe('auth and isolation', () => {
     );
     expect(adminUsesIt.status).toBe(403);
 
+    // Коннекторы: менеджер добавляет свои только по https, общие видит без адреса.
+    const stdio = await send(
+      '/api/mcp',
+      { name: 'my-shell', transport: 'stdio', command: 'bash' },
+      managerCookie,
+    );
+    expect(stdio.status).toBe(400);
+    const local = await send(
+      '/api/mcp',
+      { name: 'my-local', transport: 'http', url: 'http://127.0.0.1:8765/mcp' },
+      managerCookie,
+    );
+    expect(local.status).toBe(400);
+    const sharedList = await json<{ id: string; name: string }[]>(
+      await get('/api/mcp', adminCookie),
+    );
+    const demoMcp = sharedList.find((item) => item.name === 'demo');
+    expect(
+      (await json<{ id: string }[]>(await get('/api/mcp', managerCookie))).some(
+        (item) => item.id === demoMcp?.id,
+      ),
+    ).toBe(false);
+    const opened = await patch(
+      `/api/mcp/${demoMcp?.id}`,
+      { forManagers: true },
+      adminCookie,
+    );
+    expect(opened.status).toBe(200);
+    const managerMcp = await json<
+      { id: string; command: string; url: string; forManagers: boolean }[]
+    >(await get('/api/mcp', managerCookie));
+    const visible = managerMcp.find((item) => item.id === demoMcp?.id);
+    expect(visible?.forManagers).toBe(true);
+    expect(visible?.command).toBe('');
+    const managerEdit = await patch(
+      `/api/mcp/${demoMcp?.id}`,
+      { enabled: false },
+      managerCookie,
+    );
+    expect(managerEdit.status).toBe(403);
+    expect((await get('/api/mcp/config', managerCookie)).status).toBe(403);
+
     const catalog = await json<{ id: string; models: string[] }[]>(
       await get('/api/providers', adminCookie),
     );

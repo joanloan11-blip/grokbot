@@ -466,6 +466,10 @@ export interface McpServerPublic {
   status: McpStatus;
   error?: string;
   tools: McpToolInfo[];
+  /** Личный коннектор текущего пользователя. */
+  owned?: boolean;
+  /** Общий коннектор, который администратор открыл менеджерам. */
+  forManagers?: boolean;
 }
 
 export interface McpServerInput {

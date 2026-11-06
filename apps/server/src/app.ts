@@ -115,12 +115,20 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     user.role === 'admin' ||
     (Boolean(agent.ownerId) && agent.ownerId === user.id);
   /** Менеджер не подключает MCP и GitHub: это решает админ для общих агентов. */
-  const limitForManager = (
+  const limitForManager = async (
     user: UserRecord,
     input: AgentInput & { name?: string },
   ) => {
+    // К агенту — только доступные пользователю коннекторы (свои и открытые админом).
+    if (input.mcpServerIds) {
+      const usable = new Set((await usableMcp(user)).map((row) => row.id));
+      input = {
+        ...input,
+        mcpServerIds: input.mcpServerIds.filter((id) => usable.has(id)),
+      };
+    }
     if (user.role === 'admin') return input;
-    const { mcpServerIds: _mcp, githubRepos: _gh, ...rest } = input;
+    const { githubRepos: _gh, ...rest } = input;
     return rest;
   };
 
@@ -902,35 +910,134 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true, preview: preview.slice(0, 180) });
   });
 
-  app.get('/api/mcp', async (c) =>
-    c.json((await store.listMcp()).map((row) => presentMcp(row, mcp))),
-  );
+  // ---------- Коннекторы (MCP) ----------
+  // Общие ведёт администратор и решает, какие из них доступны менеджерам.
+  // Менеджер видит открытые ему общие (без адреса и ключей) и добавляет свои — только https.
+  const managerMcpIds = async (): Promise<string[]> => {
+    try {
+      const raw = JSON.parse(
+        (await store.getSetting('manager_mcp_ids')) ?? '[]',
+      );
+      return Array.isArray(raw)
+        ? raw.filter((id) => typeof id === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  };
 
-  app.get('/api/mcp/config', async (c) =>
-    c.json(toMcpFile(await store.listMcp())),
-  );
+  /** Коннекторы, которые пользователь может подключать к своим агентам. */
+  const usableMcp = async (user: UserRecord) => {
+    const rows = await store.listMcp();
+    if (user.role === 'admin') return rows.filter((row) => !row.ownerUserId);
+    const open = await managerMcpIds();
+    return rows.filter((row) =>
+      row.ownerUserId ? row.ownerUserId === user.id : open.includes(row.id),
+    );
+  };
+
+  const presentFor = async (user: UserRecord, row: McpRow) => {
+    const open = await managerMcpIds();
+    const owned = row.ownerUserId === user.id;
+    const base = presentMcp(row, mcp);
+    const hideTarget = user.role !== 'admin' && !owned;
+    return {
+      ...base,
+      // В адресе общего коннектора бывает секрет (amoCRM) — менеджеру не показываем.
+      url: hideTarget ? '' : base.url,
+      command: hideTarget ? '' : base.command,
+      args: hideTarget ? [] : base.args,
+      owned,
+      forManagers: !row.ownerUserId && open.includes(row.id),
+    };
+  };
+
+  const editableMcp = async (user: UserRecord, id: string) => {
+    const row = await store.getMcp(id);
+    if (!row) throw new HttpError(404, 'MCP-сервер не найден');
+    const ok = row.ownerUserId
+      ? row.ownerUserId === user.id
+      : user.role === 'admin';
+    if (!ok) throw new HttpError(403, 'Можно менять только свои коннекторы');
+    return row;
+  };
+
+  /** Свой коннектор менеджера: только Streamable HTTP по https во внешний интернет. */
+  const checkPersonalMcp = async (input: McpServerInput) => {
+    if (input.transport !== 'http')
+      throw badRequest(
+        'Свой коннектор подключается по адресу (Streamable HTTP). Команды на сервере запускает только администратор.',
+      );
+    let url: URL;
+    try {
+      url = await assertPublicUrl(input.url ?? '');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw badRequest(
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo/.test(message)
+          ? 'Не удалось найти адрес коннектора'
+          : message || 'Некорректный адрес',
+      );
+    }
+    if (url.protocol !== 'https:')
+      throw badRequest('Адрес коннектора должен начинаться с https://');
+  };
+
+  app.get('/api/mcp', async (c) => {
+    const user = await actor(c);
+    const rows = await usableMcp(user);
+    return c.json(await Promise.all(rows.map((row) => presentFor(user, row))));
+  });
+
+  app.get('/api/mcp/config', async (c) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return c.json(
+      toMcpFile((await store.listMcp()).filter((row) => !row.ownerUserId)),
+    );
+  });
 
   app.post('/api/mcp/import', async (c) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
     const file = parseMcpFile(await readBody(c));
     for (const [name, entry] of Object.entries(file.mcpServers)) {
-      const input = entryToInput(name, entry, await store.getMcpByName(name));
+      const current = await store.getMcpByName(name);
+      if (current?.ownerUserId)
+        throw badRequest(`Имя «${name}» занято личным коннектором`);
+      const input = entryToInput(name, entry, current);
       const saved = await store.upsertMcp(input);
       if (saved.enabled) await mcp.connect(saved);
       else await mcp.disconnect(saved.id);
     }
-    return c.json((await store.listMcp()).map((row) => presentMcp(row, mcp)));
+    const rows = await usableMcp(user);
+    return c.json(await Promise.all(rows.map((row) => presentFor(user, row))));
   });
 
   app.post('/api/mcp', async (c) => {
+    const user = await actor(c);
     const input = parseMcpInput(await readBody(c));
-    const saved = await store.upsertMcp(input);
+    if (await store.getMcpByName(input.name))
+      throw badRequest('Коннектор с таким именем уже есть — выберите другое');
+    if (user.role !== 'admin') {
+      await checkPersonalMcp(input);
+      const own = (await store.listMcp()).filter(
+        (row) => row.ownerUserId === user.id,
+      );
+      if (own.length >= 10) throw badRequest('Не больше 10 своих коннекторов');
+    }
+    const saved = await store.upsertMcp(input, {
+      ownerUserId: user.role === 'admin' ? null : user.id,
+    });
     if (saved.enabled) await mcp.connect(saved);
-    return c.json(presentMcp(saved, mcp), 201);
+    return c.json(await presentFor(user, saved), 201);
   });
 
   app.patch('/api/mcp/:id', async (c) => {
-    const current = await store.getMcp(c.req.param('id'));
-    if (!current) return c.json({ error: 'MCP-сервер не найден' }, 404);
+    const user = await actor(c);
+    const current = await editableMcp(user, c.req.param('id'));
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
     if (typeof body.name === 'string' && body.name.trim() !== current.name) {
@@ -938,15 +1045,28 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         'Переименование MCP-сервера не поддерживается — удалите его и создайте заново.',
       );
     }
-    const saved = await store.upsertMcp(mergeMcp(current, body));
+    // Админ открывает или закрывает общий коннектор для менеджеров.
+    if (
+      typeof body.forManagers === 'boolean' &&
+      user.role === 'admin' &&
+      !current.ownerUserId
+    ) {
+      const open = new Set(await managerMcpIds());
+      if (body.forManagers) open.add(current.id);
+      else open.delete(current.id);
+      await store.setSetting('manager_mcp_ids', JSON.stringify([...open]));
+    }
+    const merged = mergeMcp(current, body);
+    if (current.ownerUserId) await checkPersonalMcp(merged);
+    const saved = await store.upsertMcp(merged);
     if (saved.enabled) await mcp.connect(saved);
     else await mcp.disconnect(saved.id);
-    return c.json(presentMcp(saved, mcp));
+    return c.json(await presentFor(user, saved));
   });
 
   app.delete('/api/mcp/:id', async (c) => {
-    const current = await store.getMcp(c.req.param('id'));
-    if (!current) return c.json({ error: 'MCP-сервер не найден' }, 404);
+    const user = await actor(c);
+    const current = await editableMcp(user, c.req.param('id'));
     await mcp.disconnect(current.id);
     await store.deleteMcp(current.id);
     return c.json({ ok: true });
@@ -989,7 +1109,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
 
   app.post('/api/agents', async (c) => {
     const user = await actor(c);
-    const input = limitForManager(
+    const input = await limitForManager(
       user,
       parseAgentInput(await readBody(c), false),
     );
@@ -1055,7 +1175,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     if (!canEditAgent(user, current))
       throw new HttpError(403, 'Общего агента настраивает администратор');
     const raw = await readBody(c);
-    const input = limitForManager(user, parseAgentInput(raw, true));
+    const input = await limitForManager(user, parseAgentInput(raw, true));
     await denyForeignProvider(user, input.providerId);
     if (user.role !== 'admin' && (input.providerId || input.model)) {
       await requireAllowedModel(

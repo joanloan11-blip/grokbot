@@ -195,9 +195,8 @@ export function isSharedCatalogWrite(
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS')
     return false;
   // Провайдеров менеджеры добавляют сами (личные ключи); права проверяют маршруты /api/providers.
-  if (pathname.startsWith('/api/mcp') || pathname.startsWith('/api/skills')) {
-    return true;
-  }
+  // Коннекторы (MCP) менеджеры добавляют сами; права проверяют маршруты /api/mcp.
+  if (pathname.startsWith('/api/skills')) return true;
   // Агентов менеджеры создают сами (личные); права проверяют маршруты /api/agents.
   return false;
 }

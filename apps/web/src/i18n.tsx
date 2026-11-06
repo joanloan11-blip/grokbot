@@ -222,19 +222,24 @@ const ru = {
   spendImages: 'картинки',
   spendSince: 'с',
   spendFree: 'бесплатно',
-  myModels: 'Мои модели',
+  myModels: 'Мои модели и коннекторы',
   toolDelegate: 'Раздаёт задачи агентам',
   freeProviders: 'Бесплатные провайдеры',
   capTools: 'MCP ✓',
   meterTitle: 'Расход токенов',
   deleteChat: 'Удалить чат',
+  myConnectors: 'Мои коннекторы',
+  mcpForManagers: 'Доступен менеджерам',
+  mcpPersonalHint:
+    'Свой MCP-коннектор по адресу (Streamable HTTP, только https). Ключ или токен — в заголовках, например Authorization=Bearer …. Видите и используете его только вы.',
   customAgent: 'Свой агент',
   customAgentHint: 'С нуля: своё имя, инструкция, навыки, коннекторы и плагины',
   capsSkills: 'Навыки',
   capsSkillsHint: 'Готовые инструкции, которые агент загружает под задачу',
   capsConnectors: 'Коннекторы',
   capsConnectorsHint: 'MCP-серверы: amoCRM, МойСклад, Авито, браузер и другие',
-  capsConnectorsAdmin: 'Коннекторы к агентам подключает администратор',
+  capsConnectorsAdmin:
+    'Ваши коннекторы и те, что открыл администратор. Свой коннектор — в меню «Мои модели».',
   capsManyConnectors:
     'Каждый коннектор добавляет 25–36 инструментов в каждый запрос — подключайте только нужные, иначе ответы дороже и медленнее.',
   capsPlugins: 'Плагины',
@@ -570,12 +575,16 @@ const en: Dictionary = {
   spendImages: 'images',
   spendSince: 'since',
   spendFree: 'free',
-  myModels: 'My models',
+  myModels: 'My models and connectors',
   toolDelegate: 'Delegating tasks to agents',
   freeProviders: 'Free providers',
   capTools: 'MCP ✓',
   meterTitle: 'Token usage',
   deleteChat: 'Delete chat',
+  myConnectors: 'My connectors',
+  mcpForManagers: 'Available to managers',
+  mcpPersonalHint:
+    'Your own MCP connector by URL (Streamable HTTP, https only). Put the key or token in headers, e.g. Authorization=Bearer …. Only you can see and use it.',
   customAgent: 'Custom agent',
   customAgentHint:
     'From scratch: your own name, instructions, skills, connectors and plugins',
@@ -584,7 +593,8 @@ const en: Dictionary = {
   capsConnectors: 'Connectors',
   capsConnectorsHint:
     'MCP servers: amoCRM, MoySklad, Avito, browser and others',
-  capsConnectorsAdmin: 'The admin attaches connectors to agents',
+  capsConnectorsAdmin:
+    'Your connectors and the ones the admin opened to you. Add your own under My models.',
   capsManyConnectors:
     'Each connector adds 25–36 tools to every request — attach only what you need, otherwise replies cost more and are slower.',
   capsPlugins: 'Plugins',

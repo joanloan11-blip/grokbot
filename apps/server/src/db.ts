@@ -43,6 +43,8 @@ export interface McpRow {
   headers: Record<string, string>;
   enabled: boolean;
   createdAt: string;
+  /** Личный коннектор менеджера. null — общий. */
+  ownerUserId?: string | null;
 }
 
 interface ProviderSql {
@@ -68,6 +70,7 @@ interface McpSql {
   headers_json: string;
   enabled: number;
   created_at: string;
+  owner_user_id?: string | null;
 }
 
 interface ConversationSql {
@@ -370,6 +373,11 @@ export class Store {
         `ALTER TABLE usage_events ADD COLUMN ${column} ${type}`,
       );
     }
+    await add(
+      'mcp_servers',
+      'owner_user_id',
+      'ALTER TABLE mcp_servers ADD COLUMN owner_user_id TEXT',
+    );
     await add(
       'agents',
       'plugins_json',
@@ -741,7 +749,11 @@ export class Store {
 
   async upsertMcp(
     input: McpServerInput,
-    options: { keepEnv?: boolean; keepHeaders?: boolean } = {},
+    options: {
+      keepEnv?: boolean;
+      keepHeaders?: boolean;
+      ownerUserId?: string | null;
+    } = {},
   ): Promise<McpRow> {
     const existing = await this.getMcpByName(input.name);
     const env =
@@ -788,6 +800,11 @@ export class Store {
         row.createdAt,
       ],
     );
+    if (!existing && options.ownerUserId)
+      await this.sql.run(
+        'UPDATE mcp_servers SET owner_user_id = ? WHERE id = ?',
+        [options.ownerUserId, row.id],
+      );
     return (await this.getMcpByName(row.name)) ?? row;
   }
 
@@ -2481,6 +2498,7 @@ function mapMcp(row: McpSql): McpRow {
     headers: parseRecord(row.headers_json),
     enabled: row.enabled === 1,
     createdAt: row.created_at,
+    ownerUserId: row.owner_user_id ?? null,
   };
 }
 

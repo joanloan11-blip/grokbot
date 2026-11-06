@@ -68,10 +68,8 @@ export function AgentCapabilities({
             {restricted ? t('capsConnectorsAdmin') : t('capsConnectorsHint')}
           </small>
         </header>
-        {!restricted && servers.length === 0 && (
-          <p className="muted">{t('capsNone')}</p>
-        )}
-        {!restricted && (
+        {servers.length === 0 && <p className="muted">{t('capsNone')}</p>}
+        {
           <div className="caps-grid">
             {servers.map((server) => (
               <label key={server.id} className="cap-card">
@@ -102,8 +100,8 @@ export function AgentCapabilities({
               </label>
             ))}
           </div>
-        )}
-        {!restricted && mcpServerIds.length > 2 && (
+        }
+        {mcpServerIds.length > 2 && (
           <p className="hint">{t('capsManyConnectors')}</p>
         )}
       </section>
