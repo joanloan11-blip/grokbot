@@ -554,6 +554,8 @@ export function ChatPane({
   ];
   const isEmpty =
     messages.length === 0 && !streaming && !reasoning && !busy && !compare;
+  // В режиме сравнения поле ввода всегда внизу, ответы — над ним.
+  const hero = isEmpty && !compareOn;
 
   const composer = (
     <form
@@ -607,6 +609,54 @@ export function ChatPane({
           }
         }}
       />
+      {compareOn && (
+        <div className="compare-row">
+          <span className="compare-label">{t('compareWith')}</span>
+          {compareOn &&
+            extraModels.map((key, index) => (
+              <span key={`extra-${index}`} className="compare-extra">
+                <ModelSelect
+                  providers={providers}
+                  value={key}
+                  label={t('modelLabel')}
+                  className="composer-model"
+                  onChange={(next) =>
+                    setExtraModels((current) =>
+                      current.map((item, i) => (i === index ? next : item)),
+                    )
+                  }
+                />
+                <button
+                  type="button"
+                  className="icon-btn quiet tiny"
+                  aria-label={t('compareRemove')}
+                  title={t('compareRemove')}
+                  onClick={() => {
+                    const next = extraModels.filter((_, i) => i !== index);
+                    setExtraModels(next);
+                    if (next.length === 0) setCompareOn(false);
+                  }}
+                >
+                  <IconClose />
+                </button>
+              </span>
+            ))}
+          {compareOn && extraModels.length < 2 && choices.length > 2 && (
+            <button
+              type="button"
+              className="compare-chip ghosty"
+              onClick={() => {
+                const used = new Set([choice, ...extraModels]);
+                const other = choices.find((item) => !used.has(keyOf(item)));
+                if (other)
+                  setExtraModels((current) => [...current, keyOf(other)]);
+              }}
+            >
+              {t('compareAdd')}
+            </button>
+          )}
+        </div>
+      )}
       <div className="composer-row">
         <input
           ref={fileInput}
@@ -643,49 +693,6 @@ export function ChatPane({
           >
             ⚖ {t('compare')}
             {compareOn ? ` · ${1 + extraModels.length}` : ''}
-          </button>
-        )}
-        {compareOn &&
-          extraModels.map((key, index) => (
-            <span key={`extra-${index}`} className="compare-extra">
-              <ModelSelect
-                providers={providers}
-                value={key}
-                label={t('modelLabel')}
-                className="composer-model"
-                onChange={(next) =>
-                  setExtraModels((current) =>
-                    current.map((item, i) => (i === index ? next : item)),
-                  )
-                }
-              />
-              <button
-                type="button"
-                className="icon-btn quiet tiny"
-                aria-label={t('compareRemove')}
-                title={t('compareRemove')}
-                onClick={() => {
-                  const next = extraModels.filter((_, i) => i !== index);
-                  setExtraModels(next);
-                  if (next.length === 0) setCompareOn(false);
-                }}
-              >
-                <IconClose />
-              </button>
-            </span>
-          ))}
-        {compareOn && extraModels.length < 2 && choices.length > 2 && (
-          <button
-            type="button"
-            className="compare-chip ghosty"
-            onClick={() => {
-              const used = new Set([choice, ...extraModels]);
-              const other = choices.find((item) => !used.has(keyOf(item)));
-              if (other)
-                setExtraModels((current) => [...current, keyOf(other)]);
-            }}
-          >
-            {t('compareAdd')}
           </button>
         )}
         <span className="composer-spacer" />
@@ -725,7 +732,7 @@ export function ChatPane({
   );
 
   return (
-    <section className={isEmpty ? 'chat empty' : 'chat'}>
+    <section className={hero ? 'chat empty' : 'chat'}>
       <header className="topbar">
         <button
           className="icon-btn menu-btn"
@@ -780,7 +787,7 @@ export function ChatPane({
           </button>
         )}
       </header>
-      {isEmpty ? (
+      {hero ? (
         <div className="hero">
           <div className="welcome">
             <BeaconMark />
@@ -811,6 +818,9 @@ export function ChatPane({
         <>
           <div className="transcript" ref={scroller}>
             <div className="thread">
+              {isEmpty && compareOn && (
+                <p className="compare-empty">{t('compareEmpty')}</p>
+              )}
               {renderMessages(
                 messages,
                 t,

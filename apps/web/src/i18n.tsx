@@ -281,6 +281,8 @@ const ru = {
   copy: 'Копировать',
   copied: 'Скопировано',
   compare: 'Сравнить',
+  compareWith: 'Сравнить с',
+  compareEmpty: 'Задайте вопрос — ответы моделей встанут здесь рядом, а поле ввода останется внизу.',
   compareTitle:
     'Отправить один вопрос нескольким моделям и выбрать лучший ответ',
   compareAdd: '+ модель',
@@ -658,6 +660,8 @@ const en: Dictionary = {
   copy: 'Copy',
   copied: 'Copied',
   compare: 'Compare',
+  compareWith: 'Compare with',
+  compareEmpty: 'Ask a question — model answers will appear here side by side, the input stays at the bottom.',
   compareTitle: 'Send one question to several models and pick the best answer',
   compareAdd: '+ model',
   compareRemove: 'Remove model',

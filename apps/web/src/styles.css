@@ -2923,3 +2923,49 @@ input[type="checkbox"]:checked::after {
     row-gap: 6px;
   }
 }
+.compare-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 0 2px;
+  border-top: 1px dashed var(--line);
+}
+.compare-label {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.composer-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  min-width: 0;
+}
+.composer-model {
+  max-width: 230px;
+  text-overflow: ellipsis;
+}
+.compare-empty {
+  margin: auto 0 0;
+  padding: 40px 0 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+/* Колонкам сравнения нужно больше места, чем обычной ленте. */
+.thread:has(.compare) {
+  width: min(1180px, 100%);
+}
+.chat:has(.compare-row) .composer-dock .composer {
+  width: min(1180px, 100%);
+}
+.thread:has(.compare) > .bubble.user {
+  max-width: min(780px, 85%);
+}
+@media (max-width: 760px) {
+  .compare-label {
+    display: none;
+  }
+}
