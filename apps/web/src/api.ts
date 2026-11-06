@@ -85,6 +85,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  checkAllModels: () =>
+    request<{ started: number }>('/api/providers/check-all', {
+      method: 'POST',
+    }),
   checkModels: (id: string) =>
     request<{ started: boolean }>(`/api/providers/${id}/check`, {
       method: 'POST',

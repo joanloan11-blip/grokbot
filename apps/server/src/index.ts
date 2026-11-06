@@ -135,6 +135,9 @@ handle.runtime.onRoutineFinished = (userId, name, text) =>
   notifyTelegram(handle.runtime, userId, name, text);
 const stopTelegram = startTelegram(handle.runtime);
 const stopScheduler = handle.startScheduler();
+// Модели проверяются сами: в выборе в чате — только те, что отвечают.
+const { startModelChecks } = await import('./model-caps');
+const stopModelChecks = startModelChecks(handle.runtime.store);
 
 const server = serve(
   { fetch: handle.app.fetch, hostname: config.host, port: config.port },
@@ -145,6 +148,7 @@ const server = serve(
 
 async function shutdown(): Promise<void> {
   stopScheduler();
+  stopModelChecks();
   stopTelegram();
   server.close();
   await handle.close();

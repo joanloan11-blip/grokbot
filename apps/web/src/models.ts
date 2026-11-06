@@ -1,10 +1,19 @@
 import type { ProviderPublic } from '@mayak/shared';
 
-/** Модели провайдера для выбора: без ключа и не отвечают — не показываем. */
+/**
+ * Модели для выбора в чате и у агентов: только проверенные и отвечающие.
+ * Нет ключа там, где он нужен, не проверена или не отвечает — не показываем.
+ * Демо-модель (mock) работает без сети и показывается всегда.
+ */
 export function visibleModels(provider: ProviderPublic): string[] {
-  return provider.models.filter(
-    (model) => !(provider.keyless && provider.caps?.[model]?.ok === false),
-  );
+  if (provider.kind === 'mock') return provider.models;
+  if (provider.needsKey && !provider.hasApiKey) return [];
+  return provider.models.filter((model) => provider.caps?.[model]?.ok === true);
+}
+
+/** Сколько моделей провайдера попадёт в выбор (для подсказки в настройках). */
+export function availableCount(provider: ProviderPublic): number {
+  return visibleModels(provider).length;
 }
 
 /** Подпись модели в списке: умеет ли MCP-инструменты, отвечает ли. */

@@ -137,6 +137,8 @@ export async function checkProviderModels(
   options: {
     gapMs?: number;
     onModel?: (model: string, caps: ModelCaps) => void;
+    /** Проверить только эти модели (остальные результаты сохраняются). */
+    only?: string[];
   } = {},
 ): Promise<Record<string, ModelCaps>> {
   if (running.has(provider.id))
@@ -145,7 +147,10 @@ export async function checkProviderModels(
   try {
     const previous = (await readCaps(store))[provider.id] ?? {};
     const result: Record<string, ModelCaps> = {};
-    for (const [index, model] of provider.models.entries()) {
+    const queue = options.only
+      ? provider.models.filter((model) => options.only?.includes(model))
+      : provider.models;
+    for (const [index, model] of queue.entries()) {
       if (index > 0 && options.gapMs)
         await new Promise((r) => setTimeout(r, options.gapMs));
       const caps = await probeCaps(provider, model);
@@ -159,8 +164,14 @@ export async function checkProviderModels(
       options.onModel?.(model, result[model]!);
       await writeProviderCaps(store, provider.id, { ...previous, ...result });
     }
-    await writeProviderCaps(store, provider.id, result);
-    return result;
+    // Итог: прошлые результаты + новые, только для моделей, которые есть у провайдера.
+    const merged: Record<string, ModelCaps> = {};
+    for (const model of provider.models) {
+      const item = result[model] ?? previous[model];
+      if (item) merged[model] = item;
+    }
+    await writeProviderCaps(store, provider.id, merged);
+    return merged;
   } finally {
     running.delete(provider.id);
   }
@@ -168,4 +179,46 @@ export async function checkProviderModels(
 
 export function isChecking(providerId: string): boolean {
   return running.has(providerId);
+}
+
+const HOUR = 3_600_000;
+
+/** Модели, которые пора проверить: не проверялись, давно проверялись или прошлый раз не ответили по времени. */
+export function staleModels(
+  provider: ProviderRow,
+  caps: Record<string, ModelCaps>,
+  now = Date.now(),
+): string[] {
+  return provider.models.filter((model) => {
+    const item = caps[model];
+    if (!item) return true;
+    const age = now - Date.parse(item.checkedAt);
+    if (item.ok === null) return age > HOUR;
+    return age > 24 * HOUR;
+  });
+}
+
+/** Фоновая проверка: через минуту после старта и дальше раз в 3 часа. */
+export function startModelChecks(store: Store): () => void {
+  let stopped = false;
+  const run = async () => {
+    if (stopped) return;
+    const all = await readCaps(store);
+    for (const provider of await store.listProviders()) {
+      if (stopped) return;
+      if (!provider.enabled || provider.kind === 'mock') continue;
+      const only = staleModels(provider, all[provider.id] ?? {});
+      if (only.length)
+        await checkProviderModels(store, provider, { gapMs: 3000, only }).catch(
+          () => undefined,
+        );
+    }
+  };
+  const first = setTimeout(() => void run(), 60_000);
+  const timer = setInterval(() => void run(), 3 * HOUR);
+  return () => {
+    stopped = true;
+    clearTimeout(first);
+    clearInterval(timer);
+  };
 }

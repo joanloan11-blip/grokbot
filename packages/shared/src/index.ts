@@ -26,6 +26,8 @@ export interface ProviderPublic {
   owned?: boolean;
   /** Работает без ключа (анонимный бесплатный доступ). */
   keyless?: boolean;
+  /** Провайдеру нужен ключ (у демо и анонимных бесплатных — нет). */
+  needsKey?: boolean;
   /** Что умеет каждая модель — по последней проверке. */
   caps?: Record<string, ModelCaps>;
   /** Сейчас идёт проверка моделей. */

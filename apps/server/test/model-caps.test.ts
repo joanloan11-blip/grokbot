@@ -93,3 +93,44 @@ describe('model capability probe', () => {
     );
   });
 });
+
+describe('background model checks', () => {
+  it('picks unchecked, old and timed-out models', async () => {
+    const { staleModels } = await import('../src/model-caps');
+    const now = Date.parse('2026-11-06T12:00:00Z');
+    const p = {
+      ...provider('https://s.test/v1'),
+      models: ['new', 'fresh', 'old', 'slow'],
+    };
+    const caps = {
+      fresh: { ok: true, tools: true, checkedAt: '2026-11-06T10:00:00Z' },
+      old: { ok: true, tools: true, checkedAt: '2026-11-04T10:00:00Z' },
+      slow: { ok: null, tools: null, checkedAt: '2026-11-06T10:00:00Z' },
+    };
+    expect(staleModels(p, caps, now)).toEqual(['new', 'old', 'slow']);
+  });
+
+  it('keeps earlier results when only some models are rechecked', async () => {
+    const { checkProviderModels } = await import('../src/model-caps');
+    const settings = new Map<string, string>();
+    const store = {
+      getSetting: async (key: string) => settings.get(key),
+      setSetting: async (key: string, value: string) =>
+        void settings.set(key, value),
+    } as never;
+    settings.set(
+      'model_caps',
+      JSON.stringify({ p: { a: { ok: true, tools: true, checkedAt: 'x' } } }),
+    );
+    globalThis.fetch = vi.fn(
+      async () => new Response('nope', { status: 404 }),
+    ) as typeof fetch;
+    const result = await checkProviderModels(
+      store,
+      { ...provider('https://k.test/v1'), models: ['a', 'b'] },
+      { only: ['b'] },
+    );
+    expect(result.a?.ok).toBe(true);
+    expect(result.b?.ok).toBe(false);
+  });
+});

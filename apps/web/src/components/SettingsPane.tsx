@@ -16,6 +16,7 @@ import {
   type SkillSummary,
 } from '@mayak/shared';
 import { api } from '../api';
+import { availableCount } from '../models';
 import { useI18n, useTheme } from '../i18n';
 import { GithubPane } from './GithubPane';
 import { IconMenu } from './icons';
@@ -506,6 +507,21 @@ function ProvidersPanel({
         >
           {t('freeProviders')}
         </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={anyChecking}
+          onClick={() =>
+            void api
+              .checkAllModels()
+              .then(() => setTimeout(() => void load(), 1500))
+              .catch((reason: unknown) =>
+                setError(reason instanceof Error ? reason.message : t('error')),
+              )
+          }
+        >
+          {anyChecking ? t('capChecking') : t('capCheckAll')}
+        </button>
       </div>
       {freeOpen && (
         <FreeCatalogView
@@ -806,6 +822,14 @@ function ProvidersPanel({
               <p className="models">{provider.models.join(', ') || '—'}</p>
             )}
             <CapsLine provider={provider} />
+            {provider.kind !== 'mock' && (
+              <p className="hint avail-line">
+                {provider.needsKey && !provider.hasApiKey
+                  ? t('capNeedKey')
+                  : `${t('capInChat')}: ${availableCount(provider)} / ${provider.models.length}`}
+                {provider.checking ? ` · ${t('capChecking')}` : ''}
+              </p>
+            )}
             <div className="row-actions">
               <button
                 type="button"

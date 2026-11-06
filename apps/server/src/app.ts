@@ -744,6 +744,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
           managerModels,
           owned,
           keyless: isKeylessUrl(row.baseUrl),
+          needsKey: providerNeedsKey(row.kind, row.baseUrl),
           caps: capsMap[row.id] ?? {},
           checking: isChecking(row.id),
         };
@@ -864,6 +865,26 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const ok = await store.deleteProvider(current.id);
     if (!ok) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json({ ok: true });
+  });
+
+  // Проверить все модели у всех провайдеров, которые видит пользователь.
+  app.post('/api/providers/check-all', async (c) => {
+    const user = await actor(c);
+    const rows = (await visibleProviders(user)).filter(
+      (row) =>
+        row.enabled &&
+        row.kind !== 'mock' &&
+        (user.role === 'admin'
+          ? !row.ownerUserId || row.ownerUserId === user.id
+          : row.ownerUserId === user.id),
+    );
+    void (async () => {
+      for (const row of rows)
+        await checkProviderModels(store, row, { gapMs: 3000 }).catch(
+          () => undefined,
+        );
+    })();
+    return c.json({ started: rows.length }, 202);
   });
 
   // Проверить все модели провайдера: отвечает ли, умеет ли инструменты (MCP).

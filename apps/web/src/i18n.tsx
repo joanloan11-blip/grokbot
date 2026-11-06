@@ -261,9 +261,12 @@ const ru = {
   capNoTools: 'без MCP',
   capDown: 'не отвечает',
   capCheck: 'Проверить модели',
+  capCheckAll: 'Проверить все модели',
+  capInChat: 'В выборе в чате',
+  capNeedKey: 'Нет ключа — модели этого провайдера в чате не показываются',
   capChecking: 'Проверяю модели…',
   capLegend:
-    'MCP ✓ — модель вызывает инструменты (склад, Авито, amoCRM, браузер). Без MCP — только текст. Модели без ключа, которые не отвечают, скрыты из выбора.',
+    'MCP ✓ — модель вызывает инструменты (склад, Авито, amoCRM, браузер). Без MCP — только текст. В чате и у агентов показываются только проверенные модели, которые отвечают. Проверка идёт сама после сохранения и раз в сутки.',
   freeLead:
     'Провайдеры с бесплатным доступом. Выберите, получите ключ на их сайте и вставьте его в форму — модели подставятся сами. Источник:',
   freeRefresh: 'обновить список',
@@ -617,9 +620,12 @@ const en: Dictionary = {
   capNoTools: 'no MCP',
   capDown: 'not responding',
   capCheck: 'Check models',
+  capCheckAll: 'Check all models',
+  capInChat: 'Shown in chat',
+  capNeedKey: 'No key — this provider’s models are hidden in chat',
   capChecking: 'Checking models…',
   capLegend:
-    'MCP ✓ — the model calls tools (stock, Avito, amoCRM, browser). No MCP — text only. Keyless models that do not respond are hidden from the picker.',
+    'MCP ✓ — the model calls tools (stock, Avito, amoCRM, browser). No MCP — text only. Only checked, responding models appear in chat and agents. Checks run after saving and daily.',
   freeLead:
     'Providers with free access. Pick one, get a key on their site and paste it into the form — models fill in automatically. Source:',
   freeRefresh: 'refresh list',
