@@ -8,6 +8,9 @@ import { DEFAULT_PRICES, isPrice, readPriceOverrides } from './pricing';
 import { buildSpendReport } from './spend';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { resolveInside, workspaceRoot } from './workspace';
 import {
   SECRET_MASK,
   type Attachment,
@@ -1441,6 +1444,47 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       projectId,
     });
     return c.json(created, 201);
+  });
+
+  // Скачать папку или файл из своей рабочей папки (например, доработанный репозиторий).
+  app.get('/api/workspace/archive', async (c) => {
+    const user = await actor(c);
+    const scope = c.req.query('scope') ?? '';
+    if (!scope) return c.json({ error: 'Не указана папка' }, 400);
+    const root = workspaceRoot(config.dataDir, user.id, scope);
+    let full: string;
+    try {
+      full = resolveInside(root, c.req.query('path') || '.');
+    } catch {
+      return c.json({ error: 'Путь вне рабочей папки' }, 400);
+    }
+    if (!fs.existsSync(full)) return c.json({ error: 'Не найдено' }, 404);
+    const name =
+      full === path.resolve(root) ? 'workspace' : path.basename(full);
+    const child = spawn(
+      'tar',
+      [
+        '-czf',
+        '-',
+        '--exclude=node_modules',
+        '--exclude=.git',
+        '--exclude=.qastom',
+        '-C',
+        path.dirname(full),
+        path.basename(full),
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const safeName = name.replace(/[^\w.-]+/g, '_') || 'workspace';
+    return new Response(
+      Readable.toWeb(child.stdout) as unknown as ReadableStream,
+      {
+        headers: {
+          'content-type': 'application/gzip',
+          'content-disposition': `attachment; filename="${safeName}.tar.gz"`,
+        },
+      },
+    );
   });
 
   app.get('/api/conversations/:id', async (c) => {

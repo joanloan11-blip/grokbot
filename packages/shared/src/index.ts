@@ -265,8 +265,18 @@ export const AGENT_PLUGINS = [
       'workspace_write',
       'workspace_edit',
       'workspace_delete',
+      'workspace_search',
+      'workspace_download',
       'shell',
     ],
+  },
+  {
+    id: 'github',
+    emoji: '🐙',
+    name: 'Код с GitHub',
+    description:
+      'Скачать репозиторий, писать код по нему, отдать архив или открыть pull request',
+    tools: ['github_clone', 'github_changes', 'github_push'],
   },
   {
     id: 'code',

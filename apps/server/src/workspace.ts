@@ -50,7 +50,12 @@ export function listWorkspace(root: string, relative = '.'): string {
     if (lines.length >= WORKSPACE_LIMITS.listEntries || depth > 6) return;
     const entries = fs
       .readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.name !== '.git' && entry.name !== 'node_modules')
+      .filter(
+        (entry) =>
+          entry.name !== '.git' &&
+          entry.name !== 'node_modules' &&
+          entry.name !== '.qastom',
+      )
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       if (lines.length >= WORKSPACE_LIMITS.listEntries) break;
@@ -77,6 +82,66 @@ export function readWorkspaceFile(root: string, relative: string): string {
     return `${text.slice(0, WORKSPACE_LIMITS.readChars)}\n… (обрезано, всего ${text.length} символов)`;
   }
   return text;
+}
+
+/** Поиск текста или регулярного выражения по файлам рабочей папки (как grep -n). */
+export function searchWorkspace(
+  root: string,
+  query: string,
+  relative = '.',
+  options: { regex?: boolean; glob?: string } = {},
+): string {
+  if (!query) return 'Укажите query.';
+  let pattern: RegExp;
+  try {
+    pattern = options.regex
+      ? new RegExp(query, 'i')
+      : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  } catch {
+    return 'Некорректное регулярное выражение.';
+  }
+  const ext = options.glob?.trim().replace(/^\*+/, '').toLowerCase();
+  const start = resolveInside(root, relative);
+  if (!fs.existsSync(start)) return `Папки «${relative}» нет.`;
+  const hits: string[] = [];
+  let files = 0;
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (hits.length >= 80 || files > 5000) return;
+      if (
+        ['.git', 'node_modules', '.qastom', 'dist', 'build'].includes(
+          entry.name,
+        )
+      )
+        continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) {
+        if (ext && !entry.name.toLowerCase().endsWith(ext)) continue;
+        const size = fs.statSync(full).size;
+        if (size > 500_000) continue;
+        files += 1;
+        const text = fs.readFileSync(full, 'utf8');
+        if (text.includes('\0')) continue;
+        const rel = path.relative(root, full).replace(/\\/g, '/');
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length && hits.length < 80; i++)
+          if (pattern.test(lines[i]!))
+            hits.push(`${rel}:${i + 1}: ${lines[i]!.trim().slice(0, 200)}`);
+      }
+    }
+  };
+  if (fs.statSync(start).isFile()) {
+    const text = fs.readFileSync(start, 'utf8');
+    text.split('\n').forEach((line, i) => {
+      if (hits.length < 80 && pattern.test(line))
+        hits.push(`${relative}:${i + 1}: ${line.trim().slice(0, 200)}`);
+    });
+  } else walk(start);
+  if (!hits.length) return `«${query}» не найдено.`;
+  return (
+    hits.join('\n') + (hits.length >= 80 ? '\n… (показаны первые 80)' : '')
+  );
 }
 
 /** Пишет файл целиком и возвращает дифф. */

@@ -26,6 +26,7 @@ import type {
   ToolDefinition,
 } from './providers/types';
 import { readGithubToken, runGithubTool } from './github/tools';
+import { cloneRepo, describeChanges, pushRepo } from './github/workspace-repo';
 import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
@@ -44,6 +45,8 @@ import {
   listWorkspace,
   readWorkspaceFile,
   runWorkspaceShell,
+  resolveInside,
+  searchWorkspace,
   workspaceRoot,
   writeWorkspaceFile,
 } from './workspace';
@@ -901,20 +904,33 @@ async function exposeTools(
     'workspace_write',
     'workspace_edit',
     'workspace_delete',
+    'workspace_search',
+    'workspace_download',
+    'github_clone',
+    'github_changes',
+    'github_push',
     'shell',
   ])
     used.add(name);
   const dataDir = path.dirname(deps.skills.directory);
   // В проекте рабочая папка общая для всех чатов проекта.
   const conversationRow = await deps.store.getConversation(conversationId);
-  const root = () =>
-    workspaceRoot(
-      dataDir,
-      userId,
-      conversationRow?.projectId
-        ? `project-${conversationRow.projectId}`
-        : agent.id,
-    );
+  const workspaceScope = conversationRow?.projectId
+    ? `project-${conversationRow.projectId}`
+    : agent.id;
+  const root = () => workspaceRoot(dataDir, userId, workspaceScope);
+  const repoContext = () => ({
+    root: root(),
+    token: githubToken,
+    allow: agent.githubRepos,
+  });
+  const guardAsync = async (run: () => Promise<string>) => {
+    try {
+      return await run();
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Ошибка GitHub';
+    }
+  };
   const guard = (run: () => string) => {
     try {
       return run();
@@ -1173,6 +1189,122 @@ async function exposeTools(
     },
     {
       definition: {
+        name: 'workspace_search',
+        description:
+          'Search text in workspace files, like grep -n. Returns file:line: text. Поиск по коду в рабочей папке.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            path: { type: 'string', description: 'Folder or file, default .' },
+            regex: { type: 'boolean', description: 'query is a regex' },
+            glob: { type: 'string', description: 'File suffix, e.g. *.ts' },
+          },
+          required: ['query'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          searchWorkspace(
+            root(),
+            asString(args.query),
+            asString(args.path) || '.',
+            { regex: args.regex === true, glob: asString(args.glob) },
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'github_clone',
+        description:
+          'Download a GitHub repository (public, or private if assigned to this agent) into the workspace, by default to repos/<name>. Then read, search and edit it with workspace_* tools. Скачать репозиторий GitHub в рабочую папку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            repo: {
+              type: 'string',
+              description: 'owner/name or https://github.com/owner/name',
+            },
+            ref: { type: 'string', description: 'branch, tag or commit' },
+            dir: { type: 'string', description: 'target folder' },
+          },
+          required: ['repo'],
+        },
+      },
+      run: async (args) =>
+        guardAsync(() =>
+          cloneRepo(repoContext(), {
+            repo: asString(args.repo),
+            ref: asString(args.ref),
+            dir: asString(args.dir),
+          }),
+        ),
+    },
+    {
+      definition: {
+        name: 'github_changes',
+        description:
+          'List files changed, added or deleted in a cloned repository folder since it was downloaded. Что изменено в скачанном репозитории.',
+        inputSchema: {
+          type: 'object',
+          properties: { dir: { type: 'string', description: 'e.g. repos/x' } },
+          required: ['dir'],
+        },
+      },
+      run: async (args) =>
+        guard(() => describeChanges(root(), asString(args.dir))),
+    },
+    {
+      definition: {
+        name: 'workspace_download',
+        description:
+          'Give the user a download link (tar.gz) for a workspace folder or file, e.g. a cloned and edited repository. Ссылка на скачивание результата.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+        },
+      },
+      run: async (args) =>
+        guard(() => {
+          const rel = asString(args.path) || '.';
+          const full = resolveInside(root(), rel);
+          if (!fs.existsSync(full)) return `«${rel}» нет в рабочей папке.`;
+          const link = `/api/workspace/archive?scope=${encodeURIComponent(workspaceScope)}&path=${encodeURIComponent(rel)}`;
+          return `Ссылка для скачивания (дайте её пользователю как есть): [Скачать ${rel}.tar.gz](${link})`;
+        }),
+    },
+    ...(githubToken
+      ? [
+          {
+            definition: {
+              name: 'github_push',
+              description: `Commit the changes of a cloned repository to a NEW branch and open a pull request. Only for repositories assigned to this agent (${agent.githubRepos.join(', ')}); never the default branch. Отправить правки в ветку и открыть PR.`,
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  dir: { type: 'string', description: 'e.g. repos/x' },
+                  branch: { type: 'string', description: 'new branch name' },
+                  title: { type: 'string', description: 'commit/PR title' },
+                  body: { type: 'string', description: 'PR description' },
+                },
+                required: ['dir', 'title'],
+              },
+            },
+            run: async (args: Record<string, unknown>) =>
+              guardAsync(() =>
+                pushRepo(repoContext(), {
+                  dir: asString(args.dir),
+                  branch: asString(args.branch),
+                  title: asString(args.title),
+                  body: asString(args.body),
+                }),
+              ),
+          } satisfies ExposedTool,
+        ]
+      : []),
+    {
+      definition: {
         name: 'shell',
         description:
           'Run a shell command in a sandbox with the workspace mounted at /work (no network, 60 s). Disabled until an admin enables the code sandbox. Терминал в песочнице.',
@@ -1336,6 +1468,7 @@ export async function toolNeedsApproval(
     name === 'run_code' ||
     name === 'shell' ||
     name === 'workspace_delete' ||
+    name === 'github_push' ||
     name === 'skill_manage' ||
     name.startsWith('mcp__')
   );
