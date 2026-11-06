@@ -134,6 +134,15 @@ export async function* streamOpenAI(options: {
       };
       return;
     }
+    if (response.status === 401 || response.status === 403) {
+      yield {
+        type: 'error',
+        message: options.apiKey
+          ? `Провайдер не принял ключ (${response.status}). Проверьте ключ в настройках модели.`
+          : `Модель «${options.model}» требует ключ: без ключа у этого провайдера работают не все модели. Выберите другую модель (с пометкой MCP ✓) или добавьте ключ провайдера.`,
+      };
+      return;
+    }
     if (response.status === 429) {
       yield {
         type: 'error',

@@ -433,3 +433,30 @@ describe('rate limits', () => {
     ).toBe(true);
   });
 });
+
+describe('auth errors', () => {
+  it('explains that a keyless provider needs a key for this model', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          '{"error":{"message":"Missing API key.","code":"missing_api_key"}}',
+          {
+            status: 401,
+          },
+        ),
+    ) as typeof fetch;
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://api.llm7.io/v1',
+        apiKey: '',
+        model: 'kimi-k2.7-code',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(events[0]).toMatchObject({ type: 'error' });
+    expect(events[0]?.type === 'error' ? events[0].message : '').toMatch(
+      /требует ключ/,
+    );
+  });
+});
