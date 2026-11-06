@@ -63,7 +63,10 @@ function replyFor(
   const user = [...messages]
     .reverse()
     .find((message) => message.role === 'user');
-  const text = (user?.content ?? '').trim();
+  // Метку времени из withClock демо-модель не считает частью команды.
+  const text = (user?.content ?? '')
+    .replace(/^\[(?:Сейчас|Now):[^\]]*\]\n/, '')
+    .trim();
   const toolCmd = text.match(/^tool\s+(\S+)\s*([\s\S]*)$/i);
   if (toolCmd?.[1]) {
     const found = findTool(tools, toolCmd[1]);

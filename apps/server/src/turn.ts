@@ -40,6 +40,7 @@ import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
 import { assertCanSpend, chargeTokens } from './billing';
 import { costUsd } from './pricing';
+import { dateLine, withClock } from './clock';
 import { priceForModel } from './spend';
 import { compactHistory } from './context';
 import { readCaps } from './model-caps';
@@ -293,13 +294,18 @@ export async function runTurn(
             input.locale,
             {
               persona: agent.systemPrompt,
-              context: await projectBlock(deps.store, conversation.projectId),
               peers: depth === 0 ? peers : [],
               coding,
+              context: [
+                dateLine(input.locale),
+                await projectBlock(deps.store, conversation.projectId),
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
             },
           ),
         },
-        ...history,
+        ...withClock(history, input.locale),
       ],
       // Модели без инструментов (по проверке) сразу получают запрос без них.
       tools: toolsOff ? [] : exposed.map((tool) => tool.definition),
