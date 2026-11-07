@@ -15,6 +15,15 @@ const ru = {
   newChat: 'Новый чат',
   settings: 'Настройки',
   help: 'Справка',
+  avitoTitle: 'Авито',
+  avitoConnected: 'подключено',
+  avitoOff: 'не подключено',
+  avitoLead:
+    'Свои объявления и статистика с вашего аккаунта. Ключи выдаются в личном кабинете Авито: Настройки → API.',
+  avitoSave: 'Подключить',
+  avitoDisconnect: 'Отключить',
+  avitoHowTo:
+    'Нужны Client_id и Client_secret из раздела API личного кабинета и числовой Profile_id аккаунта. Секрет хранится зашифрованным и в браузер не возвращается.',
   helpEmpty: 'Справка недоступна. Файл docs/USER-GUIDE.md не найден на сервере.',
   loading: 'Загружаю…',
   chats: 'Чаты',
@@ -416,6 +425,15 @@ const en: Dictionary = {
   newChat: 'New chat',
   settings: 'Settings',
   help: 'Help',
+  avitoTitle: 'Avito',
+  avitoConnected: 'connected',
+  avitoOff: 'not connected',
+  avitoLead:
+    'Your own listings and stats. API keys are issued in the Avito account: Settings → API.',
+  avitoSave: 'Connect',
+  avitoDisconnect: 'Disconnect',
+  avitoHowTo:
+    'Needs Client_id and Client_secret from the API section and the numeric Profile_id of the account. The secret is stored encrypted and never returned to the browser.',
   helpEmpty: 'Help is unavailable. docs/USER-GUIDE.md was not found on the server.',
   loading: 'Loading…',
   chats: 'Chats',

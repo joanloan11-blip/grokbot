@@ -5,6 +5,12 @@ import { checkProviderModels, isChecking, readCaps } from './model-caps';
 import { isKeylessUrl } from './free-llm';
 import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
 import { assertPublicUrl } from './webtools';
+import { checkAvito } from './avito';
+import {
+  avitoStatus,
+  clearAvitoAccount,
+  saveAvitoAccount,
+} from './avito-account';
 import { keyBalance } from './balance';
 import { DEFAULT_PRICES, isPrice, readPriceOverrides } from './pricing';
 import { buildSpendReport } from './spend';
@@ -1170,6 +1176,51 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const ok = skills.remove(c.req.param('name'));
     if (!ok) return c.json({ error: 'Навык не найден' }, 404);
     return c.json({ ok: true });
+  });
+
+  // Авито по ключам API: личный кабинет пользователя. Секрет хранится
+  // зашифрованным, наружу отдаётся только состояние подключения.
+  app.get('/api/avito', async (c) => {
+    const user = await actor(c);
+    return c.json(await avitoStatus(store, config.jwtSecret, user.id));
+  });
+
+  app.put('/api/avito', async (c) => {
+    const user = await actor(c);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const clientId = asString(body.clientId).trim();
+    const clientSecret = asString(body.clientSecret).trim();
+    const profileId = asString(body.profileId).trim();
+    if (!clientId || !clientSecret || !profileId)
+      throw badRequest('Нужны Client_id, Client_secret и Profile_id');
+    let who: Awaited<ReturnType<typeof checkAvito>>;
+    try {
+      who = await checkAvito({ clientId, secret: clientSecret });
+    } catch (error) {
+      throw badRequest(
+        error instanceof Error ? error.message : 'Авито не ответил',
+      );
+    }
+    await saveAvitoAccount(
+      store,
+      config.jwtSecret,
+      user.id,
+      { clientId, clientSecret, profileId },
+      who.name,
+    );
+    return c.json({
+      connected: true,
+      clientId,
+      profileId,
+      name: who.name,
+    });
+  });
+
+  app.delete('/api/avito', async (c) => {
+    const user = await actor(c);
+    await clearAvitoAccount(store, user.id);
+    return c.json({ ok: true, connected: false });
   });
 
   app.get('/api/agent-templates', (c) => c.json(AGENT_TEMPLATES));

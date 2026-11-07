@@ -38,6 +38,16 @@ import {
 import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
 import { formatStock, searchStock } from './moysklad';
+import {
+  balance as avitoBalance,
+  checkAvito,
+  formatBalance,
+  formatItems,
+  formatStats,
+  itemStats,
+  listItems,
+} from './avito';
+import { readAvitoAccount } from './avito-account';
 import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
 import { assertCanSpend, chargeTokens } from './billing';
@@ -1151,6 +1161,115 @@ export async function exposeTools(
         }
       },
     });
+  }
+
+  // Авито: инструменты появляются, только если пользователь подключил ключи.
+  const avitoAccount = await readAvitoAccount(
+    deps.store,
+    deps.jwtSecret,
+    userId,
+  );
+  if (avitoAccount) {
+    const avitoGuard = async (run: () => Promise<string>) => {
+      try {
+        return await run();
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Авито недоступен';
+      }
+    };
+    const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+    tools.push(
+      {
+        definition: {
+          name: 'avito_account',
+          description:
+            'Who the connected Avito account is and how much money is on its wallet. Кто подключён в Авито и сколько на кошельке.',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        run: () =>
+          avitoGuard(async () => {
+            const [who, money] = await Promise.all([
+              checkAvito(avitoAccount),
+              avitoBalance(avitoAccount).catch(() => null),
+            ]);
+            return [
+              `Аккаунт Авито: ${who.name}${who.email ? ` (${who.email})` : ''}, id ${who.id ?? '—'}`,
+              money ? formatBalance(money) : 'Баланс недоступен.',
+            ].join('\n');
+          }),
+      },
+      {
+        definition: {
+          name: 'avito_items',
+          description:
+            'List own Avito listings with status and price. Use status active/removed/blocked or omit for all. Свои объявления Авито.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              status: {
+                type: 'string',
+                description: 'active, removed, blocked, rejected или пусто',
+              },
+              limit: {
+                type: 'number',
+                description: 'Сколько объявлений вернуть (1–50)',
+              },
+            },
+          },
+        },
+        run: (args) =>
+          avitoGuard(async () => {
+            const status = asString(args.status).trim() || undefined;
+            const limit = Number(args.limit) || 10;
+            return formatItems(
+              await listItems(avitoAccount, { status, limit }),
+              status,
+            );
+          }),
+      },
+      {
+        definition: {
+          name: 'avito_stats',
+          description:
+            'Avito performance for a period: views, contacts, favourites per listing. Dates are YYYY-MM-DD, max 30 days. Статистика объявлений.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              from: { type: 'string', description: 'Начало периода, YYYY-MM-DD' },
+              to: { type: 'string', description: 'Конец периода, YYYY-MM-DD' },
+              itemIds: {
+                type: 'array',
+                items: { type: 'number' },
+                description: 'Только эти объявления (необязательно)',
+              },
+            },
+          },
+        },
+        run: (args) =>
+          avitoGuard(async () => {
+            const to = asString(args.to).trim() || isoDate(new Date());
+            const from =
+              asString(args.from).trim() ||
+              isoDate(new Date(Date.now() - 6 * 86_400_000));
+            const itemIds = Array.isArray(args.itemIds)
+              ? args.itemIds
+                  .filter((id): id is number => typeof id === 'number')
+                  .slice(0, 50)
+              : undefined;
+            const rows = await itemStats(avitoAccount, { from, to, itemIds });
+            return formatStats(rows, from, to);
+          }),
+      },
+      {
+        definition: {
+          name: 'avito_balance',
+          description:
+            'Avito wallet balance: real money and bonus. Баланс кошелька Авито.',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        run: () => avitoGuard(async () => formatBalance(await avitoBalance(avitoAccount))),
+      },
+    );
   }
 
   tools.push(

@@ -250,6 +250,14 @@ export const AGENT_PLUGINS = [
     tools: ['stock_lookup'],
   },
   {
+    id: 'avito',
+    emoji: '🟢',
+    name: 'Авито',
+    description:
+      'Ваши объявления, статистика и баланс: подключается по ключам API в настройках',
+    tools: ['avito_account', 'avito_items', 'avito_stats', 'avito_balance'],
+  },
+  {
     id: 'images',
     emoji: '🎨',
     name: 'Картинки',

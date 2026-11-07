@@ -338,6 +338,27 @@ export const api = {
     request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
+  avitoStatus: () =>
+    request<{
+      connected: boolean;
+      clientId?: string;
+      profileId?: string;
+      name?: string;
+      connectedAt?: string;
+    }>('/api/avito'),
+  saveAvito: (input: {
+    clientId: string;
+    clientSecret: string;
+    profileId: string;
+  }) =>
+    request<{ connected: boolean; name?: string; profileId: string }>(
+      '/api/avito',
+      { method: 'PUT', body: JSON.stringify(input) },
+    ),
+  deleteAvito: () =>
+    request<{ ok: boolean; connected: boolean }>('/api/avito', {
+      method: 'DELETE',
+    }),
   templates: () => request<AgentTemplate[]>('/api/agent-templates'),
   agents: () => request<Agent[]>('/api/agents'),
   createAgent: (input: AgentInput) =>
