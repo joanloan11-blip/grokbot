@@ -32,7 +32,10 @@ export function AgentCapabilities({
   const { t } = useI18n();
   const toggle = (list: string[], id: string, on: boolean) =>
     on ? [...new Set([...list, id])] : list.filter((item) => item !== id);
-  const allPlugins = AGENT_PLUGINS.map((plugin) => plugin.id as string);
+  const visiblePlugins = AGENT_PLUGINS.filter(
+    (plugin) => !restricted || (plugin.id !== 'stock' && plugin.id !== 'skills'),
+  );
+  const allPlugins = visiblePlugins.map((plugin) => plugin.id as string);
   const activePlugins = plugins ?? allPlugins;
   return (
     <div className="caps">
@@ -112,7 +115,7 @@ export function AgentCapabilities({
           <small className="muted">{t('capsPluginsHint')}</small>
         </header>
         <div className="caps-grid">
-          {AGENT_PLUGINS.map((plugin) => (
+          {visiblePlugins.map((plugin) => (
             <label key={plugin.id} className="cap-card">
               <input
                 type="checkbox"

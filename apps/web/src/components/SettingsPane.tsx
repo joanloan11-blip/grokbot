@@ -1,3 +1,4 @@
+import { CapabilityCatalog } from './CapabilityCatalog';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DEEPSEEK_BASE_URL,
@@ -23,6 +24,7 @@ import { BillingSettingsPanel } from './BillingPane';
 import { IconMenu } from './icons';
 
 export type SettingsTab =
+  | 'plugins'
   | 'providers'
   | 'mcp'
   | 'skills'
@@ -55,6 +57,7 @@ export function SettingsPane({
   personal?: boolean;
 }) {
   const { t } = useI18n();
+  const [personalTab, setPersonalTab] = useState<SettingsTab>('plugins');
   if (personal)
     return (
       <section className="settings">
@@ -73,17 +76,43 @@ export function SettingsPane({
           </div>
         </header>
         <div className="settings-body">
-          <ProvidersPanel
-            onChanged={onProvidersChanged}
-            shareModels={false}
-            personal
-          />
-          <h2 className="spend-h">{t('myConnectors')}</h2>
-          <McpPanel personal />
+          <div className="tabs" role="tablist" aria-label="Мои возможности">
+            {(
+              [
+                { id: 'plugins', label: 'Плагины' },
+                { id: 'skills', label: 'Навыки' },
+                { id: 'providers', label: 'Мои модели' },
+                { id: 'mcp', label: 'Мои коннекторы' },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.id}
+                role="tab"
+                type="button"
+                aria-selected={personalTab === item.id}
+                className={personalTab === item.id ? 'active' : ''}
+                onClick={() => setPersonalTab(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          {(personalTab === 'plugins' || personalTab === 'skills') && (
+            <CapabilityCatalog key={personalTab} kind={personalTab} personal />
+          )}
+          {personalTab === 'providers' && (
+            <ProvidersPanel
+              onChanged={onProvidersChanged}
+              shareModels={false}
+              personal
+            />
+          )}
+          {personalTab === 'mcp' && <McpPanel personal />}
         </div>
       </section>
     );
   const tabs: { id: SettingsTab; label: string }[] = [
+    { id: 'plugins', label: 'Плагины' },
     { id: 'providers', label: t('tabProviders') },
     { id: 'mcp', label: t('tabMcp') },
     { id: 'skills', label: t('tabSkills') },
@@ -125,8 +154,17 @@ export function SettingsPane({
             shareModels={shareModels}
           />
         )}
+        {tab === 'plugins' && <CapabilityCatalog kind="plugins" />}
         {tab === 'mcp' && <McpPanel />}
-        {tab === 'skills' && <SkillsPanel />}
+        {tab === 'skills' && (
+          <>
+            <CapabilityCatalog kind="skills" />
+            <details>
+              <summary>Редактор навыков администратора</summary>
+              <SkillsPanel />
+            </details>
+          </>
+        )}
         {tab === 'github' && <GithubPane />}
         {tab === 'billing' && <BillingSettingsPanel />}
         {tab === 'general' && (
@@ -1124,22 +1162,24 @@ function McpPanel({ personal = false }: { personal?: boolean }) {
                 />
                 {t('enabled')}
               </label>
-              {!personal && !server.owned && (
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(server.forManagers)}
-                    onChange={(event) =>
-                      void api
-                        .updateMcp(server.id, {
-                          forManagers: event.target.checked,
-                        } as never)
-                        .then(load)
-                    }
-                  />
-                  {t('mcpForManagers')}
-                </label>
-              )}
+              {!personal &&
+                !server.owned &&
+                !/avito|авито|moysklad|мой[ _-]?склад/i.test(server.name) && (
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(server.forManagers)}
+                      onChange={(event) =>
+                        void api
+                          .updateMcp(server.id, {
+                            forManagers: event.target.checked,
+                          } as never)
+                          .then(load)
+                      }
+                    />
+                    {t('mcpForManagers')}
+                  </label>
+                )}
               <button
                 type="button"
                 className="ghost slim danger-text"

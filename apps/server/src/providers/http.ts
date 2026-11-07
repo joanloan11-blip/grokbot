@@ -133,8 +133,16 @@ function dumpFailed(
     ? path.join(process.env.DATA_DIR, 'debug')
     : '';
   const body = typeof init.body === 'string' ? init.body : '';
+  // Самый частый сбой — тело больше лимита прокси: он молча обрывает запрос.
+  const limit = proxyFor(url) ? PROXY_MAX_BODY : 0;
   console.warn(
-    `[llm] нет ответа ${new URL(url).host} · ${codes.join(' → ')} · ${body.length} Б тела · ${Math.round(ms / 1000)} с`,
+    `[llm] нет ответа ${new URL(url).host} · ${codes.join(' → ')} · ${body.length} Б тела${
+      limit && body.length > limit
+        ? ` (лимит прокси ${limit} Б)`
+        : limit
+          ? ''
+          : ' (без прокси)'
+    } · ${Math.round(ms / 1000)} с`,
   );
   if (!dir || !body) return;
   try {
@@ -199,6 +207,22 @@ type Leaf = {
 const roleOf = (message: unknown) => (message as { role?: string })?.role;
 
 export function fitBody(
+  body: Record<string, unknown>,
+  max = PROXY_MAX_BODY,
+): Record<string, unknown> {
+  const before = Buffer.byteLength(JSON.stringify(body));
+  const fitted = fitBodyInner(body, max);
+  if (before > max) {
+    const after = Buffer.byteLength(JSON.stringify(fitted));
+    // Обрезка контекста объясняет «модель забыла, что видела» — фиксируем в журнале.
+    console.warn(
+      `[llm] тело ${before} Б ужато до ${after} Б (лимит прокси ${max} Б): часть истории и результатов инструментов отброшена`,
+    );
+  }
+  return fitted;
+}
+
+function fitBodyInner(
   body: Record<string, unknown>,
   max = PROXY_MAX_BODY,
 ): Record<string, unknown> {

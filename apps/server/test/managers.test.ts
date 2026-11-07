@@ -1,8 +1,11 @@
+import { deliverToAgent } from '../src/turn';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Agent, Conversation, Project, PublicUser } from '@mayak/shared';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { buildAgentPrompt } from '../../web/src/agent-context';
+import { AGENT_TEMPLATES } from '../src/templates';
 import { createApp, type AppHandle } from '../src/app';
 import { loadConfig, repoRoot } from '../src/config';
 import { formatStock, searchStock } from '../src/moysklad';
@@ -94,6 +97,80 @@ afterAll(async () => {
 
 describe('personal agents', () => {
   let mine: Agent;
+
+  it('a newly registered user can create a niche agent without changing existing agents', async () => {
+    const before = (await (
+      await call('GET', '/api/agents', admin)
+    ).json()) as Agent[];
+    const templates = await call('GET', '/api/agent-templates', manager);
+    expect(templates.status).toBe(200);
+    expect(await templates.json()).toEqual(AGENT_TEMPLATES);
+    const template = AGENT_TEMPLATES.find(
+      (item) => item.id === 'market-analyst',
+    );
+    if (!template) throw new Error('missing template');
+    const systemPrompt = buildAgentPrompt(
+      template.systemPrompt,
+      'Фотосъёмка',
+      'Сравнить цены студий',
+    );
+    const response = await call('POST', '/api/agents', manager, {
+      name: 'Аналитик фотостудий',
+      systemPrompt,
+      skillNames: [],
+      mcpServerIds: [],
+    });
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as Agent;
+    const saved = (await (
+      await call('GET', `/api/agents/${created.id}`, manager)
+    ).json()) as Agent;
+    expect(saved.systemPrompt).toBe(systemPrompt);
+    expect(saved.ownerId).toBeTruthy();
+    expect(saved.skillNames).toEqual([]);
+    expect(saved.mcpServerIds).toEqual([]);
+    expect((await call('GET', `/api/agents/${created.id}`, other)).status).toBe(
+      404,
+    );
+    for (const agent of before) {
+      const after = (await (
+        await call('GET', `/api/agents/${agent.id}`, admin)
+      ).json()) as Agent;
+      expect(after.systemPrompt).toBe(agent.systemPrompt);
+    }
+  });
+
+  it('keeps names unique per owner rather than across all users', async () => {
+    const shared = await call('POST', '/api/agents', admin, { name: 'Разработчик' });
+    expect(shared.status).toBe(201);
+    const sharedAgent = await shared.json() as Agent;
+    const first = await call('POST', '/api/agents', manager, { name: 'Разработчик' });
+    expect(first.status).toBe(201);
+    const personal = await first.json() as Agent;
+    expect((await call('POST', '/api/agents', other, { name: 'Разработчик' })).status).toBe(201);
+    expect((await call('POST', '/api/agents', manager, { name: ' разработчик ' })).status).toBe(400);
+    expect((await call('POST', '/api/agents', admin, { name: 'Разработчик' })).status).toBe(400);
+    expect((await call('GET', `/api/agents/${personal.id}`, other)).status).toBe(404);
+    const second = await call('POST', '/api/agents', manager, { name: 'Другое имя' });
+    expect(second.status).toBe(201);
+    const secondAgent = await second.json() as Agent;
+    expect((await call('PATCH', `/api/agents/${secondAgent.id}`, manager, { name: 'Разработчик' })).status).toBe(400);
+    expect((await call('PATCH', `/api/agents/${personal.id}`, manager, { description: 'Обновлено' })).status).toBe(200);
+    expect((await call('PATCH', `/api/agents/${personal.id}`, admin, { shared: true })).status).toBe(400);
+    expect((await handle.runtime.store.getAgent(personal.id))?.ownerId).toBe(personal.ownerId);
+    expect((await handle.runtime.store.getAgent(sharedAgent.id))?.ownerId).toBeNull();
+    if (!personal.ownerId) throw new Error('missing owner');
+    const forwarded = await deliverToAgent(handle.runtime, { from: secondAgent, userId: personal.ownerId, targetName: 'Разработчик', message: 'Привет', depth: 0, locale: 'ru' });
+    expect(forwarded).not.toContain('не найден');
+    expect(await handle.runtime.store.findConversationByTitle(personal.ownerId, personal.id, `От: ${secondAgent.name}`)).toBeTruthy();
+    expect(await handle.runtime.store.findConversationByTitle(personal.ownerId, sharedAgent.id, `От: ${secondAgent.name}`)).toBeUndefined();
+
+    // Убираем только фикстуры, чтобы не влиять на последующие проверки общего списка.
+    for (const agent of await handle.runtime.store.listAgents()) {
+      if ([sharedAgent.id, personal.id, secondAgent.id].includes(agent.id) || agent.name === 'Разработчик')
+        await handle.runtime.store.deleteAgent(agent.id);
+    }
+  });
 
   it('a manager creates a private agent', async () => {
     const response = await call('POST', '/api/agents', manager, {

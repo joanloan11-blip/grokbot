@@ -8,6 +8,7 @@ import type {
 import { api } from '../api';
 import { useI18n } from '../i18n';
 import { modelLabel, splitModelRef, visibleModels } from '../models';
+import { buildAgentPrompt } from '../agent-context';
 import { AgentCapabilities } from './AgentCapabilities';
 
 const STEPS = [
@@ -40,6 +41,9 @@ export function AgentWizard({
   const [emoji, setEmoji] = useState('🏮');
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [niche, setNiche] = useState('');
+  const [customNiche, setCustomNiche] = useState('');
+  const [tasks, setTasks] = useState('');
   const [providerId, setProviderId] = useState('');
   const [model, setModel] = useState('');
   const [skillNames, setSkillNames] = useState<string[]>([]);
@@ -86,7 +90,7 @@ export function AgentWizard({
         .filter((skill) =>
           template.skillNames
             ? template.skillNames.includes(skill.name)
-            : skill.enabled,
+            : false,
         )
         .map((skill) => skill.name),
     );
@@ -119,7 +123,7 @@ export function AgentWizard({
         name: name.trim(),
         emoji,
         description,
-        systemPrompt,
+        systemPrompt: buildAgentPrompt(systemPrompt, selectedNiche, tasks),
         providerId: providerId || null,
         model: model || null,
         skillNames,
@@ -132,6 +136,7 @@ export function AgentWizard({
     }
   }
 
+  const selectedNiche = niche === 'custom' ? customNiche.trim() : niche;
   const provider = providers.find((item) => item.id === providerId);
   const stepKey = STEPS[step] ?? 'stepTemplate';
 
@@ -224,17 +229,72 @@ export function AgentWizard({
           </div>
         )}
         {step === 2 && (
-          <label>
-            {t('agentPrompt')}
-            <textarea
-              rows={10}
-              value={systemPrompt}
-              onChange={(event) => setSystemPrompt(event.target.value)}
-            />
-          </label>
+          <div className="form agent-context">
+            <p className="muted">{t('agentContextHint')}</p>
+            <label>
+              {t('agentNiche')}
+              <select
+                value={niche}
+                onChange={(event) => setNiche(event.target.value)}
+              >
+                <option value="">{t('agentNicheGeneral')}</option>
+                <option value={t('agentNicheRetail')}>
+                  {t('agentNicheRetail')}
+                </option>
+                <option value={t('agentNicheServices')}>
+                  {t('agentNicheServices')}
+                </option>
+                <option value={t('agentNicheEducation')}>
+                  {t('agentNicheEducation')}
+                </option>
+                <option value={t('agentNicheTechnology')}>
+                  {t('agentNicheTechnology')}
+                </option>
+                <option value={t('agentNicheProduction')}>
+                  {t('agentNicheProduction')}
+                </option>
+                <option value={t('agentNicheCreative')}>
+                  {t('agentNicheCreative')}
+                </option>
+                <option value="custom">{t('agentNicheCustom')}</option>
+              </select>
+            </label>
+            {niche === 'custom' && (
+              <label>
+                {t('agentNicheOwn')}
+                <input
+                  value={customNiche}
+                  maxLength={200}
+                  placeholder={t('agentNichePlaceholder')}
+                  onChange={(event) => setCustomNiche(event.target.value)}
+                />
+              </label>
+            )}
+            <label>
+              {t('agentTasks')}
+              <textarea
+                rows={3}
+                value={tasks}
+                maxLength={2000}
+                placeholder={t('agentTasksPlaceholder')}
+                onChange={(event) => setTasks(event.target.value)}
+              />
+            </label>
+            <details>
+              <summary>{t('agentInstructionsAdvanced')}</summary>
+              <label>
+                {t('agentPrompt')}
+                <textarea
+                  rows={8}
+                  value={systemPrompt}
+                  onChange={(event) => setSystemPrompt(event.target.value)}
+                />
+              </label>
+            </details>
+          </div>
         )}
         {step === 3 && (
-          <label>
+          <label className="form">
             {t('modelLabel')}
             <select
               value={providerId && model ? `${providerId}:${model}` : ''}
@@ -281,6 +341,14 @@ export function AgentWizard({
               <span>{emoji}</span> <strong>{name}</strong>
             </p>
             <p>{description}</p>
+            <p>
+              {t('agentNiche')}: {selectedNiche || t('agentNicheGeneral')}
+            </p>
+            {tasks.trim() && (
+              <p className="agent-context-tasks">
+                {t('agentTasks')}: {tasks.trim()}
+              </p>
+            )}
             <p className="muted">
               {provider?.name ?? '—'} / {model || '—'}
             </p>

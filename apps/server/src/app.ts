@@ -1,3 +1,5 @@
+import { isPublicSkill } from '@mayak/shared';
+import { canUseConnector, isBusinessConnector } from './connector-access';
 import { readBudgets, saveBudgets, usageMeter } from './meter';
 import { checkProviderModels, isChecking, readCaps } from './model-caps';
 import { isKeylessUrl } from './free-llm';
@@ -136,7 +138,12 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     }
     if (user.role === 'admin') return input;
     const { githubRepos: _gh, ...rest } = input;
-    return rest;
+    return {
+      ...rest,
+      ...(rest.skillNames
+        ? { skillNames: rest.skillNames.filter(isPublicSkill) }
+        : {}),
+    };
   };
 
   app.use('*', async (c, next) => {
@@ -966,13 +973,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   /** Коннекторы, которые пользователь может подключать к своим агентам. */
   const usableMcp = async (user: UserRecord) => {
     const rows = await store.listMcp();
-    if (user.role === 'admin') return rows.filter((row) => !row.ownerUserId);
-    // Клиенту — только свои коннекторы.
-    if (user.client) return rows.filter((row) => row.ownerUserId === user.id);
     const open = await managerMcpIds();
-    return rows.filter((row) =>
-      row.ownerUserId ? row.ownerUserId === user.id : open.includes(row.id),
-    );
+    return rows.filter((row) => canUseConnector(user, row, open));
   };
 
   const presentFor = async (user: UserRecord, row: McpRow) => {
@@ -987,7 +989,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       command: hideTarget ? '' : base.command,
       args: hideTarget ? [] : base.args,
       owned,
-      forManagers: !row.ownerUserId && open.includes(row.id),
+      forManagers:
+        !row.ownerUserId && !isBusinessConnector(row) && open.includes(row.id),
     };
   };
 
@@ -1090,6 +1093,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       user.role === 'admin' &&
       !current.ownerUserId
     ) {
+      if (body.forManagers && isBusinessConnector(current))
+        throw badRequest(
+          'Авито и МойСклад подключаются только к собственному кабинету пользователя',
+        );
       const open = new Set(await managerMcpIds());
       if (body.forManagers) open.add(current.id);
       else open.delete(current.id);
@@ -1111,12 +1118,22 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
-  app.get('/api/skills', (c) =>
-    c.json({ directory: skills.directory, skills: skills.list() }),
-  );
+  app.get('/api/skills', async (c) => {
+    const user = await actor(c);
+    return c.json({
+      directory: user.role === 'admin' ? skills.directory : '',
+      skills: skills
+        .list()
+        .filter((skill) => user.role === 'admin' || isPublicSkill(skill.name)),
+    });
+  });
 
-  app.get('/api/skills/:name', (c) => {
-    const skill = skills.get(c.req.param('name'));
+  app.get('/api/skills/:name', async (c) => {
+    const user = await actor(c);
+    const name = c.req.param('name');
+    if (user.role !== 'admin' && !isPublicSkill(name))
+      return c.json({ error: 'Навык не найден' }, 404);
+    const skill = skills.get(name);
     if (!skill) return c.json({ error: 'Навык не найден' }, 404);
     return c.json(skill);
   });
@@ -1146,13 +1163,21 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json(await store.listAgentsFor(user));
   });
 
+  const agentNameTaken = async (name: string, ownerId: string | null, exceptId?: string) => {
+    const normalized = name.trim().toLowerCase();
+    return (await store.listAgents()).some((agent) =>
+      agent.id !== exceptId && (agent.ownerId ?? null) === ownerId &&
+      agent.name.trim().toLowerCase() === normalized,
+    );
+  };
+
   app.post('/api/agents', async (c) => {
     const user = await actor(c);
     const input = await limitForManager(
       user,
       parseAgentInput(await readBody(c), false),
     );
-    if (await store.findAgentByName(input.name ?? '')) {
+    if (await agentNameTaken(input.name ?? '', user.role === 'admin' ? null : user.id)) {
       throw badRequest('Агент с таким именем уже есть');
     }
     if (user.role !== 'admin') {
@@ -1215,6 +1240,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       throw new HttpError(403, 'Общего агента настраивает администратор');
     const raw = await readBody(c);
     const input = await limitForManager(user, parseAgentInput(raw, true));
+    const willShare = user.role === 'admin' && isRecord(raw) && raw.shared === true && Boolean(current.ownerId);
+    if (await agentNameTaken(input.name ?? current.name, willShare ? null : current.ownerId ?? null, current.id))
+      throw badRequest('Агент с таким именем уже есть в вашем списке');
+
     await denyForeignProvider(user, input.providerId);
     if (user.role !== 'admin' && (input.providerId || input.model)) {
       await requireAllowedModel(
@@ -1243,11 +1272,6 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       const ids = await store.listUserAgentIds(owner);
       if (!ids.includes(current.id))
         await store.setUserAgents(owner, [...ids, current.id]);
-    }
-    if (input.name && input.name.toLowerCase() !== current.name.toLowerCase()) {
-      const taken = await store.findAgentByName(input.name);
-      if (taken && taken.id !== current.id)
-        throw badRequest('Агент с таким именем уже есть');
     }
     const updated = await store.updateAgent(current.id, input);
     return c.json(updated);
@@ -1711,6 +1735,11 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         if (isAbort(error)) return;
         const message =
           error instanceof Error ? error.message : 'Ошибка агента';
+        // Без этой строки сбой хода не виден нигде: клиент получает событие
+        // error, а в журнале контейнера остаётся пусто.
+        console.warn(
+          `[turn] чат ${conversation.id} · ${selection.model} · ${message}`,
+        );
         await write({ type: 'error', message }).catch(() => undefined);
       }
     });

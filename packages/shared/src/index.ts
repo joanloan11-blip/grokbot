@@ -278,8 +278,17 @@ export const AGENT_PLUGINS = [
     emoji: '🐙',
     name: 'Код с GitHub',
     description:
-      'Скачать репозиторий, писать код по нему, отдать архив или открыть pull request',
-    tools: ['github_clone', 'github_changes', 'github_push'],
+      'Скачать, читать и править репозиторий в рабочей папке, отдать архив; приватные репозитории и PR требуют отдельного доступа',
+    tools: [
+      'github_clone',
+      'github_changes',
+      'github_push',
+      'github_list_repos',
+      'github_read_file',
+      'github_search_code',
+      'github_list_issues',
+      'github_list_pulls',
+    ],
   },
   {
     id: 'code',
@@ -323,13 +332,6 @@ export const AGENT_PLUGINS = [
     description: 'Агент сам пишет и правит навыки',
     tools: ['skill_manage'],
   },
-  {
-    id: 'github',
-    emoji: '🐙',
-    name: 'GitHub',
-    description: 'Читать код в подключённых репозиториях',
-    tools: ['github_list_repos', 'github_read_file', 'github_search_code'],
-  },
 ] as const;
 
 export type AgentPluginId = (typeof AGENT_PLUGINS)[number]['id'];
@@ -340,6 +342,12 @@ export function toolAllowedByPlugins(
   plugins: string[] | null | undefined,
 ): boolean {
   if (!plugins) return true;
+  // GitHub работает с копией репозитория в рабочей папке. Терминал и удаление
+  // не входят в эту возможность и требуют отдельного плагина files.
+  if (plugins.includes('github') && [
+    'workspace_list', 'workspace_read', 'workspace_search', 'workspace_glob',
+    'workspace_write', 'workspace_edit', 'workspace_download',
+  ].includes(tool)) return true;
   const owner = AGENT_PLUGINS.find((plugin) =>
     (plugin.tools as readonly string[]).includes(tool),
   );
@@ -381,7 +389,7 @@ export interface AgentTemplate {
   emoji: string;
   description: string;
   systemPrompt: string;
-  /** Навыки, которые включить. Не задано — все включённые. */
+  /** Навыки, которые включить. Не задано — ни одного. */
   skillNames?: string[];
   /** MCP-серверы по имени или префиксу (`avito-` — все кабинеты). Не задано — ни одного. */
   mcpNames?: string[];
@@ -828,3 +836,5 @@ export interface BillingSettings {
   recurring: boolean;
   webhookUrl: string;
 }
+
+export { SKILL_CATALOG, CONNECTOR_PRESETS, isPublicSkill } from './catalog';

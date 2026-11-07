@@ -1,3 +1,5 @@
+import { isPublicSkill } from '@mayak/shared';
+import { canUseConnector, parseSharedConnectorIds } from './connector-access';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -308,7 +310,11 @@ export async function runTurn(
           content: buildSystemPrompt(
             deps.skills
               .listEnabled()
-              .filter((skill) => agent.skillNames.includes(skill.name)),
+              .filter(
+                (skill) =>
+                  agent.skillNames.includes(skill.name) &&
+                  (owner?.role === 'admin' || isPublicSkill(skill.name)),
+              ),
             input.locale,
             {
               persona: agent.systemPrompt,
@@ -420,9 +426,11 @@ export async function deliverToAgent(
   const reachable = sender
     ? await deps.store.listAgentsFor(sender)
     : await deps.store.listAgents();
-  const found = await deps.store.findAgentByName(input.targetName);
-  const target =
-    found && reachable.some((item) => item.id === found.id) ? found : undefined;
+  const needle = input.targetName.trim().toLowerCase();
+  const named = (item: Agent) => item.name.trim().toLowerCase() === needle;
+  const target = reachable.find((item) => item.id === input.targetName) ??
+    reachable.find((item) => item.ownerId === input.userId && named(item)) ??
+    reachable.find(named);
   if (!target) {
     const names = reachable.map((agent) => agent.name).join(', ');
     return `Агент «${input.targetName}» не найден. Доступны: ${names || '—'}.`;
@@ -459,7 +467,7 @@ export async function deliverToAgent(
   return result.text.trim() || '(пустой ответ)';
 }
 
-async function exposeTools(
+export async function exposeTools(
   deps: TurnDeps,
   agent: Agent,
   userId: string,
@@ -478,7 +486,12 @@ async function exposeTools(
     'github_list_pulls',
     'create_routine',
   ]);
-  const allowedSkills = new Set(agent.skillNames);
+  const toolOwner = await deps.store.getUser(userId);
+  const allowedSkills = new Set(
+    agent.skillNames.filter(
+      (name) => toolOwner?.role === 'admin' || isPublicSkill(name),
+    ),
+  );
   const tools: ExposedTool[] = [
     {
       definition: {
@@ -1104,7 +1117,7 @@ async function exposeTools(
   }
 
   const moyskladStored = await deps.store.getSetting('moysklad_token');
-  if (moyskladStored && deps.jwtSecret) {
+  if (toolOwner?.role === 'admin' && moyskladStored && deps.jwtSecret) {
     const secret = deps.jwtSecret;
     tools.push({
       definition: {
@@ -1492,21 +1505,18 @@ async function exposeTools(
   );
 
   const allowedMcp = new Set(agent.mcpServerIds);
-  const toolOwner = await deps.store.getUser(userId);
-  // Чужой личный коннектор не работает, даже если его id попал в агента.
-  // Клиенту (зарегистрировался сам) не работают и общие коннекторы команды.
-  const foreign = new Set(
-    (await deps.store.listMcp())
-      .filter((row) =>
-        toolOwner?.client
-          ? row.ownerUserId !== userId
-          : row.ownerUserId && row.ownerUserId !== userId,
-      )
+  const rows = await deps.store.listMcp();
+  const sharedIds = parseSharedConnectorIds(
+    await deps.store.getSetting('manager_mcp_ids'),
+  );
+  const permitted = new Set(
+    rows
+      .filter((row) => toolOwner && canUseConnector(toolOwner, row, sharedIds))
       .map((row) => row.id),
   );
   const servers = deps.mcp
     .listConnected()
-    .filter((server) => allowedMcp.has(server.id) && !foreign.has(server.id));
+    .filter((server) => allowedMcp.has(server.id) && permitted.has(server.id));
   const totalMcpTools = servers.reduce(
     (sum, server) => sum + server.tools.length,
     0,

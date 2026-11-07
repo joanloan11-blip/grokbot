@@ -3355,3 +3355,137 @@ input[type="checkbox"]:checked::after {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Контекст и инструкции мастера занимают всю доступную ширину. */
+.agent-context input,
+.agent-context select,
+.agent-context textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.agent-context textarea {
+  resize: vertical;
+}
+.agent-context summary {
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.agent-context-tasks {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.capability-catalog {
+  display: grid;
+  gap: 18px;
+}
+.catalog-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.catalog-top h2 {
+  margin: 0 0 8px;
+}
+.catalog-top input {
+  border: 1px solid var(--line);
+  background: var(--bg-3);
+  border-radius: 24px;
+  padding: 12px 18px;
+  width: min(320px, 100%);
+}
+.catalog-controls {
+  flex-direction: row;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.catalog-controls select {
+  min-width: min(260px, 100%);
+}
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.catalog-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--bg-2);
+  min-width: 0;
+}
+.catalog-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--bg-3);
+  font-size: 24px;
+}
+.catalog-card > div {
+  flex: 1;
+  min-width: 0;
+}
+.catalog-card h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.catalog-card p,
+.catalog-card small {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.catalog-card > button {
+  flex-shrink: 0;
+}
+.catalog-connection input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.catalog-preview pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+@media (max-width: 1100px) {
+  .catalog-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 540px) {
+  .catalog-card {
+    flex-wrap: wrap;
+  }
+  .catalog-card > button {
+    margin-left: 62px;
+  }
+  .catalog-top input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+.catalog-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--bg-2);
+  color: var(--text);
+  overflow: auto;
+}
+.catalog-dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+.catalog-dialog .catalog-connection { border: 0; margin: 0; }

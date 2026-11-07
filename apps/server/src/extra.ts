@@ -1,3 +1,4 @@
+import { canUseConnector, parseSharedConnectorIds } from './connector-access';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -480,6 +481,12 @@ async function replayApproval(
     const servers = await deps.store.listMcp();
     const server = servers.find((item) => item.name === serverName);
     if (!server) return 'MCP-сервер не найден';
+    const user = await deps.store.getUser(userId);
+    const shared = parseSharedConnectorIds(
+      await deps.store.getSetting('manager_mcp_ids'),
+    );
+    if (!user || !canUseConnector(user, server, shared))
+      return 'Нет доступа к этому коннектору';
     return deps.mcp.callTool(server.id, toolName, args);
   }
   return 'Это действие нельзя повторить автоматически.';

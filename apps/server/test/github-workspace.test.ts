@@ -1,3 +1,4 @@
+import { toolAllowedByPlugins } from '@mayak/shared';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -129,5 +130,24 @@ describe('приватные репозитории', () => {
     );
     expect(result).toContain('приватный');
     expect(fs.existsSync(path.join(root, 'repos/secret'))).toBe(false);
+  });
+});
+
+
+describe('GitHub workspace capability', () => {
+  it('includes file tools needed to use a downloaded repository without a separate files switch', () => {
+    for (const tool of ['github_clone', 'github_changes', 'workspace_list', 'workspace_read', 'workspace_search', 'workspace_glob', 'workspace_write', 'workspace_edit', 'workspace_download']) {
+      expect(toolAllowedByPlugins(tool, ['github'])).toBe(true);
+    }
+  });
+  it('does not implicitly enable terminal or deletion', () => {
+    expect(toolAllowedByPlugins('shell', ['github'])).toBe(false);
+    expect(toolAllowedByPlugins('workspace_delete', ['github'])).toBe(false);
+    expect(toolAllowedByPlugins('shell', ['github', 'files'])).toBe(true);
+  });
+  it('keeps repository and workspace tools disabled for unrelated plugins', () => {
+    expect(toolAllowedByPlugins('github_clone', ['web'])).toBe(false);
+    expect(toolAllowedByPlugins('workspace_read', ['web'])).toBe(false);
+    expect(toolAllowedByPlugins('github_clone', ['files'])).toBe(false);
   });
 });
