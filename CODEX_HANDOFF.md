@@ -164,3 +164,20 @@ managers.test.ts: общий и два разных личных «Разраб�
 - Переключение: LLM_PROXY_URL=socks5://llm-relay:1080, LLM_PROXY_MAX_BODY=200000 (было 16000 по умолчанию). Прежнее значение прокси сохранено в /home/rus/backups/mayak-config-20261107-0849/.env.before-relay.
 - Проверки: из контейнера приложения тела 4, 40 и 120 КБ до api.openai.com — HTTP 401 за 0.7–1.0 с (то есть доходят); check-models провайдеров 233 и DeepSeek — все модели отвечают; /api/health 200; RestartCount 0; relay занимает 1.6 МБ RAM.
 - Откат: вернуть в .env LLM_PROXY_URL из резервной копии и убрать LLM_PROXY_MAX_BODY, затем `docker compose -p mayak -f docker-compose.qastom.yml up -d app`.
+
+## Бэкапы: проверка восстановления Маяка — 2026-11-07
+
+- Проверено: конвейер /home/rus/backups/backup-all.sh по cron в 03:30 уже включает Маяк
+  (mayak_data — снимок SQLite через VACUUM INTO, mayak_conf, mayak_git), шифрует GPG AES-256
+  и выгружает в drive:qastom-backups; локально 14 дней, в облаке 30. Папка ~/backups/mayak/ —
+  устаревший формат от 2026-11-03, к текущим бэкапам отношения не имеет.
+- Пробел: еженедельный restore-check.sh проверял восстановление только Bible Finance; Маяк не
+  проверялся ни разу.
+- Добавлен ~/backups/restore-check-mayak.sh и вызов из restore-check.sh (воскресенье 05:15).
+  Скрипт скачивает свежий mayak_data из Drive, расшифровывает, распаковывает, проверяет
+  PRAGMA integrity_check и считает строки. Прогон: OK, users=2 agents=9 chats=43 messages=470,
+  integrity=ok, 22 секунды.
+- Внеплановый прогон backup-all.sh в 13:18 UTC: 10 файлов зашифровано и выгружено, включая
+  mayak_data 11 МБ (в нём уже зафиксированы правка amoCRM и переключение на relay).
+- Документация: RESTORE-MAYAK.md (пошаговое восстановление на новом сервере, ловушки со
+  снимком mayak-snap.sqlite и WAL), NEXT_AGENT_HANDOFF.md обновлён.

@@ -16,6 +16,8 @@
 | Данные | том `mayak_data` → `/app/data` (SQLite `mayak.sqlite` + `-wal` + `-shm`, `skills/`, `uploads/`, `debug/`) |
 | Второй сервер | `root@222.167.226.61`, hostname `vds.1185` — там живёт LLM-relay и чужие проекты |
 | Резервные копии конфигов | `/home/rus/backups/mayak-config-20261107-0831/` и `...-0849/` (700/600) |
+| Бэкапы | `/home/rus/backups/`: `backup-all.sh` по cron в 03:30, артефакты в `db/`, GPG + Google Drive |
+| Восстановление из бэкапа | [RESTORE-MAYAK.md](RESTORE-MAYAK.md) |
 
 Docker 29.1.3, Compose 2.40.3, Node в контейнере 22.23.4. `mayak-app` собран из этого же
 каталога (`Dockerfile`, pnpm + esbuild).
@@ -131,6 +133,21 @@ docker logs --since 30m mayak-app-1 | grep -E '\[turn\]|\[llm\]'
 SOCKS5 вручную на `llm-relay:1080`, `CONNECT api.openai.com:443`, POST с телом 40–120 КБ.
 Ожидаемо: `HTTP/1.1 401` за ~1 с (значит запрос дошёл; ключа в тесте нет намеренно).
 
+### Бэкапы
+
+```bash
+ls -lat ~/backups/db | head -5        # что уже создано и когда
+tail -5 ~/backups/backup.log          # итог последнего ночного прогона
+
+~/backups/backup-all.sh               # внеплановый бэкап: БД, Маяк, конфиги, git
+~/backups/restore-check-mayak.sh      # проверка восстановления Маяка из Drive
+```
+
+Ежедневно в 03:30 cron запускает `backup-all.sh`: дампы PostgreSQL всех проектов и `mayak_data`
+(снимок SQLite через `VACUUM INTO`), `mayak_conf` (`.env` + compose), `mayak_git` (bundle).
+Всё шифруется GPG AES-256 и уходит в `drive:qastom-backups`; локально 14 дней, в Drive 30.
+Пошаговое восстановление — [RESTORE-MAYAK.md](RESTORE-MAYAK.md).
+
 ---
 
 ## 5. Грабли (читать до правок)
@@ -187,7 +204,7 @@ SOCKS5 вручную на `llm-relay:1080`, `CONNECT api.openai.com:443`, POST 
 | Всё приложение на предыдущий образ | `docker tag mayak-app:before-agent-name-scope mayak-app:latest` + `up -d --no-deps app` (потеряются правки агентов/каталога — они моложе) |
 | Relay | `docker compose -p mayak-relay down` (в каталоге `deploy/qastom-relay`); приложение сразу перестанет ходить в OpenAI |
 | amoCRM | Вернуть прежний URL из журнала нельзя (там секрет не записан) — при откате коннектор будет 404, лучше оставить как есть |
-| База | `docker cp` из тома; полный дамп — `/home/rus/backups/mayak/`, но последний от **2026-11-03** |
+| База | Восстановление из `~/backups/db/mayak_data_*.tar.gz` — см. [RESTORE-MAYAK.md](RESTORE-MAYAK.md). Папка `/home/rus/backups/mayak/` — устаревший формат (03.11), не использовать |
 
 ---
 
@@ -200,8 +217,11 @@ SOCKS5 вручную на `llm-relay:1080`, `CONNECT api.openai.com:443`, POST 
    чатов заканчивались сообщением `tool` без ответа**. Причина не доказана: часть — сетевые
    обрывы старого прокси (3 дампа в `/app/data/debug`, тела 35–44 КБ, таймаут 90 с), часть —
    не установлена. Теперь каждый такой случай пишется строкой `[turn]`, смотреть после первых суток.
-3. **Бэкап БД.** Последний `mayak_data_*.tgz` — 2026-11-03. Проверить `mayak-dump.sh` и cron:
-   почти неделя без копии при живых платежах и агентах — риск.
+3. **Бэкапы работают, но проверка восстановления была только для Bible Finance.** Добавлен
+   `~/backups/restore-check-mayak.sh` (вызывается из `restore-check.sh` по воскресеньям 05:15):
+   качает свежий `mayak_data` из Drive, расшифровывает, проверяет `integrity_check` и строки.
+   Первый прогон прошёл: users=2, agents=9, chats=43, messages=470. Осталось убедиться, что
+   уведомление об ошибке реально доходит (вручную сломать проверку нельзя — только ждать сбоя).
 4. **Telegram не настроен**: 0 привязок, токена нет (`telegram_links` пуста). Код есть.
 5. **ЮKassa выключена** (`enabled:false`, 0 платежей, 0 кошельков). Тарифы 990/2990 ₽ отдаются
    публично через `/api/public/plans`. Никогда не прогонялось вживую.
