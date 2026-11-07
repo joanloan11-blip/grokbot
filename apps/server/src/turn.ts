@@ -349,7 +349,7 @@ export async function runTurn(
             },
           ),
         },
-        ...withClock(history, input.locale),
+        ...repairToolCalls(withClock(history, input.locale)),
       ],
       // Модели без инструментов (по проверке) сразу получают запрос без них.
       tools: toolsOff ? [] : exposed.map((tool) => tool.definition),
@@ -2027,6 +2027,48 @@ const MAX_IMAGE_BYTES = 5_000_000;
  * История для модели. Вложения пользователя раскрываются: текст документов
  * дописывается к сообщению, картинки уходят как image parts (самые свежие, до 6).
  */
+/**
+ * Провайдеры (OpenAI, Anthropic, Gemini) требуют, чтобы на каждый tool_call
+ * ассистента был ответ инструмента с тем же id. В базе так бывает не всегда:
+ * пользователь может отправить новое сообщение, пока вызов ещё выполнялся,
+ * а сокращение истории может выбросить часть результатов. Ремонтируем пары
+ * перед отправкой: недостающие ответы добавляем заглушкой, сиротские убираем.
+ */
+export function repairToolCalls(messages: ModelMessage[]): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!;
+    // Результат без своего вызова провайдеру не нужен и вызывает отказ.
+    if (message.role === 'tool') continue;
+    out.push(message);
+    const calls = message.toolCalls ?? [];
+    if (!calls.length) continue;
+    const answered = new Set<string>();
+    let next = index + 1;
+    while (next < messages.length && messages[next]!.role === 'tool') {
+      const tool = messages[next]!;
+      const id = tool.toolCallId ?? '';
+      const known = calls.some((call) => call.id === id);
+      if (known && !answered.has(id)) {
+        answered.add(id);
+        out.push(tool);
+      }
+      next++;
+    }
+    for (const call of calls) {
+      if (answered.has(call.id)) continue;
+      out.push({
+        role: 'tool',
+        toolCallId: call.id,
+        content:
+          '[Результата нет: вызов прерван до ответа инструмента. Если он ещё нужен — вызови его снова.]',
+      });
+    }
+    index = next - 1;
+  }
+  return out;
+}
+
 export async function buildHistory(
   store: Store,
   messages: ChatMessage[],
