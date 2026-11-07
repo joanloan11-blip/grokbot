@@ -118,6 +118,7 @@ export function ChatPane({
   const skipReload = useRef(false);
   const createdRef = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  const [showScrollDown, setShowScrollDown] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
 
   const choices = useMemo(() => flattenChoices(providers), [providers]);
@@ -628,6 +629,17 @@ export function ChatPane({
   // В режиме сравнения поле ввода всегда внизу, ответы — над ним.
   const hero = isEmpty && !compareOn;
 
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element) return;
+    const update = () => setShowScrollDown(element.scrollHeight - element.scrollTop - element.clientHeight > 64);
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    update();
+    return () => observer.disconnect();
+  }, [hero, conversationId]);
+
   const composer = (
     <form
       className="composer"
@@ -917,7 +929,11 @@ export function ChatPane({
         </div>
       ) : (
         <>
-          <div className="transcript" ref={scroller}>
+          <div className="transcript" ref={scroller} role="region" tabIndex={0} aria-label="Сообщения чата"
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              setShowScrollDown(element.scrollHeight - element.scrollTop - element.clientHeight > 64);
+            }}>
             <div className="thread">
               {isEmpty && compareOn && (
                 <p className="compare-empty">{t('compareEmpty')}</p>
@@ -991,7 +1007,13 @@ export function ChatPane({
               )}
             </div>
           </div>
-          <div className="composer-dock">{composer}</div>
+          <div className="composer-dock">
+            {showScrollDown && <div className="chat-scroll-actions"><button type="button" className="ghost slim"
+              onClick={() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' })}>
+              ↓ К последнему сообщению
+            </button></div>}
+            {composer}
+          </div>
         </>
       )}
     </section>

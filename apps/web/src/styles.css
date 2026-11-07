@@ -3489,3 +3489,39 @@ input[type="checkbox"]:checked::after {
 }
 .catalog-dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
 .catalog-dialog .catalog-connection { border: 0; margin: 0; }
+
+/* Список серверов и результат проверки SSH (панель администратора). */
+.plain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.plain-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.plain-list li .row-actions {
+  margin-left: auto;
+}
+.probe {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
