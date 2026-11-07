@@ -6,6 +6,7 @@ import { isKeylessUrl } from './free-llm';
 import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
 import { assertPublicUrl } from './webtools';
 import { checkAvito } from './avito';
+import { assertCanCreate } from './billing';
 import {
   addHost,
   hostSummaries,
@@ -228,6 +229,36 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       // Клиенту — основной агент без коннекторов команды.
       const main = (await store.listAgents()).find((agent) => !agent.ownerId);
       if (main) await store.setUserAgents(user.id, [main.id]);
+    }
+    if (mailConfigured()) {
+      const base = (config.publicUrl || '').replace(/\/$/, '');
+      const lines = [
+        `Здравствуйте${user.name ? `, ${user.name}` : ''}!`,
+        '',
+        first
+          ? 'Вы создали рабочее пространство «Маяк».'
+          : 'Заявка на доступ к «Маяку» принята — администратор её подтвердит.',
+        '',
+        'С чего начать:',
+        '1. Создайте агента или выберите готовый шаблон.',
+        '2. Подключите свои кабинеты: Авито, МойСклад, GitHub — в разделе «Мои коннекторы».',
+        '3. Задайте первую задачу обычным языком.',
+        '',
+        'Справка по плагинам, навыкам и коннекторам — в разделе «Справка» внутри приложения.',
+        base ? `\nВход: ${base}` : '',
+        '',
+        'Письмо отправлено автоматически, отвечать на него не нужно.',
+      ].filter((line) => line !== undefined);
+      void sendMail({
+        to: user.email,
+        subject: first
+          ? 'Маяк: рабочее пространство готово'
+          : 'Маяк: заявка принята',
+        text: lines.join('\n'),
+        html: lines
+          .map((line) => (line ? `<p>${line}</p>` : '<br/>'))
+          .join(''),
+      }).catch(() => undefined);
     }
     if (user.status === 'active') {
       setSessionCookie(
@@ -1094,10 +1125,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       throw badRequest('Коннектор с таким именем уже есть — выберите другое');
     if (user.role !== 'admin') {
       await checkPersonalMcp(input);
-      const own = (await store.listMcp()).filter(
-        (row) => row.ownerUserId === user.id,
-      );
-      if (own.length >= 10) throw badRequest('Не больше 10 своих коннекторов');
+      await assertCanCreate(store, user, 'connectors');
     }
     const saved = await store.upsertMcp(input, {
       ownerUserId: user.role === 'admin' ? null : user.id,
@@ -1318,12 +1346,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     if (await agentNameTaken(input.name ?? '', user.role === 'admin' ? null : user.id)) {
       throw badRequest('Агент с таким именем уже есть');
     }
-    if (user.role !== 'admin') {
-      const own = (await store.listAgents()).filter(
-        (agent) => agent.ownerId === user.id,
-      );
-      if (own.length >= 20) throw badRequest('Не больше 20 личных агентов');
-    }
+    if (user.role !== 'admin') await assertCanCreate(store, user, 'agents');
     let defaults = await defaultSelection(store);
     if (user.role !== 'admin' && input.model === undefined) {
       // Менеджеру — первая из моделей, которые ему открыл админ.
@@ -1503,6 +1526,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     if (!(await canUseAgent(user, c.req.param('id')))) {
       return c.json({ error: 'Агент не найден' }, 404);
     }
+    if (user.role !== 'admin') await assertCanCreate(store, user, 'routines');
     const input = parseRoutineInput(await readBody(c), false);
     if (!input.name || !input.prompt) {
       throw badRequest('Укажите название и промпт');

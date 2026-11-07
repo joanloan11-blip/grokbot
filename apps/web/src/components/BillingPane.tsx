@@ -111,6 +111,23 @@ export function BillingPane({ onMenu }: { onMenu: () => void }) {
                 </div>
               </div>
               <div className="billing-card">
+                <span className="billing-label">Возможности</span>
+                <strong className="billing-value">
+                  {state.limits.source === 'admin'
+                    ? 'без ограничений'
+                    : state.limits.source === 'none'
+                      ? 'нет доступа'
+                      : state.plan
+                        ? state.plan.name
+                        : 'пробный период'}
+                </strong>
+                <span className="muted">
+                  {state.limits.source === 'admin'
+                    ? `агентов ${state.usage.agents} · коннекторов ${state.usage.connectors} · рутин ${state.usage.routines}`
+                    : `агенты ${state.usage.agents}/${state.limits.agents} · коннекторы ${state.usage.connectors}/${state.limits.connectors} · рутины ${state.usage.routines}/${state.limits.routines}`}
+                </span>
+              </div>
+              <div className="billing-card">
                 <span className="billing-label">Тариф</span>
                 {state.plan ? (
                   <>

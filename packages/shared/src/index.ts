@@ -797,6 +797,8 @@ export interface BillingPlan {
   includedRub: number;
   days: number;
   description?: string;
+  /** Квоты тарифа; не задано — без ограничений по количеству. */
+  limits?: PlanLimits;
 }
 
 export interface BillingPaymentRow {
@@ -809,6 +811,13 @@ export interface BillingPaymentRow {
 }
 
 /** Что видит пользователь в разделе «Оплата». */
+/** Что входит в тариф: сколько можно создать своими руками. */
+export interface PlanLimits {
+  agents: number;
+  connectors: number;
+  routines: number;
+}
+
 export interface BillingState {
   /** Оплата включена администратором и касается этого пользователя (клиент). */
   applies: boolean;
@@ -825,6 +834,10 @@ export interface BillingState {
   rubPerUsd: number;
   /** Платные модели сейчас недоступны (пробные исчерпаны, денег нет). */
   blocked: boolean;
+  /** Действующие лимиты и откуда они взялись. */
+  limits: PlanLimits & { source: 'admin' | 'plan' | 'trial' | 'none' };
+  /** Сколько уже создано. */
+  usage: { agents: number; connectors: number; routines: number };
 }
 
 /** Настройки оплаты для администратора (секретный ключ не возвращается). */

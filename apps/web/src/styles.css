@@ -3525,3 +3525,40 @@ input[type="checkbox"]:checked::after {
   max-height: 220px;
   overflow: auto;
 }
+
+/* Быстрый старт: три сценария на пустом чате. */
+.quick-start {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  width: min(720px, 100%);
+  margin: 18px auto 6px;
+}
+.quick-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.quick-card:hover {
+  border-color: var(--accent, var(--line));
+  transform: translateY(-1px);
+}
+.quick-emoji {
+  font-size: 20px;
+  line-height: 1;
+}
+.quick-card strong {
+  font-size: 14px;
+}
+.quick-card .muted {
+  font-size: 12px;
+  line-height: 1.35;
+}

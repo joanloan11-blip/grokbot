@@ -17,13 +17,29 @@ import { priceForModel } from './spend';
  * Сотрудники (приглашённые менеджеры) и администратор не платят.
  */
 
+import { limitsForUser, usageOf } from './entitlements';
+
 const SETTINGS_KEY = 'billing_settings';
 const SECRET_KEY = 'yookassa_secret';
 const API = 'https://api.yookassa.ru/v3';
 
 export const DEFAULT_PLANS: BillingPlan[] = [
-  { id: 'start', name: 'Старт', priceRub: 990, includedRub: 900, days: 30 },
-  { id: 'pro', name: 'Про', priceRub: 2990, includedRub: 2800, days: 30 },
+  {
+    id: 'start',
+    name: 'Старт',
+    priceRub: 990,
+    includedRub: 900,
+    days: 30,
+    limits: { agents: 3, connectors: 3, routines: 3 },
+  },
+  {
+    id: 'pro',
+    name: 'Про',
+    priceRub: 2990,
+    includedRub: 2800,
+    days: 30,
+    limits: { agents: 10, connectors: 10, routines: 20 },
+  },
 ];
 
 type StoredSettings = Omit<BillingSettings, 'hasSecret' | 'webhookUrl'>;
@@ -173,6 +189,32 @@ export const BLOCKED_MESSAGE =
   'Пробные $2 на модели OpenAI закончились. Пополните баланс или выберите тариф в разделе «Оплата» — бесплатные модели работают без оплаты.';
 
 /** Можно ли клиенту запустить эту модель сейчас. Бросает 402, если нужна оплата. */
+/** Проверка квоты тарифа перед созданием сущности. */
+export async function assertCanCreate(
+  store: Store,
+  user: UserRecord,
+  kind: 'agents' | 'connectors' | 'routines',
+): Promise<void> {
+  const settings = await readBillingSettings(store);
+  const wallet = await store.getWallet(user.id);
+  const { limits, source } = limitsForUser(user, settings, wallet);
+  if (limits[kind] >= 1_000_000) return;
+  const usage = await usageOf(store, user);
+  if (usage[kind] < limits[kind]) return;
+  const what =
+    kind === 'agents'
+      ? 'агентов'
+      : kind === 'connectors'
+        ? 'коннекторов'
+        : 'рутин по расписанию';
+  throw new HttpError(
+    402,
+    source === 'none'
+      ? `Пробный период закончился. Чтобы создавать ${what}, подключите тариф в разделе «Оплата».`
+      : `Тариф позволяет ${limits[kind]} ${what}. Чтобы больше — смените тариф в разделе «Оплата».`,
+  );
+}
+
 export async function assertCanSpend(
   store: Store,
   user: UserRecord | undefined,
@@ -261,9 +303,13 @@ export async function billingState(
   const payments = await store.listPayments(user.id, 20);
   const applies = billingApplies(user, settings);
   const trialLeft = Math.max(0, settings.trialUsd - wallet.trialUsedUsd);
+  const effective = limitsForUser(user, settings, wallet);
+  const usage = await usageOf(store, user);
   return {
     applies,
     enabled: settings.enabled,
+    limits: { ...effective.limits, source: effective.source },
+    usage,
     trial: {
       limitUsd: settings.trialUsd,
       usedUsd: Math.min(settings.trialUsd, wallet.trialUsedUsd),

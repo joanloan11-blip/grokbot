@@ -39,6 +39,7 @@ import {
   IconUsers,
 } from './components/icons';
 import { HelpPane } from './components/HelpPane';
+import { QUICK_START } from './scenarios';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { SpendPane } from './components/SpendPane';
 import { InlineMeter, RailMeter } from './components/UsageMeter';
@@ -315,6 +316,29 @@ function Shell({
     setActiveId(id);
     setView({ name: 'chat' });
     setNavOpen(false);
+  };
+
+  // Быстрый старт: готовый агент из сценария, без мастера и пустого чата.
+  const quickStart = (scenarioId: string) => {
+    const scenario = QUICK_START.find((item) => item.id === scenarioId);
+    if (!scenario) return;
+    const wanted = (scenario.agent.name ?? '').trim().toLowerCase();
+    const existing = agents.find(
+      (item) => item.name.trim().toLowerCase() === wanted,
+    );
+    if (existing) {
+      setAgentId(existing.id);
+      openChat(null);
+      return;
+    }
+    void api
+      .createAgent(scenario.agent)
+      .then((created) => {
+        setAgents((current) => [...current, created]);
+        setAgentId(created.id);
+        openChat(null);
+      })
+      .catch(() => undefined);
   };
 
   return (
@@ -832,6 +856,7 @@ function Shell({
           <ChatPane
             conversationId={activeId}
             agentId={agent.id}
+            onQuickStart={quickStart}
             defaultProviderId={agent.providerId}
             defaultModel={agent.model}
             providers={providers}
