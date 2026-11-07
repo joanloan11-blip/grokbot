@@ -338,6 +338,29 @@ export const api = {
     request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
+  servers: () =>
+    request<{
+      hosts: { id: string; name: string; host: string; port: number; user: string }[];
+    }>('/api/servers'),
+  addServer: (input: {
+    name?: string;
+    host: string;
+    port?: number;
+    user: string;
+    privateKey: string;
+  }) =>
+    request<{ host: { id: string; name: string }; probe: string }>('/api/servers', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  testServer: (id: string) =>
+    request<{ probe: string }>(`/api/servers/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+    }),
+  deleteServer: (id: string) =>
+    request<{ ok: boolean }>(`/api/servers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
   avitoStatus: () =>
     request<{
       connected: boolean;

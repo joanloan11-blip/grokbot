@@ -1,5 +1,6 @@
 import { CapabilityCatalog } from './CapabilityCatalog';
 import { AvitoPanel } from './AvitoPanel';
+import { ServersPanel } from './ServersPanel';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DEEPSEEK_BASE_URL,
@@ -26,6 +27,7 @@ import { IconMenu } from './icons';
 
 export type SettingsTab =
   | 'avito'
+  | 'servers'
   | 'plugins'
   | 'providers'
   | 'mcp'
@@ -118,6 +120,7 @@ export function SettingsPane({
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'plugins', label: 'Плагины' },
     { id: 'avito', label: 'Авито' },
+    { id: 'servers', label: t('serversTitle') },
     { id: 'providers', label: t('tabProviders') },
     { id: 'mcp', label: t('tabMcp') },
     { id: 'skills', label: t('tabSkills') },
@@ -161,6 +164,7 @@ export function SettingsPane({
         )}
         {tab === 'plugins' && <CapabilityCatalog kind="plugins" />}
         {tab === 'avito' && <AvitoPanel />}
+        {tab === 'servers' && <ServersPanel />}
         {tab === 'mcp' && <McpPanel />}
         {tab === 'skills' && (
           <>

@@ -48,6 +48,13 @@ import {
   listItems,
 } from './avito';
 import { readAvitoAccount } from './avito-account';
+import {
+  listHosts,
+  listRemote,
+  readRemote,
+  runOnHost,
+  writeRemote,
+} from './remote';
 import { readImageSettings, runImageTool } from './images';
 import { assertBudget } from './meter';
 import { assertCanSpend, chargeTokens } from './billing';
@@ -1272,6 +1279,151 @@ export async function exposeTools(
     );
   }
 
+  // Удалённые серверы: только администратор и только если серверы заведены.
+  if (toolOwner?.role === 'admin') {
+    const hosts = await listHosts(deps.store, deps.jwtSecret);
+    if (hosts.length) {
+      const byName = (value: string) => {
+        const needle = value.trim().toLowerCase();
+        return (
+          hosts.find((row) => row.id === value) ??
+          hosts.find((row) => row.name.trim().toLowerCase() === needle) ??
+          hosts.find((row) => row.host.toLowerCase() === needle) ??
+          hosts[0]
+        );
+      };
+      const catalogue = hosts
+        .map((row) => `${row.name} (${row.user}@${row.host}:${row.port})`)
+        .join('; ');
+      const guard = async (run: () => Promise<string>) => {
+        try {
+          return await run();
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Ошибка SSH';
+        }
+      };
+      const hostArg = {
+        type: 'string' as const,
+        description: `Сервер: ${catalogue}`,
+      };
+      tools.push(
+        {
+          definition: {
+            name: 'server_list',
+            description: `Servers available over SSH. Список серверов: ${catalogue}.`,
+            inputSchema: { type: 'object', properties: {} },
+          },
+          run: async () => hosts.map((row) => `${row.name} — ${row.user}@${row.host}:${row.port}`).join('\n'),
+        },
+        {
+          definition: {
+            name: 'server_exec',
+            description:
+              'Run a shell command on a remote server over SSH and return stdout, stderr and exit code. Use for services, logs, docker and deploys; prefer read-only commands. Команда на сервере по SSH.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                command: { type: 'string', description: 'Команда целиком' },
+                timeoutSec: {
+                  type: 'number',
+                  description: 'Таймаут в секундах (5–300, по умолчанию 60)',
+                },
+              },
+              required: ['command'],
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              const command = asString(args.command).trim();
+              if (!command) return 'Укажите command.';
+              const seconds = Number(args.timeoutSec) || 60;
+              const result = await runOnHost(target, command, {
+                timeoutMs: seconds * 1000,
+              });
+              const parts = [
+                `${target.name}: код ${result.code ?? '—'}, ${Math.round(result.ms / 1000)} с`,
+              ];
+              if (result.stdout.trim()) parts.push(`stdout:\n${result.stdout.trimEnd()}`);
+              if (result.stderr.trim()) parts.push(`stderr:\n${result.stderr.trimEnd()}`);
+              return parts.join('\n');
+            }),
+        },
+        {
+          definition: {
+            name: 'server_read',
+            description:
+              'Read a text file on the remote server (up to 60 KB). Прочитать файл на сервере.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                path: { type: 'string', description: 'Абсолютный путь' },
+                maxBytes: { type: 'number', description: 'Сколько байт прочитать' },
+              },
+              required: ['path'],
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              const filePath = asString(args.path).trim();
+              if (!filePath) return 'Укажите path.';
+              return await readRemote(target, filePath, Number(args.maxBytes) || 60_000);
+            }),
+        },
+        {
+          definition: {
+            name: 'server_write',
+            description:
+              'Write a text file on the remote server, creating folders. Dangerous: prefer showing the diff first. Записать файл на сервере.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                path: { type: 'string', description: 'Абсолютный путь' },
+                content: { type: 'string', description: 'Новое содержимое целиком' },
+              },
+              required: ['path', 'content'],
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              const filePath = asString(args.path).trim();
+              if (!filePath) return 'Укажите path.';
+              const bytes = await writeRemote(
+                target,
+                filePath,
+                asString(args.content),
+              );
+              return `Записано ${bytes} байт в ${filePath} на ${target.name}.`;
+            }),
+        },
+        {
+          definition: {
+            name: 'server_ls',
+            description:
+              'List a directory on the remote server. Список файлов на сервере.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                path: { type: 'string', description: 'Каталог, по умолчанию /' },
+              },
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              return await listRemote(target, asString(args.path).trim() || '/');
+            }),
+        },
+      );
+    }
+  }
+
   tools.push(
     {
       definition: {
@@ -1785,6 +1937,8 @@ export async function toolNeedsApproval(
     name === 'workspace_delete' ||
     name === 'github_push' ||
     name === 'skill_manage' ||
+    name === 'server_exec' ||
+    name === 'server_write' ||
     name.startsWith('mcp__')
   );
 }

@@ -4,7 +4,7 @@ WORKDIR /app
 
 # ffmpeg перекодирует голосовые записи браузера для whisper.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
+  && apt-get install -y --no-install-recommends ffmpeg openssh-client \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.4 --activate

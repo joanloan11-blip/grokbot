@@ -16,6 +16,21 @@ const ru = {
   settings: 'Настройки',
   help: 'Справка',
   avitoTitle: 'Авито',
+  serversTitle: 'Серверы',
+  serversLead:
+    'Серверы, на которых агент работает по SSH: команды, файлы, логи, деплой. Доступ есть только у администратора.',
+  serversEmpty: 'Пока ни одного сервера.',
+  serversAdd: 'Подключить сервер',
+  serversName: 'Название',
+  serversHost: 'Хост или IP',
+  serversPort: 'Порт',
+  serversUser: 'Пользователь',
+  serversKey: 'Приватный ключ',
+  serversConnect: 'Проверить и сохранить',
+  serversTest: 'Проверить',
+  serversDelete: 'Удалить',
+  serversNote:
+    'Ключ шифруется на сервере и в браузер не возвращается. После сохранения агент видит инструменты server_exec, server_read, server_write и server_ls.',
   avitoConnected: 'подключено',
   avitoOff: 'не подключено',
   avitoLead:
@@ -426,6 +441,21 @@ const en: Dictionary = {
   settings: 'Settings',
   help: 'Help',
   avitoTitle: 'Avito',
+  serversTitle: 'Servers',
+  serversLead:
+    'Servers the agent can work on over SSH: commands, files, logs, deploys. Admin only.',
+  serversEmpty: 'No servers yet.',
+  serversAdd: 'Connect a server',
+  serversName: 'Name',
+  serversHost: 'Host or IP',
+  serversPort: 'Port',
+  serversUser: 'User',
+  serversKey: 'Private key',
+  serversConnect: 'Check and save',
+  serversTest: 'Check',
+  serversDelete: 'Delete',
+  serversNote:
+    'The key is encrypted on the server and never returned to the browser. Once saved the agent gets server_exec, server_read, server_write and server_ls.',
   avitoConnected: 'connected',
   avitoOff: 'not connected',
   avitoLead:

@@ -7,6 +7,13 @@ import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
 import { assertPublicUrl } from './webtools';
 import { checkAvito } from './avito';
 import {
+  addHost,
+  hostSummaries,
+  listHosts,
+  probeHost,
+  removeHost,
+} from './remote';
+import {
   avitoStatus,
   clearAvitoAccount,
   saveAvitoAccount,
@@ -1175,6 +1182,70 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   app.delete('/api/skills/:name', (c) => {
     const ok = skills.remove(c.req.param('name'));
     if (!ok) return c.json({ error: 'Навык не найден' }, 404);
+    return c.json({ ok: true });
+  });
+
+  // Удалённые серверы: только администратор. Приватный ключ шифруется и
+  // наружу не отдаётся — в списке только имя, хост и пользователь.
+  const requireAdmin = async (c: Context) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return user;
+  };
+
+  app.get('/api/servers', async (c) => {
+    await requireAdmin(c);
+    return c.json({ hosts: await hostSummaries(store, config.jwtSecret) });
+  });
+
+  app.post('/api/servers', async (c) => {
+    await requireAdmin(c);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const host = asString(body.host).trim();
+    const user = asString(body.user).trim();
+    const key = asString(body.privateKey).trim();
+    if (!host || !user || !key)
+      throw badRequest('Нужны host, user и приватный ключ');
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(host))
+      throw badRequest('host: только латиница, цифры, точка, дефис');
+    const port = Number(body.port) || 22;
+    const name = asString(body.name).trim();
+    const probe = await probeHost({
+      id: 'probe',
+      name: name || `${user}@${host}`,
+      host,
+      port,
+      user,
+      privateKey: key,
+    });
+    if (probe.startsWith('Не удалось подключиться'))
+      throw badRequest(probe);
+    const saved = await addHost(store, config.jwtSecret, {
+      name,
+      host,
+      port,
+      user,
+      privateKey: key,
+    });
+    return c.json({ host: saved, probe });
+  });
+
+  app.post('/api/servers/:id/test', async (c) => {
+    await requireAdmin(c);
+    const id = c.req.param('id');
+    const host = (await listHosts(store, config.jwtSecret)).find(
+      (row) => row.id === id,
+    );
+    if (!host) return c.json({ error: 'Сервер не найден' }, 404);
+    return c.json({ probe: await probeHost(host) });
+  });
+
+  app.delete('/api/servers/:id', async (c) => {
+    await requireAdmin(c);
+    const ok = await removeHost(store, c.req.param('id'));
+    if (!ok) return c.json({ error: 'Сервер не найден' }, 404);
     return c.json({ ok: true });
   });
 
