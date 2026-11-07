@@ -181,3 +181,17 @@ managers.test.ts: общий и два разных личных «Разраб�
   mayak_data 11 МБ (в нём уже зафиксированы правка amoCRM и переключение на relay).
 - Документация: RESTORE-MAYAK.md (пошаговое восстановление на новом сервере, ловушки со
   снимком mayak-snap.sqlite и WAL), NEXT_AGENT_HANDOFF.md обновлён.
+
+## Мелкие правки: модель «Ассистента» и удаление xray — 2026-11-07
+
+- Агент «Ассистент» (общий) ссылался на модель gpt-5.2-chat-latest, которой нет у провайдера 233
+  (доступны gpt-5.4-mini, gpt-5-mini, gpt-5.5). runTurn молча подставлял models[0], то есть
+  агент работал на gpt-5.4-mini, а интерфейс показывал другую модель. Модель в БД приведена
+  к фактически работающей. Состояние строки до правки сохранено в
+  /home/rus/backups/agent-assistant-before-*.json. Остальные 8 агентов проверены — расхождений нет.
+- Сервис xray удалён из docker-compose.qastom.yml (VLESS-туннель нерабочий: TLS до api.openai.com
+  рвался с ECONNRESET; его роль выполняет deploy/qastom-relay). Контейнер mayak-xray-1 снят
+  через up -d --remove-orphans. Конфиг /home/rus/xray/config.json и образ не удалялись.
+  Бэкап compose: /home/rus/backups/mayak-config-20261107-1322/docker-compose.qastom.yml.before-xray-removal.
+- Проверки: /api/health 200, app и остальные контейнеры не перезапускались (Up без изменений),
+  RestartCount 0, публичный HTTPS 200.

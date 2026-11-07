@@ -11,7 +11,7 @@
 | Что | Где |
 |---|---|
 | Прод-сервер | `rus@217.197.114.108`, hostname `qastom`, Ubuntu 26.04.1, 4 vCPU, 7.2 GiB |
-| Репозиторий | `/opt/mayak` (HEAD `b4146ba`, рабочее дерево чистое) |
+| Репозиторий | `/opt/mayak`, рабочее дерево чистое; актуальный коммит — `git log -1` |
 | Публичный вход | `https://app.geminibot.ru` → nginx → `127.0.0.1:8090` → контейнер `mayak-app-1:8787` |
 | Данные | том `mayak_data` → `/app/data` (SQLite `mayak.sqlite` + `-wal` + `-shm`, `skills/`, `uploads/`, `debug/`) |
 | Второй сервер | `root@222.167.226.61`, hostname `vds.1185` — там живёт LLM-relay и чужие проекты |
@@ -85,14 +85,22 @@ mayak-app-1 --socks5--> mayak-llm-relay --ssh--> vds.1185 --> api.openai.com
   `/home/rus/backups/mayak-config-20261107-0831/`, в `.gitignore` добавлены `*.bak`, `*.bak-*`,
   `.env.*` (с исключением `.env.example`).
 
+### 2.5 Мелкие правки
+
+- Агент «Ассистент» переведён с несуществующей `gpt-5.2-chat-latest` на `gpt-5.4-mini` — ту модель,
+  на которой он и так работал из-за молчаливого отката. Состояние до правки:
+  `/home/rus/backups/agent-assistant-before-*.json`.
+- Сервис `xray` удалён из `docker-compose.qastom.yml` (контейнер снят через `--remove-orphans`).
+  Конфиг `/home/rus/xray/config.json` и образ на диске не тронуты.
+
 ---
 
 ## 3. Текущее состояние (проверено)
 
-13 контейнеров с именем `mayak*`, все Up, `RestartCount=0`:
+12 контейнеров с именем `mayak*`, все Up, `RestartCount=0`:
 
 ```
-mayak-app-1, mayak-llm-relay, mayak-runner-1, mayak-egress-1, mayak-xray-1,
+mayak-app-1, mayak-llm-relay, mayak-runner-1, mayak-egress-1,
 mayak-mcp-{moysklad,browser}-1, mayak-mcp-avito-{main,ekat,account2,borodach,
 perviy-rulevoy,qastom-chelyaba}-1
 ```
@@ -185,9 +193,10 @@ tail -5 ~/backups/backup.log          # итог последнего ночно
 12. **Секреты.** `.env` не в git (закрыт `.gitignore`). Токены MCP лежат в БД в `mcp_servers.headers_json`,
     ключ amoCRM — в `.env` его контейнера, ключи провайдеров — в `providers.api_key` (зашифрованы
     `JWT_SECRET`). Не печатать значения в чат и коммиты; в отчётах маскировать.
-13. **Xray мёртв и не используется.** `mayak-xray-1` поднят, но кода, который на него ссылается,
-    нет; SOCKS5 принимает CONNECT, TLS до `api.openai.com` рвётся с `ECONNRESET` (~82 с).
-    Не тратить время, пока не решено чинить VLESS-туннель отдельно.
+13. **Xray удалён из compose (2026-11-07).** `mayak-xray-1` больше не поднимается, его роль
+    выполняет `deploy/qastom-relay`. Он был мёртвым: SOCKS5 принимал CONNECT, но TLS до
+    `api.openai.com` рвался с `ECONNRESET` (~82 с). Конфиг `/home/rus/xray/config.json` и образ
+    на диске остались — если решите вернуть VLESS, сервис надо добавлять заново.
 14. **`check-models` пишет в `model_caps`** — это штатное поведение (приложение само это делает
     периодически), не считать побочным эффектом.
 15. **`docker compose` в `/opt/mayak` всегда с `-p mayak -f docker-compose.qastom.yml`.** Голый
@@ -226,9 +235,11 @@ tail -5 ~/backups/backup.log          # итог последнего ночно
 5. **ЮKassa выключена** (`enabled:false`, 0 платежей, 0 кошельков). Тарифы 990/2990 ₽ отдаются
    публично через `/api/public/plans`. Никогда не прогонялось вживую.
 6. **`projects` и `pages` пусты** — фичи есть, но не используются; возможно, стоит скрыть из UI.
-7. **Агент «Ассистент» ссылается на несуществующую модель** `gpt-5.2-chat-latest` у провайдера
-   `233`; `runTurn` молча подставляет `models[0]` (`gpt-5.4-mini`). UI показывает не то, что работает.
-8. **`mayak-xray-1`** — убрать из compose или починить VLESS.
+7. **Модель агента «Ассистент» исправлена** (2026-11-07): было `gpt-5.2-chat-latest`, которой нет
+   у провайдера `233`, и `runTurn` молча подставлял `gpt-5.4-mini`. Теперь в БД та же модель,
+   что реально работала. Если владельцу нужно качественнее — `gpt-5.5` у того же провайдера
+   проверен и отвечает: менять через UI агента.
+8. **Xray** — удалён из `docker-compose.qastom.yml`, контейнер снят. Возврат VLESS — см. §5 п.13.
 9. **Диск 71%** (16 ГБ свободно). Растёт от сборок: после каждой — `docker builder prune -af`.
 
 ---

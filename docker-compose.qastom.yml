@@ -56,18 +56,6 @@ services:
       - DAC_OVERRIDE
       - FOWNER
     restart: unless-stopped
-  # VLESS-туннель к OpenAI/Anthropic/Google: обычные прокси режет DPI на больших запросах.
-  xray:
-    image: ghcr.io/xtls/xray-core:25.10.15
-    # Конфиг с ключом доступен только rus (600) — запускаем от его uid.
-    user: "1000:1000"
-    command: ["run", "-c", "/etc/xray/config.json"]
-    volumes:
-      - /home/rus/xray/config.json:/etc/xray/config.json:ro
-    networks:
-      - default
-    mem_limit: 128m
-    restart: unless-stopped
   # Единственный выход песочницы в интернет: npm, PyPI, GitHub.
   egress:
     build: ./deploy/qastom-runner/egress
