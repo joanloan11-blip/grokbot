@@ -15,6 +15,13 @@ const ru = {
   newChat: 'Новый чат',
   settings: 'Настройки',
   help: 'Справка',
+  inboxTitle: 'Входящие',
+  inboxLead:
+    'Действия, которые агент не делает сам: он подготовил шаг и ждёт вашего решения. Одобренные выполняются, отклонённые — отменяются.',
+  inboxEmpty: 'Нечего подтверждать — агент ничего опасного не запрашивал.',
+  inboxOpen: 'Открыть чат',
+  inboxApprove: 'Одобрить',
+  inboxDeny: 'Отклонить',
   avitoTitle: 'Авито',
   serversTitle: 'Серверы',
   serversLead:
@@ -440,6 +447,13 @@ const en: Dictionary = {
   newChat: 'New chat',
   settings: 'Settings',
   help: 'Help',
+  inboxTitle: 'Inbox',
+  inboxLead:
+    'Actions the agent will not do on its own: it prepared the step and waits for your decision.',
+  inboxEmpty: 'Nothing to approve — the agent has not requested anything risky.',
+  inboxOpen: 'Open chat',
+  inboxApprove: 'Approve',
+  inboxDeny: 'Deny',
   avitoTitle: 'Avito',
   serversTitle: 'Servers',
   serversLead:

@@ -1213,6 +1213,23 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  // «Входящие»: всё, что агент сделал бы сам, но ждёт решения человека.
+  app.get('/api/inbox', async (c) => {
+    const user = await actor(c);
+    const items = await store.listApprovals(user.id);
+    return c.json({
+      items: items.map((item) => ({
+        id: item.id,
+        toolName: item.toolName,
+        preview: item.arguments.slice(0, 300),
+        conversationId: item.conversationId,
+        conversationTitle: item.conversationTitle,
+        agentName: item.agentName,
+        createdAt: item.createdAt,
+      })),
+    });
+  });
+
   // Удалённые серверы: только администратор. Приватный ключ шифруется и
   // наружу не отдаётся — в списке только имя, хост и пользователь.
   const requireAdmin = async (c: Context) => {

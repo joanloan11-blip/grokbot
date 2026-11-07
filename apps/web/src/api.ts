@@ -338,6 +338,18 @@ export const api = {
     request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
+  inbox: () =>
+    request<{
+      items: {
+        id: string;
+        toolName: string;
+        preview: string;
+        conversationId: string;
+        conversationTitle: string;
+        agentName: string;
+        createdAt: string;
+      }[];
+    }>('/api/inbox'),
   servers: () =>
     request<{
       hosts: { id: string; name: string; host: string; port: number; user: string }[];

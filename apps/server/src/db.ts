@@ -2529,6 +2529,48 @@ export class Store {
     };
   }
 
+  /** Все ожидающие подтверждения пользователя — для «Входящих». */
+  async listApprovals(userId: string): Promise<
+    {
+      id: string;
+      conversationId: string;
+      toolName: string;
+      arguments: string;
+      createdAt: string;
+      conversationTitle: string;
+      agentName: string;
+    }[]
+  > {
+    const rows = await this.sql.all<{
+      id: string;
+      conversation_id: string;
+      tool_name: string;
+      arguments: string;
+      created_at: string;
+      title: string | null;
+      agent_name: string | null;
+    }>(
+      `SELECT a.id, a.conversation_id, a.tool_name, a.arguments, a.created_at,
+              c.title AS title, g.name AS agent_name
+         FROM approvals a
+         LEFT JOIN conversations c ON c.id = a.conversation_id
+         LEFT JOIN agents g ON g.id = c.agent_id
+        WHERE a.user_id = ? AND a.status = 'pending'
+        ORDER BY a.created_at DESC
+        LIMIT 100`,
+      [userId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      conversationId: row.conversation_id,
+      toolName: row.tool_name,
+      arguments: row.arguments,
+      createdAt: row.created_at,
+      conversationTitle: row.title ?? '',
+      agentName: row.agent_name ?? '',
+    }));
+  }
+
   async setApprovalStatus(id: string, status: string): Promise<void> {
     await this.sql.run('UPDATE approvals SET status = ? WHERE id = ?', [
       status,

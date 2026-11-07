@@ -30,6 +30,7 @@ import {
   IconClose,
   IconEdit,
   IconFolder,
+  IconBell,
   IconGear,
   IconHelp,
   IconPlus,
@@ -39,6 +40,7 @@ import {
   IconUsers,
 } from './components/icons';
 import { HelpPane } from './components/HelpPane';
+import { InboxPane } from './components/InboxPane';
 import { QUICK_START } from './scenarios';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { SpendPane } from './components/SpendPane';
@@ -50,6 +52,7 @@ import { I18nProvider, useI18n } from './i18n';
 type View =
   | { name: 'chat' }
   | { name: 'help' }
+  | { name: 'inbox' }
   | { name: 'settings'; tab: SettingsTab }
   | { name: 'agent' }
   | { name: 'team' }
@@ -431,6 +434,13 @@ function Shell({
             <IconUsers />
           </RailButton>
         )}
+        <RailButton
+          label={t('inboxTitle')}
+          active={view.name === 'inbox'}
+          onClick={() => setView({ name: 'inbox' })}
+        >
+          <IconBell />
+        </RailButton>
         <RailButton
           label={t('help')}
           active={view.name === 'help'}
@@ -901,6 +911,14 @@ function Shell({
           <SpendPane
             onMenu={openNav}
             isAdmin={user?.role === 'admin' || (!user && isAdmin)}
+          />
+        ) : view.name === 'inbox' ? (
+          <InboxPane
+            onMenu={openNav}
+            onOpenConversation={(conversationId) => {
+              setActiveId(conversationId);
+              setView({ name: 'chat' });
+            }}
           />
         ) : view.name === 'help' ? (
           <HelpPane onMenu={openNav} />
