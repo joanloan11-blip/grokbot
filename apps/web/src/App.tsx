@@ -338,7 +338,13 @@ function Shell({
         setAgentId(created.id);
         openChat(null);
       })
-      .catch(() => undefined);
+      .catch((reason: unknown) => {
+        // Молча ничего не делать нельзя: чаще всего это «админ не открыл модели»
+        // или исчерпанная квота тарифа.
+        window.alert(
+          reason instanceof Error ? reason.message : 'Не удалось создать агента',
+        );
+      });
   };
 
   return (
