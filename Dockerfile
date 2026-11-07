@@ -9,11 +9,17 @@ RUN apt-get update \
 
 RUN corepack enable && corepack prepare pnpm@10.33.4 --activate
 
+# Образ обслуживает веб и сервер; Electron нужен только для сборки десктопа в CI.
+# Без этого флага pnpm install тянет ~100 МБ бинарников Electron при каждой сборке.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps ./apps
 COPY packages ./packages
 COPY examples ./examples
 COPY README.md ./
+COPY docs ./docs
 
 RUN pnpm install --frozen-lockfile \
   && pnpm --filter @mayak/web build \

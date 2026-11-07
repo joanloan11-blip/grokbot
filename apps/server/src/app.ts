@@ -172,6 +172,22 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     }),
   );
 
+  // Справка для пользователей: docs/USER-GUIDE.md из репозитория. Читается на
+  // каждый запрос, поэтому правка файла не требует пересборки образа.
+  app.get('/api/help', async (c) => {
+    // Маршрут объявлен до middleware /api/*, поэтому сессию проверяем сами.
+    await actor(c);
+    try {
+      const markdown = fs.readFileSync(
+        path.join(config.repoRoot, 'docs', 'USER-GUIDE.md'),
+        'utf8',
+      );
+      return c.json({ markdown });
+    } catch {
+      return c.json({ error: 'Справка не найдена' }, 404);
+    }
+  });
+
   app.get('/api/auth/config', (c) => c.json({ required: config.authEnabled }));
 
   app.post('/api/auth/register', async (c) => {

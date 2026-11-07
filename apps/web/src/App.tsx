@@ -31,12 +31,14 @@ import {
   IconEdit,
   IconFolder,
   IconGear,
+  IconHelp,
   IconPlus,
   IconSearch,
   IconSidebar,
   IconTrash,
   IconUsers,
 } from './components/icons';
+import { HelpPane } from './components/HelpPane';
 import { SettingsPane, type SettingsTab } from './components/SettingsPane';
 import { SpendPane } from './components/SpendPane';
 import { InlineMeter, RailMeter } from './components/UsageMeter';
@@ -46,6 +48,7 @@ import { I18nProvider, useI18n } from './i18n';
 
 type View =
   | { name: 'chat' }
+  | { name: 'help' }
   | { name: 'settings'; tab: SettingsTab }
   | { name: 'agent' }
   | { name: 'team' }
@@ -398,6 +401,13 @@ function Shell({
             <IconUsers />
           </RailButton>
         )}
+        <RailButton
+          label={t('help')}
+          active={view.name === 'help'}
+          onClick={() => setView({ name: 'help' })}
+        >
+          <IconHelp />
+        </RailButton>
         {isAdmin && (
           <RailButton
             label={t('settings')}
@@ -708,6 +718,17 @@ function Shell({
                   type="button"
                   role="menuitem"
                   onClick={() => {
+                    setView({ name: 'help' });
+                    setMenuOpen(false);
+                    setNavOpen(false);
+                  }}
+                >
+                  {t('help')}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
                     setView({ name: 'spend' });
                     setMenuOpen(false);
                     setNavOpen(false);
@@ -850,6 +871,8 @@ function Shell({
             onMenu={openNav}
             isAdmin={user?.role === 'admin' || (!user && isAdmin)}
           />
+        ) : view.name === 'help' ? (
+          <HelpPane onMenu={openNav} />
         ) : view.name === 'settings' && isAdmin ? (
           <SettingsPane
             tab={view.tab}

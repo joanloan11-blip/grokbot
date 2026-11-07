@@ -209,3 +209,43 @@ managers.test.ts: общий и два разных личных «Разраб�
   к тарифу) и первые пять шагов.
 - README: добавлена ссылка на документацию.
 - Код, конфиги и прод не менялись — только документы.
+
+## Ручная прокрутка чата — 2026-11-07
+
+Пользователь сообщил, что не удаётся прокрутить ниже ответа; уточнил: даже вручную колесом/тачпадом. Первичная синтетическая статическая проверка старых CSS на 1280x720,1920x1080,390x844 не воспроизвела проблему. Открытая в Chrome переписка уже отличалась от исходного скриншота, поэтому точная исходная последовательность не подтверждена. Не утверждать, что единственная первопричина доказана.
+
+Исправления ChatPane.tsx и styles.css: чат переведён на grid с тремя строками auto / minmax(0,1fr) / auto, transcript ограничен средней строкой, display:block, min-height/min-width:0, overflow-y:auto. composer-dock занимает свою строку и не может перекрывать ленту. Добавлена кнопка «К последнему сообщению» при уходе от нижней границы, фокусируемая region «Сообщения чата», ResizeObserver для обновления видимости кнопки при росте ленты/изменении viewport. У textarea исправлено flex:1, которое в column-компоновке сжимало заданную высоту обратно до 32px: теперь flex:0 0 auto, многосрочный ввод действительно растёт до 220px. Существующую логику автопрокрутки по scrollKey не переписывали.
+
+Проверки: web build (tsc+vite) успешен; git diff --check успешен. Playwright в отдельном контейнере, без сети и production-данных: настоящий собранный React UI с API-фикстурами, длинной перепиской, ручным mouse.wheel и кнопкой вниз. PASS на 1280x720, 1280x480 и 390x844, включая поле ввода 220px. В каждом случае конец последнего сообщения выше верхней границы composer-dock. Скрипты /tmp/mayak-scroll-check.cjs и /tmp/mayak-scroll-e2e.cjs, ассеты фикстуры /tmp/mayak-scroll-fixture-dist. Использован уже установленный полный Chromium (channel chromium) в образе mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb; headless_shell в нём не установлен.
+
+Новый образ 922c4f4730df (mayak-app latest), сборка /tmp/mayak-chat-scroll.Dockerfile. ВАЖНО: production app НЕ перезапускали, чтобы не прерывать работающих агентов: новые dist-файлы скопированы в /app/apps/web/dist текущего mayak-app-1 через docker cp, старые assets оставлены. Контейнер может показывать предыдущий image ID, но отдаёт новый frontend. Следующее compose recreate возьмёт уже новый образ. Health HTTP 200. Для старой открытой вкладки требуется обычное обновление страницы.
+
+Откат: mayak-app:before-chat-scroll-fix; /tmp/ChatPane-before-scroll-fix.tsx, /tmp/styles-before-chat-scroll-fix.css; прежний index.html /tmp/mayak-index-before-chat-scroll.html (старые assets в работающем контейнере сохранены). БД, сообщения и настройки агентов не менялись. Коммита нет.
+
+## Справка в интерфейсе и публикация навыков — 2026-11-07
+
+- Раздел «Справка» в веб-интерфейсе: кнопка «?» в левом рейле и пункт меню у всех ролей.
+  Компонент apps/web/src/components/HelpPane.tsx тянет GET /api/help и рендерит MarkdownView.
+- GET /api/help отдаёт docs/USER-GUIDE.md из образа (Dockerfile: COPY docs ./docs). Маршрут
+  объявлен до middleware /api/*, поэтому сессия проверяется внутри обработчика через actor(c):
+  без входа — 401.
+- Публикация навыков: 7 навыков, ранее созданных агентом из репозиториев anthropics/skills и
+  addyosmani/agent-skills, перенесены в examples/skills (pdf, xlsx, frontend-design,
+  code-review-and-quality, test-driven-development, debugging-and-error-recovery, webapp-testing)
+  и добавлены в SKILL_CATALOG (packages/shared/src/catalog.ts). Теперь isPublicSkill считает их
+  публичными: они видны менеджерам в каталоге и доступны через load_skill, а также попадают в
+  каталог при развёртывании на чистом сервере через seedSkills.
+- Dockerfile: добавлены ELECTRON_SKIP_BINARY_DOWNLOAD=1 и PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1.
+  Без них pnpm install при пустом кеше тянет ~100 МБ бинарников Electron и сборка встаёт на
+  десятки минут (наблюдалось: зависание на postinstall electron).
+- Проверки: /api/health 200; /api/help без сессии 401; в образе 23 навыка в examples/skills;
+  веб-бандл содержит id новых навыков; образ 011cd7be2c70 развёрнут, RestartCount 0.
+- Откат: mayak-app:before-skills-catalog (предыдущий образ 922c4f4730df).
+- Уборка: остановлен зависший с 2026-11-06 bash-цикл (PID 1030856, 21 час), который ждал
+  завершения compose-сборки, чтобы применить /tmp/mayak-llm-diag.patch; он не мог выйти, так как
+  pgrep -f "compose -p mayak" совпадал с его собственной командной строкой.
+- Замечание о параллельной работе: в 14:23–14:25 UTC другой исполнитель правил ChatPane.tsx и
+  styles.css (прокрутка чата) и подменил фронтенд в работающем контейнере через docker cp, не
+  обновляя серверный бандл. Это дало рассогласование: новый фронт на старом бэкенде. Исправлено
+  пересозданием контейнера из образа 922c4f4730df, где были обе правки. Его файлы оставлены
+  незакоммиченными.

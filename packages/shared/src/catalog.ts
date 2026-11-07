@@ -60,6 +60,41 @@ export const SKILL_CATALOG = [
     name: 'Презентации',
     description: 'Сценарий, структура и содержание слайдов',
   },
+  {
+    id: 'pdf',
+    name: 'PDF',
+    description: 'Чтение, извлечение текста и таблиц, формы, склейка и разрезка',
+  },
+  {
+    id: 'xlsx',
+    name: 'Excel (XLSX)',
+    description: 'Формулы, стили, проверка расчётов и большие таблицы',
+  },
+  {
+    id: 'frontend-design',
+    name: 'Фронтенд-дизайн',
+    description: 'Палитра, типографика и раскладка без шаблонного вида',
+  },
+  {
+    id: 'code-review-and-quality',
+    name: 'Ревью кода',
+    description: 'Пять осей проверки: корректность, читаемость, тесты, безопасность, скорость',
+  },
+  {
+    id: 'test-driven-development',
+    name: 'Разработка через тесты',
+    description: 'Red-green-refactor: сначала падающий тест, потом минимальный код',
+  },
+  {
+    id: 'debugging-and-error-recovery',
+    name: 'Отладка',
+    description: 'Системный разбор ошибки до корневой причины, а не наугад',
+  },
+  {
+    id: 'webapp-testing',
+    name: 'Тестирование веб-приложений',
+    description: 'Playwright: разведка DOM, действия, скриншоты и проверки',
+  },
 ] as const;
 
 export const CONNECTOR_PRESETS = [
