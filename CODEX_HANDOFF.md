@@ -142,3 +142,14 @@ turn.ts deliverToAgent больше не ищет глобально: точны
 managers.test.ts: общий и два разных личных «Разработчика», отказ повторного имени в одном личном/общем списке, переименование, отсутствие доступа у другого пользователя, отказ конфликтующей публикации без смены ownerId, пересылка в нужный личный чат. Полный набор 163 passed, 1 live skipped; server typecheck/build успешны.
 
 Образ 9d1a4fe0d427 развёрнут через compose up -d --no-deps app, health HTTP 200. Исходные агенты/чаты/БД не переписывались. Откат: mayak-app:before-agent-name-scope; /tmp/app.ts.before-agent-name-scope, /tmp/turn.ts.before-agent-name-scope, /tmp/managers.test.ts.before-agent-name-scope. Сборка /tmp/mayak-agent-name-scope.Dockerfile. Коммит не создавался. Пользователь может повторно нажать «Создать агента» в уже открытом мастере без обновления страницы и потери введённых полей.
+
+## Эксплуатация: диск, amoCRM, журнал сбоев, git — 2026-11-07
+
+Выполнено по запросу владельца. Секреты в журнал не записаны.
+
+- Диск: `docker builder prune -af` вернул 6.909 ГБ; удалены 5 устаревших rollback-образов mayak-app (before-capabilities, before-connector-dialog, before-general-agents, before-github-workspace, capabilities-base). Сохранён mayak-app:before-agent-name-scope; текущий образ 018feee63746. Занято 84% → 68%, свободно 18 ГБ. Образы других проектов (bible-finance, salesmind, avito-platform) не трогались.
+- amoCRM: URL в mcp_servers указывал на путь без /mcp с устаревшим секретом, initialize возвращал 404. Адрес обновлён на актуальный из /home/rus/amocrm-mcp-deploy/.env; проверка из контейнера — HTTP 200, serverInfo «amoCRM MCP Server». Заголовки не требуются.
+- Журнал сбоев: apps/server/src/app.ts — ошибка хода пишется в журнал контейнера вместе с id чата и моделью; apps/server/src/providers/http.ts — dumpFailed сообщает размер тела относительно лимита прокси и отсутствие прокси, fitBody пишет факт обрезки истории. Это закрывает слепую зону: раньше в docker logs было три строки за всё время.
+- Сборка и выкат: docker compose -p mayak -f docker-compose.qastom.yml build app, затем up -d --no-deps app. /api/health 200, RestartCount 0, публичный https://app.geminibot.ru 200. Повторная проверка моделей DeepSeek — обе отвечают, MCP поддерживают.
+- Git: коммит 0bb2ec0, 36 файлов (исходники Codex из рабочего дерева + журналы + docker-compose.qastom.yml + 12 SKILL.md). Резервные копии .env.bak и compose .bak-* вынесены в /home/rus/backups/mayak-config-20261107-0831 с правами 700/600; в .gitignore добавлены *.bak, *.bak-*, .env.* с исключением .env.example.
+- Xray: SOCKS5 принимает CONNECT, но TLS до api.openai.com не поднимается (ECONNRESET примерно через 82 с при телах 4 и 40 КБ). Туннель нерабочий, поэтому LLM_PROXY_URL оставлен на внешнем HTTP-прокси. Его предел измерен заново: 16 КБ проходит (401 от OpenAI), 32 и 48 КБ — обрыв по таймауту. Переключение на socks5://xray:1080 не выполнялось.
