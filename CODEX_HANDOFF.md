@@ -153,3 +153,14 @@ managers.test.ts: общий и два разных личных «Разраб�
 - Сборка и выкат: docker compose -p mayak -f docker-compose.qastom.yml build app, затем up -d --no-deps app. /api/health 200, RestartCount 0, публичный https://app.geminibot.ru 200. Повторная проверка моделей DeepSeek — обе отвечают, MCP поддерживают.
 - Git: коммит 0bb2ec0, 36 файлов (исходники Codex из рабочего дерева + журналы + docker-compose.qastom.yml + 12 SKILL.md). Резервные копии .env.bak и compose .bak-* вынесены в /home/rus/backups/mayak-config-20261107-0831 с правами 700/600; в .gitignore добавлены *.bak, *.bak-*, .env.* с исключением .env.example.
 - Xray: SOCKS5 принимает CONNECT, но TLS до api.openai.com не поднимается (ECONNRESET примерно через 82 с при телах 4 и 40 КБ). Туннель нерабочий, поэтому LLM_PROXY_URL оставлен на внешнем HTTP-прокси. Его предел измерен заново: 16 КБ проходит (401 от OpenAI), 32 и 48 КБ — обрыв по таймауту. Переключение на socks5://xray:1080 не выполнялось.
+
+## Свой LLM-relay вместо внешнего прокси — 2026-11-07
+
+- Причина: внешний HTTP-прокси обрывает тела примерно от 30 КБ (16 КБ проходит, 32 и 48 КБ — таймаут). Из-за этого история запроса ужималась до 16 КБ, а часть ходов падала после выполнения инструментов. Xray в compose нерабочий: SOCKS5 CONNECT проходит, но TLS до api.openai.com рвётся с ECONNRESET примерно через 82 с.
+- Решение: SOCKS5 через SSH-туннель на steerflow-vps (222.167.226.61). С этого сервера api.openai.com отвечает 401 напрямую, тело 40 КБ проходит за 0.27 с.
+- Реализация: deploy/qastom-relay (Dockerfile, entrypoint.sh, docker-compose.yml, README). Контейнер mayak-llm-relay в сети mayak_default, портов наружу не публикует, лимит 64 МБ, restart unless-stopped, healthcheck на порт 1080. Запуск: `docker compose -p mayak-relay up -d --build` из этого каталога.
+- Ключ: /home/rus/.ssh/mayak-relay (ed25519), смонтирован в контейнер только на чтение. На той стороне ограничен from="217.197.114.108,217.197.114.115", no-pty, no-agent-forwarding, no-X11-forwarding; клиент использует только publickey.
+- Важно: исходящий IP qastom — 217.197.114.115, а не 217.197.114.108. Первый запуск упал на ограничении from=, fail2ban забанил адрес; бан снят, список from расширен на оба адреса.
+- Переключение: LLM_PROXY_URL=socks5://llm-relay:1080, LLM_PROXY_MAX_BODY=200000 (было 16000 по умолчанию). Прежнее значение прокси сохранено в /home/rus/backups/mayak-config-20261107-0849/.env.before-relay.
+- Проверки: из контейнера приложения тела 4, 40 и 120 КБ до api.openai.com — HTTP 401 за 0.7–1.0 с (то есть доходят); check-models провайдеров 233 и DeepSeek — все модели отвечают; /api/health 200; RestartCount 0; relay занимает 1.6 МБ RAM.
+- Откат: вернуть в .env LLM_PROXY_URL из резервной копии и убрать LLM_PROXY_MAX_BODY, затем `docker compose -p mayak -f docker-compose.qastom.yml up -d app`.
