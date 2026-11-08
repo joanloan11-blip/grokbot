@@ -14,6 +14,9 @@ services:
       TZ: Asia/Yekaterinburg
       WHISPER_URL: http://whisper:8080
       RUNNER_URL: http://runner:8080
+      # Telegram Bot API с российского VPS напрямую не открывается — запросы
+      # идут через существующий SSH-туннель llm-relay (SOCKS5).
+      TELEGRAM_PROXY: socks5://llm-relay:1080
     # Провайдерский DNS на qastom периодически не отвечает; внешние 1.1.1.1 и
     # 77.88.8.8 нужны почте (IMAP), Telegram, web_fetch и LLM-прокси-цепочке.
     dns:

@@ -108,7 +108,7 @@ case "$MODE" in
     prune "висячие образы старше 12 ч" docker image prune -f --filter "until=$DANGLING_AGE"
     prune "неиспользуемые образы старше 7 дн" docker image prune -a -f --filter "until=$DAILY_IMAGES_AGE"
     prune "кэш сборки старше 48 ч" docker builder prune -f --filter "until=$CACHE_DAILY_AGE"
-    prune "неиспользуемые тома-сироты (без контейнеров)" docker volume prune -f --filter "label!=keep"
+    # ВАЖНО: тома и сети не чистим никогда — там могут лежать данные приложений.
     if sudo -n /usr/bin/journalctl --vacuum-size=300M >/dev/null 2>&1; then
       log "journal: vacuum до 300 МБ выполнен"
     else
@@ -122,7 +122,7 @@ esac
 
 # ---------- watchdog ----------
 if [ "$PCT" -lt "$WARN_PCT" ]; then
-  say "ok: занято ${PCT}%, свободно ${FREE} МБ — уборка не нужна"
+  log "ok: занято ${PCT}%, свободно ${FREE} МБ — уборка не нужна"
   exit 0
 fi
 

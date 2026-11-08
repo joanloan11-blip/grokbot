@@ -3,6 +3,7 @@ import type { TelegramBotRow } from './db';
 import { HttpError } from './errors';
 import { decryptSecret } from './github/secret';
 import { transcribeAudio } from './transcribe';
+import { createTelegramFetch, telegramProxyUrl } from './telegram-net';
 import type { TurnDeps } from './turn';
 import { runTurn } from './turn';
 import { isRecord } from './util';
@@ -93,7 +94,7 @@ export function startTelegramBots(
   } = {},
 ): () => void {
   const worker: WorkerOptions = {
-    fetchImpl: options.fetchImpl ?? globalThis.fetch,
+    fetchImpl: options.fetchImpl ?? defaultTelegramFetch(),
     runTurn: options.runTurn ?? runTurn,
   };
   const pollMs = options.pollMs ?? 2_500;
@@ -157,7 +158,7 @@ export async function notifyUserTelegram(
   if (!bot || !bot.tgUserId) return false;
   const token = botToken(deps, bot);
   if (!token) return false;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = options.fetchImpl ?? defaultTelegramFetch();
   const chunks = splitTelegramText(`Рутина «${name}»:\n${text}`);
   if (!chunks.length) return false;
   for (const chunk of chunks) {
@@ -170,7 +171,7 @@ export async function notifyUserTelegram(
 /** Проверяет токен бота через getMe. Токен не попадает в тексты ошибок. */
 export async function checkTelegramToken(
   token: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch = defaultTelegramFetch(),
 ): Promise<{ ok: boolean; username?: string; error?: string }> {
   const response = await fetchImpl(`${API}/bot${token}/getMe`, {
     signal: AbortSignal.timeout(20_000),
@@ -197,7 +198,7 @@ export async function checkTelegramToken(
 export async function sendTelegramTest(
   token: string,
   chatId: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch = defaultTelegramFetch(),
 ): Promise<{ ok: boolean; error?: string }> {
   const ok = await sendMessage(fetchImpl, token, chatId, 'Проверка связи ✅');
   return ok
@@ -261,6 +262,12 @@ export function splitTelegramText(text: string, limit = TEXT_LIMIT): string[] {
   }
   flush();
   return chunks;
+}
+
+/** Обычный fetch или запросы к Telegram через SOCKS5-туннель (TELEGRAM_PROXY). */
+function defaultTelegramFetch(): typeof fetch {
+  const proxy = telegramProxyUrl();
+  return proxy ? createTelegramFetch(proxy) : globalThis.fetch;
 }
 
 /** Расшифровывает токен бота; при ошибке шифрования бот считается нерабочим. */

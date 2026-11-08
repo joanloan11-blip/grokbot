@@ -420,3 +420,14 @@ managers.test.ts: общий и два разных личных «Разраб�
   «Утренняя почта» (cron 0 9, disabled), таблица `telegram_bots` (0 строк). Логи чистые.
 - Откат: `docker tag mayak-app:before-mail-telegram mayak-app:latest && docker compose -p mayak
   -f docker-compose.qastom.yml up -d --no-build app`; compose-DNS можно оставить — он безвреден.
+
+### Telegram через SOCKS5 (после проверки на qastom) — 2026-11-08
+
+- С qastom `api.telegram.org` недоступен: TCP 443 к 149.154.166.110 не открывается (при этом
+  IMAP Яндекса с той же машины работает). Поэтому добавлен `apps/server/src/telegram-net.ts`:
+  fetch-совместимый клиент поверх SOCKS5, используется только для хостов `*.telegram.org`,
+  остальные адреса идут обычным fetch. Переменная `TELEGRAM_PROXY`; в compose для `app` задано
+  `socks5://llm-relay:1080` (существующий SSH-туннель через vds.1185).
+- Проверено вручную из контейнера `mayak-app-1`: SOCKS5 → TLS → `GET /bot123:invalid/getMe`
+  вернул `401 {"ok":false,...}`. Юнит-тест `test/telegram-net.test.ts` проверяет проксирование,
+  POST с телом, обход внутренних адресов и ошибку недоступного прокси.

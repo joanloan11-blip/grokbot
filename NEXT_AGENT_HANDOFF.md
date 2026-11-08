@@ -39,6 +39,9 @@ Docker 29.1.3, Compose 2.40.3, Node в контейнере 22.23.4. `mayak-app`
   Если снова перестанут открываться внешние адреса из контейнера — проверяйте сначала DNS.
 - Образ 2026-11-08 собран overlay-способом (базовый образ + dist), откат —
   `mayak-app:before-mail-telegram`. Подробности — в CODEX_HANDOFF.md.
+- Telegram с qastom напрямую недоступен (порт 443 к api.telegram.org не открывается). В compose
+  задан `TELEGRAM_PROXY=socks5://llm-relay:1080` — запросы к Telegram идут через существующий
+  SSH-туннель. Если меняете туннель, обновите и TELEGRAM_PROXY.
 
 ## 2. Что сделано 2026-11-07 (моя сессия)
 
