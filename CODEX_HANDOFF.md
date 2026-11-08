@@ -397,3 +397,26 @@ managers.test.ts: общий и два разных личных «Разраб�
   работает на long-polling, не webhook; стартовые агенты не учитывают тарифные квоты.
 - Откат: вернуть предыдущий образ (`mayak-app:before-mail-telegram`), таблица `telegram_bots`
   и новые `settings`-ключи безвредны для старого кода.
+
+### Развёртывание на qastom — 2026-11-08
+
+- Сначала обычная сборка `docker compose -p mayak -f docker-compose.qastom.yml build app` падала:
+  host DNS (systemd-resolved → 217.174.96.14) не отвечал, `mirror.gcr.io` не резолвился.
+  Проверено: 1.1.1.1 и 77.88.8.8 отвечают, провайдерский резолвер — нет; sudo у `rus` требует
+  интерактивного пароля, поэтому host DNS не менялся.
+- В `docker-compose.qastom.yml` сервисам `app` и `egress` добавлены `dns: [1.1.1.1, 77.88.8.8]`.
+  После пересоздания контейнеров DNS внутри `mayak-app-1` работает: `imap.yandex.ru` и
+  `api.telegram.org` резолвятся. Это же чинит `web_fetch`, картинки и LLM-запросы из контейнера.
+- Образ собран overlay-способом (без pull из registry): базовый `mayak-app:before-mail-telegram`
+  (id 863c1d664333) + `apps/server/dist/index.js` + `apps/web/dist/` через
+  `/tmp/mayak-overlay/Dockerfile` (`docker build -t mayak-app:latest .`), затем
+  `docker compose -p mayak -f docker-compose.qastom.yml up -d --no-build app egress`.
+  Новый образ: `mayak-app:latest` 5f27095db890. Полная пересборка из Dockerfile — после
+  восстановления host DNS или через overlay.
+- Проверено после деплоя: `curl 127.0.0.1:8090/api/health` → 200; https://app.geminibot.ru/ → 200;
+  `/api/mail` и `/api/telegram` без сессии → 401; в index.html новый бандл
+  `assets/index-8okAL85y.js` (в нём «@BotFather», «Ежедневная выжимка»); в SQLite появились
+  агенты «Почтовый агент» и «Джарвис» у админа (owner null) и менеджера (owner id), две рутины
+  «Утренняя почта» (cron 0 9, disabled), таблица `telegram_bots` (0 строк). Логи чистые.
+- Откат: `docker tag mayak-app:before-mail-telegram mayak-app:latest && docker compose -p mayak
+  -f docker-compose.qastom.yml up -d --no-build app`; compose-DNS можно оставить — он безвреден.
