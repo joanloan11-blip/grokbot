@@ -4,6 +4,7 @@ import { createApp } from './app';
 import { loadConfig, repoRoot } from './config';
 import { loadDotEnv } from './env';
 import { notifyTelegram, startTelegram } from './telegram';
+import { notifyUserTelegram, startTelegramBots } from './telegram-bots';
 
 loadDotEnv(path.join(repoRoot, '.env'));
 
@@ -131,9 +132,19 @@ if (process.argv[2] === 'reset-link') {
   await handle.close();
   process.exit(0);
 }
-handle.runtime.onRoutineFinished = (userId, name, text) =>
-  notifyTelegram(handle.runtime, userId, name, text);
+// Результат рутины сначала уходит в личный бот пользователя («Джарвис»),
+// если он подключён; иначе — в старый общий бот команды.
+handle.runtime.onRoutineFinished = async (userId, name, text) => {
+  const personal = await notifyUserTelegram(
+    handle.runtime,
+    userId,
+    name,
+    text,
+  ).catch(() => false);
+  if (!personal) await notifyTelegram(handle.runtime, userId, name, text);
+};
 const stopTelegram = startTelegram(handle.runtime);
+const stopTelegramBots = startTelegramBots(handle.runtime);
 const stopScheduler = handle.startScheduler();
 // Модели проверяются сами: в выборе в чате — только те, что отвечают.
 const { startModelChecks } = await import('./model-caps');
@@ -161,6 +172,7 @@ async function shutdown(): Promise<void> {
   stopModelChecks();
   clearInterval(renewTimer);
   stopTelegram();
+  stopTelegramBots();
   server.close();
   await handle.close();
   process.exit(0);

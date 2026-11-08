@@ -22,11 +22,15 @@ import { api } from '../api';
 import { availableCount } from '../models';
 import { useI18n, useTheme } from '../i18n';
 import { GithubPane } from './GithubPane';
+import { MailPane } from './MailPane';
+import { TelegramPane } from './TelegramPane';
 import { BillingSettingsPanel } from './BillingPane';
 import { IconMenu } from './icons';
 
 export type SettingsTab =
   | 'avito'
+  | 'mail'
+  | 'telegram'
   | 'servers'
   | 'plugins'
   | 'providers'
@@ -84,6 +88,8 @@ export function SettingsPane({
             {(
               [
                 { id: 'plugins', label: 'Плагины' },
+                { id: 'mail', label: 'Почта' },
+                { id: 'telegram', label: 'Telegram' },
                 { id: 'avito', label: 'Авито' },
                 { id: 'skills', label: 'Навыки' },
                 { id: 'providers', label: 'Мои модели' },
@@ -112,6 +118,8 @@ export function SettingsPane({
               personal
             />
           )}
+          {personalTab === 'mail' && <MailPane />}
+          {personalTab === 'telegram' && <TelegramPane />}
           {personalTab === 'avito' && <AvitoPanel />}
           {personalTab === 'mcp' && <McpPanel personal />}
         </div>
@@ -119,6 +127,8 @@ export function SettingsPane({
     );
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'plugins', label: 'Плагины' },
+    { id: 'mail', label: 'Почта' },
+    { id: 'telegram', label: 'Telegram' },
     { id: 'avito', label: 'Авито' },
     { id: 'servers', label: t('serversTitle') },
     { id: 'providers', label: t('tabProviders') },
@@ -163,6 +173,8 @@ export function SettingsPane({
           />
         )}
         {tab === 'plugins' && <CapabilityCatalog kind="plugins" />}
+        {tab === 'mail' && <MailPane />}
+        {tab === 'telegram' && <TelegramPane />}
         {tab === 'avito' && <AvitoPanel />}
         {tab === 'servers' && <ServersPanel />}
         {tab === 'mcp' && <McpPanel />}

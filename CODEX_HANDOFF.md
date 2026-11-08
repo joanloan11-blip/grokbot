@@ -357,3 +357,43 @@ managers.test.ts: общий и два разных личных «Разраб�
 - Откат: mayak-app:before-inbox.
 - Следующие шаги по плану: KPI должности и недельный отчёт (этап 2), затем роли и клонирование
   (этап 3), публикация ролей (4), выплаты авторам (5).
+
+## Почтовый агент и Telegram-ассистент «Джарвис» — 2026-11-08
+
+Задача владельца: при регистрации новых пользователей создавать двух агентов — почтового
+(читает ящик и присылает выжимку в заданное время, любой IMAP-сервер с удобной настройкой)
+и «Джарвиса» (подключение к Telegram по токену и user id, общение текстом и голосом).
+
+- Новые модули сервера: `apps/server/src/imap.ts` (самодостаточный IMAP-клиент: TLS/STARTTLS,
+  литералы, MIME, RFC 2047, windows-1251, HTML→текст; без npm-зависимостей),
+  `mail-account.ts` (настройки ящика в `settings`, пароль AES-256-GCM через `github/secret.ts`,
+  формат выжимки), `transcribe.ts` (распознавание речи, вынесено из `extra.ts`),
+  `telegram-bots.ts` (long-polling личных ботов, owner-check, /start /help /new, голосовые →
+  getFile → ffmpeg → whisper → runTurn), `channels.ts` (маршруты `/api/mail*`, `/api/telegram*`),
+  `seed-agents.ts` (стартовые агенты + рутина «Утренняя почта»).
+- `templates.ts`: шаблоны `mail-digest` («Почтовый агент», плагины mail/web/memory/schedule) и
+  `jarvis` («Джарвис», web/memory/schedule). `packages/shared`: плагин `mail` (инструмент
+  `mail_digest`), типы MailAccount*/MailDigestState/TelegramBot*.
+- `db.ts`: таблица `telegram_bots` и методы list/get/upsert/delete/setTelegramBotUpdate.
+- `app.ts`: `seedStarterAgents` при регистрации, `ensureStarterAgents` при старте (досоздаёт
+  агентов уже существующим пользователям), регистрация `channels`. `turn.ts`: инструмент
+  `mail_digest` (только у агента с плагином «Почта», письма помечены как недоверенные).
+  `index.ts`: `startTelegramBots` и доставка рутин сначала в личный бот, потом в общий.
+  `extra.ts`: `/api/transcribe` использует `transcribeAudio` (поведение сохранено).
+- Веб: `apps/web/src/components/MailPane.tsx` (пресеты, проверка, время выжимки, «сделать
+  сейчас») и `TelegramPane.tsx` (инструкция из 4 шагов, токен + ID, тест, отключение);
+  вкладки «Почта» и «Telegram» в SettingsPane; методы в `api.ts`, типы в shared.
+- Документация: `docs/USER-GUIDE.md` (плагин «Почта», разделы про почту и личного бота,
+  шпаргалка), README (раздел «Почта и Telegram-ассистент»).
+- Проверки (локально, macOS): tsc сервера и веба — чисто; vitest — 245 тестов, падают только
+  6 известных сетевых (llm-proxy/password-reset/providers — те же на HEAD без правок);
+  новые тесты: `starter-agents.test.ts`, `channels.test.ts`, `imap.test.ts`,
+  `telegram-bots.test.ts`, `transcribe.test.ts`; сборка web и esbuild сервера — успешно.
+  Ручная проверка: регистрация создаёт обоих агентов; вкладки «Почта»/«Telegram» рендерятся;
+  против фейкового IMAP-сервера (127.0.0.1) проверены подключение, сохранение, включение
+  рутины, инструмент `mail_digest` в чате и запуск рутины (`POST /api/mail/digest`).
+- Ограничения: один ящик на пользователя; вложения писем не разбираются; не-ASCII имена папок
+  без modified UTF-7; TTS нет — Джарвис отвечает текстом (голос только на вход); Telegram
+  работает на long-polling, не webhook; стартовые агенты не учитывают тарифные квоты.
+- Откат: вернуть предыдущий образ (`mayak-app:before-mail-telegram`), таблица `telegram_bots`
+  и новые `settings`-ключи безвредны для старого кода.

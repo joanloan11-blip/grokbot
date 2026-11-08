@@ -60,6 +60,8 @@ import { assertBudget } from './meter';
 import { assertCanSpend, chargeTokens } from './billing';
 import { costUsd } from './pricing';
 import { dateLine, withClock } from './clock';
+import { formatMailDigest, readMailAccount } from './mail-account';
+import { fetchRecentMessages } from './imap';
 import { CLOUD_ONLY_TOOLS, type LocalFs, localWorkspaceRuns } from './local-fs';
 import { priceForModel } from './spend';
 import { compactHistory } from './context';
@@ -445,7 +447,8 @@ export async function deliverToAgent(
     : await deps.store.listAgents();
   const needle = input.targetName.trim().toLowerCase();
   const named = (item: Agent) => item.name.trim().toLowerCase() === needle;
-  const target = reachable.find((item) => item.id === input.targetName) ??
+  const target =
+    reachable.find((item) => item.id === input.targetName) ??
     reachable.find((item) => item.ownerId === input.userId && named(item)) ??
     reachable.find(named);
   if (!target) {
@@ -737,6 +740,60 @@ export async function exposeTools(
             period: args.period === 'week' ? 'week' : 'day',
           }),
         ),
+    },
+    {
+      definition: {
+        name: 'mail_digest',
+        description:
+          'Read recent messages from the connected mailbox (IMAP): sender, subject, date and a short plain-text snippet. Use for mail digests and questions about letters. Письма за период — только для агента с плагином «Почта».',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            hours: {
+              type: 'number',
+              description: 'How many hours back to look, 1–168. Default 24.',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum messages, 1–50. Default 25.',
+            },
+          },
+        },
+      },
+      run: async (args) => {
+        if (!deps.jwtSecret) {
+          return 'Почта недоступна: на сервере не задан ключ шифрования.';
+        }
+        const rawHours = Number(args.hours);
+        const rawLimit = Number(args.limit);
+        const hours = Math.min(
+          168,
+          Math.max(1, Number.isFinite(rawHours) ? Math.round(rawHours) : 24),
+        );
+        const limit = Math.min(
+          50,
+          Math.max(1, Number.isFinite(rawLimit) ? Math.round(rawLimit) : 25),
+        );
+        const account = await readMailAccount(
+          deps.store,
+          userId,
+          deps.jwtSecret,
+        );
+        if (!account) {
+          return 'Почта не подключена. Подключите ящик в Настройки → Почта.';
+        }
+        try {
+          const messages = await fetchRecentMessages(account, {
+            since: new Date(Date.now() - hours * 3_600_000),
+            limit,
+          });
+          return formatMailDigest(messages, hours);
+        } catch (error) {
+          return `Не удалось прочитать почту: ${
+            error instanceof Error ? error.message : 'ошибка'
+          }`;
+        }
+      },
     },
     {
       definition: {
@@ -1242,7 +1299,10 @@ export async function exposeTools(
           inputSchema: {
             type: 'object',
             properties: {
-              from: { type: 'string', description: 'Начало периода, YYYY-MM-DD' },
+              from: {
+                type: 'string',
+                description: 'Начало периода, YYYY-MM-DD',
+              },
               to: { type: 'string', description: 'Конец периода, YYYY-MM-DD' },
               itemIds: {
                 type: 'array',
@@ -1274,7 +1334,10 @@ export async function exposeTools(
             'Avito wallet balance: real money and bonus. Баланс кошелька Авито.',
           inputSchema: { type: 'object', properties: {} },
         },
-        run: () => avitoGuard(async () => formatBalance(await avitoBalance(avitoAccount))),
+        run: () =>
+          avitoGuard(async () =>
+            formatBalance(await avitoBalance(avitoAccount)),
+          ),
       },
     );
   }
@@ -1313,7 +1376,10 @@ export async function exposeTools(
             description: `Servers available over SSH. Список серверов: ${catalogue}.`,
             inputSchema: { type: 'object', properties: {} },
           },
-          run: async () => hosts.map((row) => `${row.name} — ${row.user}@${row.host}:${row.port}`).join('\n'),
+          run: async () =>
+            hosts
+              .map((row) => `${row.name} — ${row.user}@${row.host}:${row.port}`)
+              .join('\n'),
         },
         {
           definition: {
@@ -1345,8 +1411,10 @@ export async function exposeTools(
               const parts = [
                 `${target.name}: код ${result.code ?? '—'}, ${Math.round(result.ms / 1000)} с`,
               ];
-              if (result.stdout.trim()) parts.push(`stdout:\n${result.stdout.trimEnd()}`);
-              if (result.stderr.trim()) parts.push(`stderr:\n${result.stderr.trimEnd()}`);
+              if (result.stdout.trim())
+                parts.push(`stdout:\n${result.stdout.trimEnd()}`);
+              if (result.stderr.trim())
+                parts.push(`stderr:\n${result.stderr.trimEnd()}`);
               return parts.join('\n');
             }),
         },
@@ -1360,7 +1428,10 @@ export async function exposeTools(
               properties: {
                 host: hostArg,
                 path: { type: 'string', description: 'Абсолютный путь' },
-                maxBytes: { type: 'number', description: 'Сколько байт прочитать' },
+                maxBytes: {
+                  type: 'number',
+                  description: 'Сколько байт прочитать',
+                },
               },
               required: ['path'],
             },
@@ -1370,7 +1441,11 @@ export async function exposeTools(
               const target = byName(asString(args.host) || hosts[0].name);
               const filePath = asString(args.path).trim();
               if (!filePath) return 'Укажите path.';
-              return await readRemote(target, filePath, Number(args.maxBytes) || 60_000);
+              return await readRemote(
+                target,
+                filePath,
+                Number(args.maxBytes) || 60_000,
+              );
             }),
         },
         {
@@ -1383,7 +1458,10 @@ export async function exposeTools(
               properties: {
                 host: hostArg,
                 path: { type: 'string', description: 'Абсолютный путь' },
-                content: { type: 'string', description: 'Новое содержимое целиком' },
+                content: {
+                  type: 'string',
+                  description: 'Новое содержимое целиком',
+                },
               },
               required: ['path', 'content'],
             },
@@ -1410,14 +1488,20 @@ export async function exposeTools(
               type: 'object',
               properties: {
                 host: hostArg,
-                path: { type: 'string', description: 'Каталог, по умолчанию /' },
+                path: {
+                  type: 'string',
+                  description: 'Каталог, по умолчанию /',
+                },
               },
             },
           },
           run: (args) =>
             guard(async () => {
               const target = byName(asString(args.host) || hosts[0].name);
-              return await listRemote(target, asString(args.path).trim() || '/');
+              return await listRemote(
+                target,
+                asString(args.path).trim() || '/',
+              );
             }),
         },
       );

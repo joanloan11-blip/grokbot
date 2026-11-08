@@ -22,6 +22,11 @@ import type {
   Conversation,
   Locale,
   MemoryNote,
+  MailAccountInput,
+  MailAccountStatus,
+  MailDigestState,
+  TelegramBotInput,
+  TelegramBotState,
   Routine,
   RoutineInput,
   McpServerInput,
@@ -352,7 +357,13 @@ export const api = {
     }>('/api/inbox'),
   servers: () =>
     request<{
-      hosts: { id: string; name: string; host: string; port: number; user: string }[];
+      hosts: {
+        id: string;
+        name: string;
+        host: string;
+        port: number;
+        user: string;
+      }[];
     }>('/api/servers'),
   addServer: (input: {
     name?: string;
@@ -361,10 +372,13 @@ export const api = {
     user: string;
     privateKey: string;
   }) =>
-    request<{ host: { id: string; name: string }; probe: string }>('/api/servers', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
+    request<{ host: { id: string; name: string }; probe: string }>(
+      '/api/servers',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+    ),
   testServer: (id: string) =>
     request<{ probe: string }>(`/api/servers/${encodeURIComponent(id)}/test`, {
       method: 'POST',
@@ -394,6 +408,41 @@ export const api = {
     request<{ ok: boolean; connected: boolean }>('/api/avito', {
       method: 'DELETE',
     }),
+  /** Личная почта: подключение ящика и ежедневная выжимка. */
+  mailStatus: () => request<MailAccountStatus>('/api/mail'),
+  saveMail: (input: MailAccountInput) =>
+    request<{ ok: boolean; messages?: number }>('/api/mail', {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  testMail: (input: MailAccountInput) =>
+    request<{ ok: boolean; messages?: number; error?: string }>(
+      '/api/mail/test',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  deleteMail: () => request<{ ok: boolean }>('/api/mail', { method: 'DELETE' }),
+  mailDigestNow: () =>
+    request<{ ok: boolean; error?: string }>('/api/mail/digest', {
+      method: 'POST',
+    }),
+  saveMailDigest: (input: { enabled?: boolean; cron?: string }) =>
+    request<MailDigestState>('/api/mail/digest', {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  /** Личный Telegram-бот агента «Джарвис». */
+  telegramStatus: () => request<TelegramBotState>('/api/telegram'),
+  saveTelegram: (input: TelegramBotInput) =>
+    request<TelegramBotState>('/api/telegram', {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  testTelegram: () =>
+    request<{ ok: boolean; error?: string }>('/api/telegram/test', {
+      method: 'POST',
+    }),
+  deleteTelegram: () =>
+    request<{ ok: boolean }>('/api/telegram', { method: 'DELETE' }),
   templates: () => request<AgentTemplate[]>('/api/agent-templates'),
   agents: () => request<Agent[]>('/api/agents'),
   createAgent: (input: AgentInput) =>

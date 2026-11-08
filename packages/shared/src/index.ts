@@ -327,6 +327,13 @@ export const AGENT_PLUGINS = [
     tools: ['create_routine'],
   },
   {
+    id: 'mail',
+    emoji: '✉️',
+    name: 'Почта',
+    description: 'Читает подключённый почтовый ящик и делает выжимку',
+    tools: ['mail_digest'],
+  },
+  {
     id: 'pages',
     emoji: '📄',
     name: 'Страницы',
@@ -352,10 +359,19 @@ export function toolAllowedByPlugins(
   if (!plugins) return true;
   // GitHub работает с копией репозитория в рабочей папке. Терминал и удаление
   // не входят в эту возможность и требуют отдельного плагина files.
-  if (plugins.includes('github') && [
-    'workspace_list', 'workspace_read', 'workspace_search', 'workspace_glob',
-    'workspace_write', 'workspace_edit', 'workspace_download',
-  ].includes(tool)) return true;
+  if (
+    plugins.includes('github') &&
+    [
+      'workspace_list',
+      'workspace_read',
+      'workspace_search',
+      'workspace_glob',
+      'workspace_write',
+      'workspace_edit',
+      'workspace_download',
+    ].includes(tool)
+  )
+    return true;
   const owner = AGENT_PLUGINS.find((plugin) =>
     (plugin.tools as readonly string[]).includes(tool),
   );
@@ -440,6 +456,52 @@ export interface RoutineInput {
   cron?: string;
   prompt?: string;
   enabled?: boolean;
+}
+
+/** Подключение личного почтового ящика (IMAP). Пароль на клиент не возвращается. */
+export interface MailAccountInput {
+  host: string;
+  port: number;
+  /** true — TLS сразу (обычно 993). false — plain/STARTTLS. */
+  secure: boolean;
+  user: string;
+  /** Не задан при повторном сохранении без смены пароля. */
+  password?: string;
+  mailbox?: string;
+}
+
+/** Ежедневная выжимка почты: рутина агента «Почтовый агент». */
+export interface MailDigestState {
+  routineId: string | null;
+  cron: string;
+  enabled: boolean;
+  prompt: string;
+}
+
+export interface MailAccountStatus {
+  connected: boolean;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  mailbox: string;
+  hasPassword: boolean;
+  digest: MailDigestState | null;
+}
+
+/** Личный Telegram-бот пользователя (агент «Джарвис»). */
+export interface TelegramBotState {
+  connected: boolean;
+  username: string;
+  tgUserId: string;
+  agentId: string | null;
+  agentName: string;
+}
+
+export interface TelegramBotInput {
+  token?: string;
+  /** Числовой id владельца бота в Telegram. */
+  tgUserId?: string;
 }
 
 export interface ToolCall {

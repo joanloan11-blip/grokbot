@@ -48,6 +48,42 @@ export interface McpRow {
   ownerUserId?: string | null;
 }
 
+/** Личный Telegram-бот пользователя: токен лежит зашифрованным. */
+export interface TelegramBotRow {
+  userId: string;
+  agentId: string;
+  tokenEnc: string;
+  tgUserId: string;
+  username: string;
+  lastUpdateId: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TelegramBotSql {
+  user_id: string;
+  agent_id: string;
+  token_enc: string;
+  tg_user_id: string;
+  username: string;
+  last_update_id: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapTelegramBot(row: TelegramBotSql): TelegramBotRow {
+  return {
+    userId: row.user_id,
+    agentId: row.agent_id,
+    tokenEnc: row.token_enc,
+    tgUserId: row.tg_user_id ?? '',
+    username: row.username ?? '',
+    lastUpdateId: Number(row.last_update_id ?? 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 interface ProviderSql {
   id: string;
   name: string;
@@ -565,6 +601,16 @@ export class Store {
         telegram_chat_id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         agent_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS telegram_bots (
+        user_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        token_enc TEXT NOT NULL,
+        tg_user_id TEXT NOT NULL DEFAULT '',
+        username TEXT NOT NULL DEFAULT '',
+        last_update_id INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
     `);
   }
@@ -2622,6 +2668,92 @@ export class Store {
       [userId],
     );
     return rows.map((row) => row.telegram_chat_id);
+  }
+
+  async listTelegramBots(): Promise<TelegramBotRow[]> {
+    const rows = await this.sql.all<TelegramBotSql>(
+      'SELECT * FROM telegram_bots ORDER BY created_at ASC',
+      [],
+    );
+    return rows.map(mapTelegramBot);
+  }
+
+  async getTelegramBotForUser(
+    userId: string,
+  ): Promise<TelegramBotRow | undefined> {
+    const row = await this.sql.get<TelegramBotSql>(
+      'SELECT * FROM telegram_bots WHERE user_id = ?',
+      [userId],
+    );
+    return row ? mapTelegramBot(row) : undefined;
+  }
+
+  async upsertTelegramBot(input: {
+    userId: string;
+    agentId: string;
+    tokenEnc: string;
+    tgUserId: string;
+    username: string;
+  }): Promise<TelegramBotRow> {
+    const now = nowIso();
+    const current = await this.getTelegramBotForUser(input.userId);
+    if (current) {
+      await this.sql.run(
+        `UPDATE telegram_bots SET agent_id = ?, token_enc = ?, tg_user_id = ?, username = ?, updated_at = ?
+           WHERE user_id = ?`,
+        [
+          input.agentId,
+          input.tokenEnc,
+          input.tgUserId,
+          input.username,
+          now,
+          input.userId,
+        ],
+      );
+      return {
+        ...current,
+        agentId: input.agentId,
+        tokenEnc: input.tokenEnc,
+        tgUserId: input.tgUserId,
+        username: input.username,
+        updatedAt: now,
+      };
+    }
+    const row: TelegramBotRow = {
+      userId: input.userId,
+      agentId: input.agentId,
+      tokenEnc: input.tokenEnc,
+      tgUserId: input.tgUserId,
+      username: input.username,
+      lastUpdateId: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.sql.run(
+      `INSERT INTO telegram_bots (user_id, agent_id, token_enc, tg_user_id, username, last_update_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+      [
+        row.userId,
+        row.agentId,
+        row.tokenEnc,
+        row.tgUserId,
+        row.username,
+        row.createdAt,
+        row.updatedAt,
+      ],
+    );
+    return row;
+  }
+
+  async deleteTelegramBot(userId: string): Promise<void> {
+    await this.sql.run('DELETE FROM telegram_bots WHERE user_id = ?', [userId]);
+  }
+
+  async setTelegramBotUpdate(userId: string, updateId: number): Promise<void> {
+    await this.sql.run(
+      'UPDATE telegram_bots SET last_update_id = ?, updated_at = ? WHERE user_id = ?',
+      [Math.max(0, Math.floor(updateId)), nowIso(), userId],
+    );
   }
 }
 

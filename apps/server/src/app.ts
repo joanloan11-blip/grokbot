@@ -68,6 +68,7 @@ import type { AppConfig } from './config';
 import { isValidCron } from './cron';
 import { type McpRow, Store, type UserRecord, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
+import { registerChannelRoutes } from './channels';
 import { registerExtraRoutes } from './extra';
 import { registerGithubRoutes } from './github/routes';
 import { registerBillingRoutes } from './billing-routes';
@@ -76,6 +77,7 @@ import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
 import { discoverProvider } from './providers/discover';
 import { runRoutineNow, startScheduler, triggerWebhook } from './scheduler';
+import { ensureStarterAgents, seedStarterAgents } from './seed-agents';
 import { SkillLibrary, seedSkills } from './skills';
 import { AGENT_TEMPLATES } from './templates';
 import { assertQuota, runTurn } from './turn';
@@ -107,6 +109,14 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   await seed(store, skills, config);
   await ensureDeepSeek(store);
   if (!config.authEnabled) await ensureLocalUser(store);
+  // Стартовые агенты «Почтовый агент» и «Джарвис» — новым и уже существующим
+  // пользователям: при обновлении сервера они появятся автоматически.
+  await ensureStarterAgents(store, [LOCAL_USER_ID]).catch((error: unknown) => {
+    console.error(
+      'Стартовые агенты:',
+      error instanceof Error ? error.message : error,
+    );
+  });
 
   for (const row of await store.listMcp()) {
     if (row.enabled) await mcp.connect(row);
@@ -230,6 +240,13 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       const main = (await store.listAgents()).find((agent) => !agent.ownerId);
       if (main) await store.setUserAgents(user.id, [main.id]);
     }
+    // Каждому новому пользователю сразу создаём «Почтового агента» и «Джарвиса».
+    await seedStarterAgents(store, user).catch((error: unknown) => {
+      console.error(
+        'Стартовые агенты:',
+        error instanceof Error ? error.message : error,
+      );
+    });
     if (mailConfigured()) {
       const base = (config.publicUrl || '').replace(/\/$/, '');
       const lines = [
@@ -255,9 +272,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
           ? 'Маяк: рабочее пространство готово'
           : 'Маяк: заявка принята',
         text: lines.join('\n'),
-        html: lines
-          .map((line) => (line ? `<p>${line}</p>` : '<br/>'))
-          .join(''),
+        html: lines.map((line) => (line ? `<p>${line}</p>` : '<br/>')).join(''),
       }).catch(() => undefined);
     }
     if (user.status === 'active') {
@@ -1265,8 +1280,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       user,
       privateKey: key,
     });
-    if (probe.startsWith('Не удалось подключиться'))
-      throw badRequest(probe);
+    if (probe.startsWith('Не удалось подключиться')) throw badRequest(probe);
     const saved = await addHost(store, config.jwtSecret, {
       name,
       host,
@@ -1346,11 +1360,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json(await store.listAgentsFor(user));
   });
 
-  const agentNameTaken = async (name: string, ownerId: string | null, exceptId?: string) => {
+  const agentNameTaken = async (
+    name: string,
+    ownerId: string | null,
+    exceptId?: string,
+  ) => {
     const normalized = name.trim().toLowerCase();
-    return (await store.listAgents()).some((agent) =>
-      agent.id !== exceptId && (agent.ownerId ?? null) === ownerId &&
-      agent.name.trim().toLowerCase() === normalized,
+    return (await store.listAgents()).some(
+      (agent) =>
+        agent.id !== exceptId &&
+        (agent.ownerId ?? null) === ownerId &&
+        agent.name.trim().toLowerCase() === normalized,
     );
   };
 
@@ -1360,7 +1380,12 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       user,
       parseAgentInput(await readBody(c), false),
     );
-    if (await agentNameTaken(input.name ?? '', user.role === 'admin' ? null : user.id)) {
+    if (
+      await agentNameTaken(
+        input.name ?? '',
+        user.role === 'admin' ? null : user.id,
+      )
+    ) {
       throw badRequest('Агент с таким именем уже есть');
     }
     if (user.role !== 'admin') await assertCanCreate(store, user, 'agents');
@@ -1418,8 +1443,18 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       throw new HttpError(403, 'Общего агента настраивает администратор');
     const raw = await readBody(c);
     const input = await limitForManager(user, parseAgentInput(raw, true));
-    const willShare = user.role === 'admin' && isRecord(raw) && raw.shared === true && Boolean(current.ownerId);
-    if (await agentNameTaken(input.name ?? current.name, willShare ? null : current.ownerId ?? null, current.id))
+    const willShare =
+      user.role === 'admin' &&
+      isRecord(raw) &&
+      raw.shared === true &&
+      Boolean(current.ownerId);
+    if (
+      await agentNameTaken(
+        input.name ?? current.name,
+        willShare ? null : (current.ownerId ?? null),
+        current.id,
+      )
+    )
       throw badRequest('Агент с таким именем уже есть в вашем списке');
 
     await denyForeignProvider(user, input.providerId);
@@ -1597,7 +1632,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     ) {
       return c.json({ error: 'Расписание не найдено' }, 404);
     }
-    await runRoutineNow({ store, mcp, skills }, current.id);
+    await runRoutineNow(
+      { store, mcp, skills, jwtSecret: config.jwtSecret },
+      current.id,
+    );
     return c.json({ ok: true });
   });
 
@@ -2122,6 +2160,15 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     config,
     actor,
     readBody,
+    runtime,
+  });
+  registerChannelRoutes(app, {
+    store,
+    config,
+    actor,
+    readBody,
+    mcp,
+    skills,
     runtime,
   });
   registerBillingRoutes(app, { store, config, actor, readBody, siteUrl });
