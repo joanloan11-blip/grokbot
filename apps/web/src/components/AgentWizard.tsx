@@ -7,6 +7,7 @@ import type {
 } from '@mayak/shared';
 import { api } from '../api';
 import { useI18n } from '../i18n';
+import { localFsSupported, setStorageMode, storageMode } from '../local-fs';
 import { modelLabel, splitModelRef, visibleModels } from '../models';
 import { buildAgentPrompt } from '../agent-context';
 import { AgentCapabilities } from './AgentCapabilities';
@@ -49,6 +50,11 @@ export function AgentWizard({
   const [skillNames, setSkillNames] = useState<string[]>([]);
   const [mcpServerIds, setMcpServerIds] = useState<string[]>([]);
   const [plugins, setPlugins] = useState<string[] | null>(null);
+  // По умолчанию новый агент работает в папке на компьютере: файлы и память
+  // не уходят на сервер. В облако можно переключить здесь или в чате.
+  const [storage, setStorage] = useState<'local' | 'cloud'>(() =>
+    storageMode(null) === 'local' ? 'local' : 'cloud',
+  );
   const [error, setError] = useState('');
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: шаблон применяется один раз при загрузке
@@ -130,6 +136,7 @@ export function AgentWizard({
         mcpServerIds,
         plugins,
       });
+      setStorageMode(created.id, storage);
       onCreated(created.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('error'));
@@ -353,6 +360,30 @@ export function AgentWizard({
               {provider?.name ?? '—'} / {model || '—'}
             </p>
             <p className="muted">{skillNames.join(', ') || '—'}</p>
+            {localFsSupported() && (
+              <div className="form storage-choice">
+                <p className="muted">Где агент хранит файлы и память</p>
+                <label>
+                  <input
+                    type="radio"
+                    name="storage"
+                    checked={storage === 'local'}
+                    onChange={() => setStorage('local')}
+                  />{' '}
+                  💻 На этом компьютере (по умолчанию) — файлы и память остаются
+                  у вас и не занимают сервер
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="storage"
+                    checked={storage === 'cloud'}
+                    onChange={() => setStorage('cloud')}
+                  />{' '}
+                  ☁ В облаке на сервере
+                </label>
+              </div>
+            )}
           </div>
         )}
         <div className="row-actions">

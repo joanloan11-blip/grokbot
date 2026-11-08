@@ -17,6 +17,8 @@ import {
   pickFolder,
   runLocalOp,
   savedFolder,
+  setStorageMode,
+  storageMode,
 } from '../local-fs';
 import { ComposerOrbit } from './ComposerOrbit';
 import { QUICK_START } from '../scenarios';
@@ -103,13 +105,10 @@ export function ChatPane({
   // Где агент хранит файлы: в облаке (сервер) или в папке на компьютере.
   const [folder, setFolder] =
     useState<Awaited<ReturnType<typeof savedFolder>>>(null);
-  const [workLocal, setWorkLocal] = useState(() => {
-    try {
-      return localStorage.getItem('qastom-work-local') === '1';
-    } catch {
-      return false;
-    }
-  });
+  // По умолчанию файлы и память агента — в папке на компьютере пользователя.
+  const [workLocal, setWorkLocal] = useState(
+    () => storageMode(agentId) === 'local',
+  );
   const [extraModels, setExtraModels] = useState<string[]>([]);
   const [compare, setCompare] = useState<CompareView | null>(null);
   const [adopting, setAdopting] = useState(false);
@@ -130,17 +129,19 @@ export function ChatPane({
     if (localFsSupported()) void savedFolder().then(setFolder);
   }, []);
 
+  // У каждого агента своя настройка: по умолчанию компьютер, но можно выбрать облако.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: реагируем только на смену агента
+  useEffect(() => {
+    if (localFsSupported()) setWorkLocal(storageMode(agentId) === 'local');
+  }, [agentId]);
+
   function chooseLocal(on: boolean) {
     setWorkLocal(on);
-    try {
-      localStorage.setItem('qastom-work-local', on ? '1' : '0');
-    } catch {
-      // настройка просто не запомнится
-    }
+    setStorageMode(agentId, on ? 'local' : 'cloud');
   }
 
   async function toggleStorage() {
-    if (workLocal) {
+    if (workLocal && folder) {
       chooseLocal(false);
       return;
     }
@@ -510,6 +511,20 @@ export function ChatPane({
       setDraft('');
       setFiles([]);
     }
+    // По умолчанию файлы и память агента лежат на компьютере: если папка ещё
+    // не выбрана, предлагаем выбрать её прямо сейчас (клик по «Отправить» — жест).
+    let activeFolder = folder;
+    if (localFsSupported() && workLocal && !activeFolder) {
+      activeFolder = await pickFolder();
+      if (!activeFolder) {
+        setBusy(false);
+        setError(
+          'Выберите папку на компьютере — в ней будут файлы и память агента. Или переключитесь на облако.',
+        );
+        return;
+      }
+      setFolder(activeFolder);
+    }
     let id = conversationId;
     try {
       if (!id) id = await ensureConversation();
@@ -518,7 +533,7 @@ export function ChatPane({
       setStreaming('');
       setReasoning('');
       setPendingTools([]);
-      const local = workLocal && folder ? folder : null;
+      const local = workLocal && activeFolder ? activeFolder : null;
       if (local && !(await ensurePermission(local))) {
         setError(
           'Нет доступа к папке на компьютере — разрешите доступ или переключитесь на облако.',
@@ -779,13 +794,19 @@ export function ChatPane({
                 workLocal && folder ? 'compare-chip on' : 'compare-chip'
               }
               title={
-                workLocal && folder
-                  ? `Агент работает с файлами в папке «${folder.name}» на этом компьютере. Нажмите, чтобы вернуться в облако.`
-                  : 'Файлы агента хранятся в облаке (на сервере). Нажмите, чтобы выбрать папку на компьютере.'
+                workLocal
+                  ? folder
+                    ? `Файлы и память агента — в папке «${folder.name}» на этом компьютере. Нажмите, чтобы вернуться в облако.`
+                    : 'Файлы и память агента будут храниться в выбранной папке на этом компьютере. Нажмите, чтобы выбрать папку.'
+                  : 'Файлы и память агента хранятся в облаке (на сервере). Нажмите, чтобы выбрать папку на компьютере.'
               }
               onClick={() => void toggleStorage()}
             >
-              {workLocal && folder ? `💻 ${folder.name}` : '☁ Облако'}
+              {workLocal
+                ? folder
+                  ? `💻 ${folder.name}`
+                  : '💻 Папка на компьютере'
+                : '☁ Облако'}
             </button>
             {workLocal && folder && (
               <button

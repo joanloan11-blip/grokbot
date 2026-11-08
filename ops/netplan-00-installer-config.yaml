@@ -1,0 +1,22 @@
+# Резервные DNS для qastom (ens18). Основной DNS провайдера 217.174.96.14
+# периодически не отвечает — 8 ноября 2026 он лежал больше суток, из-за чего
+# перестали резолвиться внешние имена (падали сборки, интеграции amoCRM и т.д.).
+# Поэтому ставим стабильные публичные DNS; провайдерский оставлен последним.
+network:
+  ethernets:
+    ens18:
+      dhcp4: true
+      dhcp6: true
+      dhcp4-overrides:
+        use-dns: false
+      dhcp6-overrides:
+        use-dns: false
+      match:
+        macaddress: bc:24:11:0e:c7:e2
+      set-name: ens18
+      addresses:
+        - 217.197.114.115/24
+        - 217.197.114.169/24
+      nameservers:
+        addresses: [1.1.1.1, 1.0.0.1, 77.88.8.8, 217.174.96.14]
+  version: 2

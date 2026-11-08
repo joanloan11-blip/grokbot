@@ -63,6 +63,7 @@ import { dateLine, withClock } from './clock';
 import { formatMailDigest, readMailAccount } from './mail-account';
 import { fetchRecentMessages } from './imap';
 import { CLOUD_ONLY_TOOLS, type LocalFs, localWorkspaceRuns } from './local-fs';
+import { localMemoryRuns } from './local-memory';
 import { priceForModel } from './spend';
 import { compactHistory } from './context';
 import { readCaps } from './model-caps';
@@ -177,11 +178,18 @@ export async function runTurn(
   const depth = input.depth ?? 0;
   const excluded = new Set(input.excludeTools ?? []);
   const localRuns = input.localFs ? localWorkspaceRuns(input.localFs) : null;
+  // Память в режиме «папка на компьютере» тоже лежит у пользователя: на сервер
+  // заметки не уходят и в базе не остаются.
+  const localMemory = input.localFs
+    ? localMemoryRuns(input.localFs, agent.id)
+    : null;
   const exposed = (
     await exposeTools(deps, agent, userId, depth, conversation.id)
   )
     .map((tool) => {
-      const local = localRuns?.[tool.definition.name];
+      const local =
+        localRuns?.[tool.definition.name] ??
+        localMemory?.[tool.definition.name];
       if (!local || !input.localFs) return tool;
       // Те же инструменты, но файлы — в папке на компьютере пользователя.
       return {
@@ -342,7 +350,7 @@ export async function runTurn(
               context: [
                 dateLine(input.locale),
                 input.localFs
-                  ? `Рабочая папка сейчас — на компьютере пользователя: «${input.localFs.folder}». Инструменты workspace_* читают и пишут файлы прямо там. Терминала и GitHub в этом режиме нет.`
+                  ? `Рабочая папка и память сейчас — на компьютере пользователя: «${input.localFs.folder}». Инструменты workspace_* читают и пишут файлы прямо там, а memory_read/memory_write/remember/recall — в файле .qastom/memory/ внутри этой папки (на сервер заметки не уходят). Терминала и GitHub в этом режиме нет.`
                   : '',
                 await projectBlock(deps.store, conversation.projectId),
               ]

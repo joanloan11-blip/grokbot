@@ -271,3 +271,45 @@ export async function runLocalOp(
   }
   throw new Error(`Неизвестная операция ${op}`);
 }
+
+/**
+ * Где агент хранит файлы и память: на компьютере пользователя («local») или
+ * в облаке на сервере («cloud»). По умолчанию для новых агентов — компьютер:
+ * так файлы и заметки не занимают сервер и не уходят в облако. Настройка
+ * запоминается отдельно для каждого агента.
+ */
+export type StorageMode = 'local' | 'cloud';
+
+const STORAGE_PREFIX = 'qastom-storage:';
+const LEGACY_KEY = 'qastom-work-local';
+
+function storageKey(agentId: string | null | undefined): string {
+  return `${STORAGE_PREFIX}${agentId || 'default'}`;
+}
+
+/** Режим хранения агента. Без сохранённой настройки — компьютер, если браузер умеет. */
+export function storageMode(agentId: string | null | undefined): StorageMode {
+  if (!localFsSupported()) return 'cloud';
+  try {
+    const saved = localStorage.getItem(storageKey(agentId));
+    if (saved === 'cloud') return 'cloud';
+    if (saved === 'local') return 'local';
+    // Старая общая настройка (до появления режима на агента): уважаем
+    // осознанный выбор «облако», иначе по умолчанию компьютер.
+    if (localStorage.getItem(LEGACY_KEY) === '0') return 'cloud';
+  } catch {
+    // localStorage недоступен — считаем, что по умолчанию компьютер
+  }
+  return 'local';
+}
+
+export function setStorageMode(
+  agentId: string | null | undefined,
+  mode: StorageMode,
+): void {
+  try {
+    localStorage.setItem(storageKey(agentId), mode);
+  } catch {
+    // настройка просто не запомнится
+  }
+}

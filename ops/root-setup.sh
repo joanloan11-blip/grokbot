@@ -31,14 +31,24 @@ echo "== 2. Vacuum журнала до 300 МБ =="
 journalctl --vacuum-size=300M
 journalctl --disk-usage
 
-echo "== 3. Разрешение на vacuum без пароля (только эта команда) =="
+echo "== 3. Разрешение на vacuum без пароля (только этот фиксированный скрипт) =="
+# sudo не допускает wildcard в аргументах команды, поэтому разрешаем вызов
+# отдельного root-скрипта с зашитым размером журнала.
+cat > /usr/local/sbin/journal-vacuum <<'EOF'
+#!/bin/sh
+# Разрешено пользователю rus через sudo (см. /etc/sudoers.d/disk-cleanup).
+# Подрезает журнал systemd до 300 МБ. Аргументы не принимаются.
+exec /usr/bin/journalctl --vacuum-size=300M
+EOF
+chown root:root /usr/local/sbin/journal-vacuum
+chmod 755 /usr/local/sbin/journal-vacuum
 cat > /etc/sudoers.d/disk-cleanup <<'EOF'
 # Автоматическая уборка диска (disk-cleanup.sh): только vacuum журнала.
-rus ALL=(root) NOPASSWD: /usr/bin/journalctl --vacuum-size=*
+rus ALL=(root) NOPASSWD: /usr/local/sbin/journal-vacuum
 EOF
 chmod 440 /etc/sudoers.d/disk-cleanup
 visudo -cf /etc/sudoers.d/disk-cleanup
-echo "   /etc/sudoers.d/disk-cleanup установлен и проверен"
+echo "   /usr/local/sbin/journal-vacuum + /etc/sudoers.d/disk-cleanup установлены"
 
 echo "== Готово =="
 df -h /

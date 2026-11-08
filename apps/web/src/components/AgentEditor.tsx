@@ -269,6 +269,11 @@ export function AgentEditor({
 
         <section className="card">
           <h2>{t('memory')}</h2>
+          <p className="hint">
+            В режиме «папка на компьютере» память агента хранится в файле
+            .qastom/memory/ внутри выбранной папки — здесь видны только заметки
+            из облака. Переключить режим можно в чате кнопкой «💻 / ☁».
+          </p>
           {notes.length === 0 && <p className="muted">{t('memoryEmpty')}</p>}
           <ul className="stack">
             {notes.map((note) => (
