@@ -460,3 +460,23 @@ managers.test.ts: общий и два разных личных «Разраб�
   в режиме «папка на компьютере» `memory_write` создал `.qastom/memory/<agentId>.json` с заметкой,
   `memory_read` вернул её, в SQLite `agent_memory`/`memory_entries` — 0 строк. Выбор режима в
   мастере и переключение «💻/☁» проверены, настройка сохраняется в localStorage по agentId.
+
+### Деплой «память на компьютере» отложен: qastom недоступен — 2026-11-08 14:20
+
+- В 14:08–14:19 (Екатеринбург) qastom `217.197.114.108` перестал отвечать: ICMP, TCP 22, 80, 443
+  не проходят; внешний чекер (api.hackertarget.com) тоже получает timeout, `https://app.geminibot.ru`
+  не открывается. Второй сервер `222.167.226.61` доступен (ping/порты), значит проблема на стороне
+  qastom/провайдера, а не в коде. До этого последний деплой (почта/Telegram, образ c61b09da45c6)
+  работал: health 200, сайт 200.
+- Изменение «папка и память на компьютере» закоммичено локально (`29a2282`), тесты/сборка зелёные,
+  но на прод не выложено. Когда хост вернётся:
+  1) `git bundle create /tmp/mem.bundle design/grok-style`, scp на qastom,
+     `git fetch /tmp/mem.bundle design/grok-style:refs/heads/deploy-tmp && git reset --hard deploy-tmp`;
+  2) положить в `/tmp/mayak-overlay` свежие `apps/server/dist/index.js` и `apps/web/dist/`;
+     `docker build -t mayak-app:latest .` в `/tmp/mayak-overlay` (Dockerfile: FROM
+     mayak-app:before-local-storage; rm -rf web/dist; COPY web/; COPY index.js);
+  3) `docker compose -p mayak -f docker-compose.qastom.yml up -d --no-build app`,
+     проверить health/страницы и что в бандле есть «Папка на компьютере».
+  Откат: `mayak-app:before-local-storage` (создан перед деплоем, образ c61b09da45c6).
+- Если хост не вернётся сам — перезагрузить через панель провайдера; данные в томе `mayak_data`
+  и Postgres не затронуты.
