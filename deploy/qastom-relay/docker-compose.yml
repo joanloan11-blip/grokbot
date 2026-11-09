@@ -1,0 +1,18 @@
+services:
+  llm-relay:
+    build: .
+    container_name: mayak-llm-relay
+    restart: unless-stopped
+    environment:
+      RELAY_HOST: 222.167.226.61
+    volumes:
+      - /home/rus/.ssh/mayak-relay:/key/id_relay:ro
+    networks:
+      - mayak
+    mem_limit: 64m
+    security_opt:
+      - no-new-privileges:true
+networks:
+  mayak:
+    name: mayak_default
+    external: true

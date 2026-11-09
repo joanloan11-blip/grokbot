@@ -1,3 +1,4 @@
+import { fitBody, llmFetch, proxyFor } from './http';
 import { isRecord, jsonObject } from '../util';
 import { readErrorBody, readSse } from './sse';
 import type {
@@ -34,27 +35,39 @@ export async function* streamAnthropic(options: {
   const { system, messages } = toAnthropicMessages(options.messages);
   const body: Record<string, unknown> = {
     model: options.model,
-    max_tokens: 4096,
+    // Файл целиком через workspace_write не помещается в 4096 токенов.
+    max_tokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16_000,
     messages,
     stream: true,
   };
-  if (system) body.system = system;
+  // Кэш промпта: системный промпт, схемы инструментов и история между шагами
+  // читаются из кэша в 10 раз дешевле — в долгой работе с кодом это основная экономия.
+  if (system)
+    body.system = [
+      { type: 'text', text: system, cache_control: { type: 'ephemeral' } },
+    ];
   if (options.tools.length > 0) {
-    body.tools = options.tools.map((tool) => ({
+    body.tools = options.tools.map((tool, index, all) => ({
       name: tool.name,
       description: tool.description,
       input_schema: tool.inputSchema,
+      ...(index === all.length - 1
+        ? { cache_control: { type: 'ephemeral' } }
+        : {}),
     }));
   }
+  markLastForCache(messages);
 
-  const response = await fetch(anthropicMessagesUrl(options.baseUrl), {
+  const response = await llmFetch(anthropicMessagesUrl(options.baseUrl), {
     method: 'POST',
     headers: {
       'x-api-key': options.apiKey,
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(
+      proxyFor(anthropicMessagesUrl(options.baseUrl)) ? fitBody(body) : body,
+    ),
     signal: options.signal,
   });
 
@@ -66,6 +79,9 @@ export async function* streamAnthropic(options: {
     return;
   }
 
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedTokens = 0;
   for await (const message of readSse(response)) {
     let json: unknown;
     try {
@@ -114,12 +130,36 @@ export async function* streamAnthropic(options: {
         };
       }
     }
+    if (json.type === 'message_start' && isRecord(json.message)) {
+      const usage = isRecord(json.message.usage) ? json.message.usage : {};
+      cachedTokens = Number(usage.cache_read_input_tokens ?? 0) || 0;
+      inputTokens =
+        (Number(usage.input_tokens ?? 0) || 0) +
+        cachedTokens +
+        (Number(usage.cache_creation_input_tokens ?? 0) || 0);
+      outputTokens = Number(usage.output_tokens ?? 0) || 0;
+    }
+    if (json.type === 'message_delta' && isRecord(json.usage)) {
+      outputTokens = Number(json.usage.output_tokens ?? outputTokens) || 0;
+    }
     if (json.type === 'message_stop') {
+      if (inputTokens || outputTokens)
+        yield { type: 'usage', inputTokens, outputTokens, cachedTokens };
       yield { type: 'done' };
       return;
     }
   }
   yield { type: 'done' };
+}
+
+/** Метка кэша на последнем блоке последнего сообщения: следующий шаг прочитает всю историю из кэша. */
+function markLastForCache(messages: Record<string, unknown>[]): void {
+  const last = messages.at(-1);
+  const content = last?.content;
+  if (!Array.isArray(content) || content.length === 0) return;
+  const block = content.at(-1) as Record<string, unknown>;
+  if (block.type === 'text' && !block.text) return;
+  block.cache_control = { type: 'ephemeral' };
 }
 
 function toAnthropicMessages(messages: ModelMessage[]): {
@@ -140,7 +180,18 @@ function toAnthropicMessages(messages: ModelMessage[]): {
     if (message.role === 'user') {
       out.push({
         role: 'user',
-        content: [{ type: 'text', text: message.content }],
+        content: [
+          ...(message.images ?? []).map((image) => ({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: image.mime,
+              data: image.data,
+            },
+          })),
+          // Anthropic не принимает пустые текстовые блоки.
+          { type: 'text', text: message.content || '…' },
+        ],
       });
       continue;
     }
@@ -156,14 +207,14 @@ function toAnthropicMessages(messages: ModelMessage[]): {
           input: jsonObject(call.arguments),
         });
       }
-      if (content.length === 0) content.push({ type: 'text', text: '' });
+      if (content.length === 0) content.push({ type: 'text', text: '…' });
       out.push({ role: 'assistant', content });
       continue;
     }
     const block = {
       type: 'tool_result',
       tool_use_id: message.toolCallId,
-      content: message.content,
+      content: message.content || '(пусто)',
     };
     const prev = out.at(-1);
     if (

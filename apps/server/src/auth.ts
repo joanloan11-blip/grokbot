@@ -48,6 +48,7 @@ export function signSession(
   const body = base64url(
     JSON.stringify({
       sub: userId,
+      iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + ttlSeconds,
     }),
   );
@@ -57,6 +58,13 @@ export function signSession(
 }
 
 export function readSession(token: string, secret: string): string | undefined {
+  return readSessionPayload(token, secret)?.sub;
+}
+
+export function readSessionPayload(
+  token: string,
+  secret: string,
+): { sub: string; iat?: number } | undefined {
   const [header, body, sig] = token.split('.');
   if (!header || !body || !sig) return undefined;
   const data = `${header}.${body}`;
@@ -71,6 +79,7 @@ export function readSession(token: string, secret: string): string | undefined {
       Buffer.from(body, 'base64url').toString('utf8'),
     ) as {
       sub?: string;
+      iat?: number;
       exp?: number;
     };
     if (
@@ -79,7 +88,7 @@ export function readSession(token: string, secret: string): string | undefined {
       payload.exp < Math.floor(Date.now() / 1000)
     )
       return undefined;
-    return payload.sub;
+    return { sub: payload.sub, iat: payload.iat };
   } catch {
     return undefined;
   }
@@ -100,6 +109,7 @@ export function toPublicUser(
     agentIds,
     modelsRestricted: user.modelsRestricted,
     models,
+    client: user.client,
     createdAt: user.createdAt,
   };
 }
@@ -135,9 +145,15 @@ export async function userFromRequest(
   }
   const token = getCookie(c, COOKIE);
   if (!token) throw new HttpError(401, 'Нужно войти');
-  const userId = readSession(token, auth.jwtSecret);
-  if (!userId) throw new HttpError(401, 'Сессия истекла');
-  const user = await store.getUser(userId);
+  const session = readSessionPayload(token, auth.jwtSecret);
+  if (!session) throw new HttpError(401, 'Сессия истекла');
+  const user = await store.getUser(session.sub);
+  // После смены пароля старые сессии (на других устройствах) не действуют.
+  if (user?.passwordChangedAt) {
+    const changed = Math.floor(Date.parse(user.passwordChangedAt) / 1000);
+    if (!session.iat || session.iat < changed)
+      throw new HttpError(401, 'Пароль изменён — войдите заново');
+  }
   if (user?.status !== 'active')
     throw new HttpError(403, 'Учётная запись недоступна');
   return user;
@@ -160,6 +176,8 @@ const PUBLIC_API = new Set([
   '/api/auth/login',
   '/api/auth/accept',
   '/api/auth/logout',
+  '/api/auth/forgot',
+  '/api/auth/reset',
 ]);
 
 export function isPublicApi(pathname: string): boolean {
@@ -177,18 +195,11 @@ export function isSharedCatalogWrite(
 ): boolean {
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS')
     return false;
-  if (
-    pathname.startsWith('/api/providers') ||
-    pathname.startsWith('/api/mcp') ||
-    pathname.startsWith('/api/skills')
-  ) {
-    return true;
-  }
-  if (pathname === '/api/agents' && method === 'POST') return true;
-  return (
-    /^\/api\/agents\/[^/]+$/.test(pathname) &&
-    (method === 'PATCH' || method === 'DELETE')
-  );
+  // Провайдеров менеджеры добавляют сами (личные ключи); права проверяют маршруты /api/providers.
+  // Коннекторы (MCP) менеджеры добавляют сами; права проверяют маршруты /api/mcp.
+  if (pathname.startsWith('/api/skills')) return true;
+  // Агентов менеджеры создают сами (личные); права проверяют маршруты /api/agents.
+  return false;
 }
 
 function base64url(value: string): string {

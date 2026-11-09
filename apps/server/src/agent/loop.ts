@@ -39,6 +39,7 @@ export async function runAgentLoop(
 
   for (let step = 0; step < maxSteps; step += 1) {
     throwIfAborted(input.signal);
+    shrinkToolResults(history, input.messages.length);
     const turn = await collectTurn(
       input.client,
       input.model,
@@ -137,6 +138,39 @@ async function collectTurn(
     }));
 
   return { text, reasoning, toolCalls };
+}
+
+/** Сколько символов истории держим в долгом цикле (≈60–80 тыс. токенов). */
+export const LOOP_HISTORY_CHARS = 240_000;
+const KEEP_RECENT_TOOLS = 6;
+
+/**
+ * Долгая работа (код: десятки чтений файлов) раздувает контекст. Если история
+ * больше лимита, старые результаты инструментов этого хода сокращаем —
+ * свежие оставляем целиком. Модель при нужде перечитает файл.
+ */
+export function shrinkToolResults(
+  history: ModelMessage[],
+  from: number,
+  limit = LOOP_HISTORY_CHARS,
+): void {
+  const size = () =>
+    history.reduce((sum, message) => sum + (message.content?.length ?? 0), 0);
+  if (size() <= limit) return;
+  const toolIndexes = history
+    .map((message, index) =>
+      message.role === 'tool' && index >= from ? index : -1,
+    )
+    .filter((index) => index >= 0);
+  for (const index of toolIndexes.slice(0, -KEEP_RECENT_TOOLS)) {
+    const message = history[index]!;
+    if (message.content.length > 600)
+      history[index] = {
+        ...message,
+        content: `${message.content.slice(0, 400)}\n… [сокращено ради экономии контекста, было ${message.content.length} символов — при необходимости вызови инструмент снова]`,
+      };
+    if (size() <= limit) return;
+  }
 }
 
 function nonempty(value: string): string | undefined {

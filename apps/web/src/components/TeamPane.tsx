@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
   Agent,
+  BillingState,
   ProviderPublic,
   PublicUser,
   UsageRow,
@@ -20,6 +21,7 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
   const [limit, setLimit] = useState('');
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
+  const [resetLinks, setResetLinks] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const [nextUsers, nextAgents, nextUsage, nextProviders] = await Promise.all(
@@ -141,6 +143,11 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
             </p>
           )}
         </form>
+        <div className="card form budget-defaults">
+          <strong>{t('budgetDefaults')}</strong>
+          <p className="hint">{t('budgetDefaultsHint')}</p>
+          <BudgetInputs userId="default" />
+        </div>
         {error && <p className="fault">{error}</p>}
         <div className="team-list">
           {users.map((user) => (
@@ -179,6 +186,27 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                     {t('disable')}
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() =>
+                    void api
+                      .resetLink(user.id)
+                      .then((result) =>
+                        setResetLinks((current) => ({
+                          ...current,
+                          [user.id]: result.link,
+                        })),
+                      )
+                      .catch((reason: unknown) =>
+                        setError(
+                          reason instanceof Error ? reason.message : t('error'),
+                        ),
+                      )
+                  }
+                >
+                  {t('resetLinkBtn')}
+                </button>
                 <label>
                   {t('limit')}
                   <input
@@ -192,7 +220,19 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
                     }}
                   />
                 </label>
+                <BudgetInputs userId={user.id} />
               </div>
+              {resetLinks[user.id] && (
+                <p className="muted reset-link">
+                  {t('resetLinkHint')} <code>{resetLinks[user.id]}</code>
+                </p>
+              )}
+              {user.role !== 'admin' && (
+                <ClientRow
+                  user={user}
+                  onToggle={(client) => void save(user, { client })}
+                />
+              )}
               {user.role !== 'admin' && sharedModels.length > 0 && (
                 <div className="row-actions">
                   <label className="check">
@@ -278,5 +318,125 @@ export function TeamPane({ onMenu }: { onMenu: () => void }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/** Лимиты расходов в долларах: сохраняются при выходе из поля. */
+function BudgetInputs({ userId }: { userId: string }) {
+  const { t } = useI18n();
+  const [value, setValue] = useState<{ day: string; week: string } | null>(
+    null,
+  );
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    void api
+      .budgets(userId)
+      .then((data) =>
+        setValue({
+          day: data.day === null ? '' : String(data.day),
+          week: data.week === null ? '' : String(data.week),
+        }),
+      )
+      .catch(() => setValue({ day: '', week: '' }));
+  }, [userId]);
+  if (!value) return null;
+  const commit = (field: 'day' | 'week', raw: string) => {
+    const text = raw.trim().replace(',', '.');
+    const next = text === '' ? null : Number(text);
+    if (next !== null && !(next >= 0)) return;
+    void api.saveBudgets(userId, { [field]: next }).then(() => {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    });
+  };
+  return (
+    <span className="budget-inputs">
+      {(['day', 'week'] as const).map((field) => (
+        <label key={field}>
+          {field === 'day' ? t('budgetDay') : t('budgetWeek')}
+          <input
+            inputMode="decimal"
+            placeholder="∞"
+            value={value[field]}
+            onChange={(event) =>
+              setValue({ ...value, [field]: event.target.value })
+            }
+            onBlur={(event) => commit(field, event.target.value)}
+          />
+        </label>
+      ))}
+      {saved && <small className="muted">✓</small>}
+    </span>
+  );
+}
+
+/** Клиент (сам зарегистрировался) или сотрудник; у клиента — баланс и ручное зачисление. */
+function ClientRow({
+  user,
+  onToggle,
+}: {
+  user: PublicUser;
+  onToggle: (client: boolean) => void;
+}) {
+  const [state, setState] = useState<BillingState | null>(null);
+  const [amount, setAmount] = useState('');
+  useEffect(() => {
+    if (user.client)
+      void api.userBilling(user.id).then(setState, () => undefined);
+  }, [user.id, user.client]);
+  return (
+    <div className="row-actions client-row">
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={Boolean(user.client)}
+          onChange={() => onToggle(!user.client)}
+        />
+        Клиент (платит за модели, без коннекторов компании)
+      </label>
+      {user.client && state && (
+        <>
+          <span className="muted mono">
+            пробные ${(state.trial.limitUsd - state.trial.usedUsd).toFixed(2)} ·{' '}
+            {state.plan ? `${state.plan.name} ${state.plan.leftRub} ₽ · ` : ''}
+            баланс {state.balanceRub} ₽
+          </span>
+          <input
+            className="tiny-input"
+            type="number"
+            placeholder="₽"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+          <button
+            type="button"
+            className="ghost slim"
+            disabled={!Number(amount)}
+            onClick={() =>
+              void api
+                .creditUser(user.id, {
+                  amountRub: Number(amount),
+                  note: 'Зачисление администратором',
+                })
+                .then((next) => {
+                  setState(next);
+                  setAmount('');
+                })
+            }
+          >
+            Зачислить
+          </button>
+          <button
+            type="button"
+            className="ghost slim"
+            onClick={() =>
+              void api.creditUser(user.id, { resetTrial: true }).then(setState)
+            }
+          >
+            Сбросить пробные
+          </button>
+        </>
+      )}
+    </div>
   );
 }

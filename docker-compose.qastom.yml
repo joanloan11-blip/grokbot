@@ -1,0 +1,94 @@
+# qastom: SQLite, порт 8090 (сервер). Запуск: docker compose -p mayak -f docker-compose.qastom.yml up -d --build
+# Голос: общий whisper из bible-finance (сеть server_default, сервис whisper:8080).
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      MAYAK_AUTH: "1"
+      COOKIE_SECURE: "1"
+      MAYAK_PUBLIC_URL: https://app.geminibot.ru
+      DATA_DIR: /app/data
+      TZ: Asia/Yekaterinburg
+      WHISPER_URL: http://whisper:8080
+      RUNNER_URL: http://runner:8080
+      # Telegram Bot API с российского VPS напрямую не открывается — запросы
+      # идут через существующий SSH-туннель llm-relay (SOCKS5).
+      TELEGRAM_PROXY: socks5://llm-relay:1080
+    # Провайдерский DNS на qastom периодически не отвечает; внешние 1.1.1.1 и
+    # 77.88.8.8 нужны почте (IMAP), Telegram, web_fetch и LLM-прокси-цепочке.
+    dns:
+      - 1.1.1.1
+      - 77.88.8.8
+    ports:
+      - "127.0.0.1:8090:8787"
+    volumes:
+      - mayak_data:/app/data
+    networks:
+      - default
+      - whisper
+      - mcp
+      - browser
+      - search
+      - runner
+    restart: unless-stopped
+    mem_limit: 768m
+  # Песочница для команд агентов (shell, run_code): свой uid на пользователя, без прямого интернета.
+  runner:
+    build: ./deploy/qastom-runner
+    environment:
+      RUNNER_TOKEN: ${RUNNER_TOKEN}
+      RUNNER_PROXY: http://egress:8888
+    volumes:
+      - type: volume
+        source: mayak_data
+        target: /work
+        volume:
+          subpath: workspaces
+    networks:
+      - runner
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - KILL
+      - DAC_OVERRIDE
+      - FOWNER
+    restart: unless-stopped
+  # Единственный выход песочницы в интернет: npm, PyPI, GitHub.
+  egress:
+    build: ./deploy/qastom-runner/egress
+    networks:
+      - runner
+      - default
+    dns:
+      - 1.1.1.1
+      - 77.88.8.8
+    mem_limit: 64m
+    restart: unless-stopped
+volumes:
+  mayak_data:
+networks:
+  runner:
+    internal: true
+  whisper:
+    name: server_default
+    external: true
+  mcp:
+    name: mayak_mcp
+    external: true
+  browser:
+    name: mayak_browser
+    external: true
+  search:
+    name: qastom-search_default
+    external: true

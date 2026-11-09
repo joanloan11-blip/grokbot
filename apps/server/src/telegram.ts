@@ -89,7 +89,7 @@ async function handleMessage(
       await sendTelegram(
         token,
         chatId,
-        'Код не найден. Возьмите его в настройках Маяка.',
+        'Код не найден. Возьмите его в настройках QASTOM AGENT.',
       );
       return;
     }
@@ -104,7 +104,7 @@ async function handleMessage(
     await sendTelegram(
       token,
       chatId,
-      'Сначала /start и код из настроек Маяка.',
+      'Сначала /start и код из настроек QASTOM AGENT.',
     );
     return;
   }

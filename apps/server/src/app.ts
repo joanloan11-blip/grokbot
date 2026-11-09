@@ -1,16 +1,48 @@
+import { isPublicSkill } from '@mayak/shared';
+import { canUseConnector, isBusinessConnector } from './connector-access';
+import { readBudgets, saveBudgets, usageMeter } from './meter';
+import { checkProviderModels, isChecking, readCaps } from './model-caps';
+import { isKeylessUrl } from './free-llm';
+import { readFreeCatalog, refreshFreeCatalog } from './free-llm';
+import { assertPublicUrl } from './webtools';
+import { checkAvito } from './avito';
+import { assertCanCreate } from './billing';
+import {
+  addHost,
+  hostSummaries,
+  listHosts,
+  probeHost,
+  removeHost,
+} from './remote';
+import {
+  avitoStatus,
+  clearAvitoAccount,
+  saveAvitoAccount,
+} from './avito-account';
+import { keyBalance } from './balance';
+import { DEFAULT_PRICES, isPrice, readPriceOverrides } from './pricing';
+import { buildSpendReport } from './spend';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { resolveInside, workspaceRoot } from './workspace';
 import {
   SECRET_MASK,
+  type Attachment,
   type ClientEvent,
+  type CompareLane,
+  COMPARE_BLOCKED_TOOLS,
   type Locale,
   type McpServerConfigEntry,
   type McpServerInput,
   type McpServerPublic,
   type McpServersFile,
   type AgentInput,
+  type ProjectInput,
   type ProviderInput,
   type RoutineInput,
+  AGENT_PLUGINS,
   DEEPSEEK_BASE_URL,
   DEEPSEEK_MODELS,
   type ProviderKind,
@@ -36,15 +68,21 @@ import type { AppConfig } from './config';
 import { isValidCron } from './cron';
 import { type McpRow, Store, type UserRecord, toPublicProvider } from './db';
 import { HttpError, badRequest } from './errors';
+import { registerChannelRoutes } from './channels';
 import { registerExtraRoutes } from './extra';
 import { registerGithubRoutes } from './github/routes';
+import { registerBillingRoutes } from './billing-routes';
+import { createLocalFs, resolveLocalFs } from './local-fs';
 import { McpManager } from './mcp/manager';
 import { createClient, providerNeedsKey } from './providers/index';
+import { discoverProvider } from './providers/discover';
 import { runRoutineNow, startScheduler, triggerWebhook } from './scheduler';
+import { ensureStarterAgents, seedStarterAgents } from './seed-agents';
 import { SkillLibrary, seedSkills } from './skills';
 import { AGENT_TEMPLATES } from './templates';
 import { assertQuota, runTurn } from './turn';
 import { asString, isRecord } from './util';
+import { mailConfigured, resetEmail, sendMail } from './mail';
 
 export interface AppHandle {
   app: Hono;
@@ -71,6 +109,14 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   await seed(store, skills, config);
   await ensureDeepSeek(store);
   if (!config.authEnabled) await ensureLocalUser(store);
+  // Стартовые агенты «Почтовый агент» и «Джарвис» — новым и уже существующим
+  // пользователям: при обновлении сервера они появятся автоматически.
+  await ensureStarterAgents(store, [LOCAL_USER_ID]).catch((error: unknown) => {
+    console.error(
+      'Стартовые агенты:',
+      error instanceof Error ? error.message : error,
+    );
+  });
 
   for (const row of await store.listMcp()) {
     if (row.enabled) await mcp.connect(row);
@@ -91,8 +137,37 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   const actor = (c: Context) => userFromRequest(c, store, auth, LOCAL_USER_ID);
   const canUseAgent = async (user: UserRecord, agentId: string) => {
     if (user.role === 'admin') return true;
+    const agent = await store.getAgent(agentId);
+    if (!agent) return false;
+    if (agent.ownerId) return agent.ownerId === user.id;
     const ids = await store.listUserAgentIds(user.id);
     return ids.includes(agentId);
+  };
+  /** Менять агента может админ или владелец личного агента. */
+  const canEditAgent = (user: UserRecord, agent: { ownerId?: string | null }) =>
+    user.role === 'admin' ||
+    (Boolean(agent.ownerId) && agent.ownerId === user.id);
+  /** Менеджер не подключает MCP и GitHub: это решает админ для общих агентов. */
+  const limitForManager = async (
+    user: UserRecord,
+    input: AgentInput & { name?: string },
+  ) => {
+    // К агенту — только доступные пользователю коннекторы (свои и открытые админом).
+    if (input.mcpServerIds) {
+      const usable = new Set((await usableMcp(user)).map((row) => row.id));
+      input = {
+        ...input,
+        mcpServerIds: input.mcpServerIds.filter((id) => usable.has(id)),
+      };
+    }
+    if (user.role === 'admin') return input;
+    const { githubRepos: _gh, ...rest } = input;
+    return {
+      ...rest,
+      ...(rest.skillNames
+        ? { skillNames: rest.skillNames.filter(isPublicSkill) }
+        : {}),
+    };
   };
 
   app.use('*', async (c, next) => {
@@ -121,6 +196,22 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     }),
   );
 
+  // Справка для пользователей: docs/USER-GUIDE.md из репозитория. Читается на
+  // каждый запрос, поэтому правка файла не требует пересборки образа.
+  app.get('/api/help', async (c) => {
+    // Маршрут объявлен до middleware /api/*, поэтому сессию проверяем сами.
+    await actor(c);
+    try {
+      const markdown = fs.readFileSync(
+        path.join(config.repoRoot, 'docs', 'USER-GUIDE.md'),
+        'utf8',
+      );
+      return c.json({ markdown });
+    } catch {
+      return c.json({ error: 'Справка не найдена' }, 404);
+    }
+  });
+
   app.get('/api/auth/config', (c) => c.json({ required: config.authEnabled }));
 
   app.post('/api/auth/register', async (c) => {
@@ -140,8 +231,50 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       role: first ? 'admin' : 'manager',
       status: first ? 'active' : 'pending',
       dailyRequestLimit: null,
+      // Без приглашения — клиент: платит за модели, общих коннекторов не видит.
+      client: !first,
     });
     if (first) await store.claimOrphans(user.id);
+    else {
+      // Клиенту — основной агент без коннекторов команды.
+      const main = (await store.listAgents()).find((agent) => !agent.ownerId);
+      if (main) await store.setUserAgents(user.id, [main.id]);
+    }
+    // Каждому новому пользователю сразу создаём «Почтового агента» и «Джарвиса».
+    await seedStarterAgents(store, user).catch((error: unknown) => {
+      console.error(
+        'Стартовые агенты:',
+        error instanceof Error ? error.message : error,
+      );
+    });
+    if (mailConfigured()) {
+      const base = (config.publicUrl || '').replace(/\/$/, '');
+      const lines = [
+        `Здравствуйте${user.name ? `, ${user.name}` : ''}!`,
+        '',
+        first
+          ? 'Вы создали рабочее пространство «Маяк».'
+          : 'Заявка на доступ к «Маяку» принята — администратор её подтвердит.',
+        '',
+        'С чего начать:',
+        '1. Создайте агента или выберите готовый шаблон.',
+        '2. Подключите свои кабинеты: Авито, МойСклад, GitHub — в разделе «Мои коннекторы».',
+        '3. Задайте первую задачу обычным языком.',
+        '',
+        'Справка по плагинам, навыкам и коннекторам — в разделе «Справка» внутри приложения.',
+        base ? `\nВход: ${base}` : '',
+        '',
+        'Письмо отправлено автоматически, отвечать на него не нужно.',
+      ].filter((line) => line !== undefined);
+      void sendMail({
+        to: user.email,
+        subject: first
+          ? 'Маяк: рабочее пространство готово'
+          : 'Маяк: заявка принята',
+        text: lines.join('\n'),
+        html: lines.map((line) => (line ? `<p>${line}</p>` : '<br/>')).join(''),
+      }).catch(() => undefined);
+    }
     if (user.status === 'active') {
       setSessionCookie(
         c,
@@ -207,6 +340,112 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ user: toPublicUser(updated, agentIds) });
   });
 
+  // --- Восстановление пароля ---
+  const resetHits = new Map<string, number[]>();
+  const tooMany = (key: string, limit: number) => {
+    const now = Date.now();
+    const hits = (resetHits.get(key) ?? []).filter(
+      (at) => at > now - 3_600_000,
+    );
+    hits.push(now);
+    resetHits.set(key, hits);
+    if (resetHits.size > 5000) resetHits.clear();
+    return hits.length > limit;
+  };
+  const siteUrl = (c: Context) => {
+    if (config.publicUrl) return config.publicUrl.replace(/\/$/, '');
+    const url = new URL(c.req.url);
+    const proto =
+      c.req.header('x-forwarded-proto') ?? url.protocol.replace(':', '');
+    const host =
+      c.req.header('x-forwarded-host') ?? c.req.header('host') ?? url.host;
+    return `${proto}://${host}`;
+  };
+  const issueResetLink = async (c: Context, userId: string) => {
+    const token = newInviteToken();
+    const expiresAt = await store.createPasswordReset(
+      userId,
+      hashInviteToken(token),
+    );
+    return { link: `${siteUrl(c)}/?reset=${token}`, expiresAt };
+  };
+
+  app.post('/api/auth/forgot', async (c) => {
+    const body = await readBody(c);
+    const email =
+      isRecord(body) && typeof body.email === 'string'
+        ? body.email.trim().toLowerCase()
+        : '';
+    const locale = isRecord(body) && body.locale === 'en' ? 'en' : 'ru';
+    const ip =
+      c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for') ?? 'local';
+    if (tooMany(`ip:${ip}`, 10) || (email && tooMany(`email:${email}`, 3))) {
+      throw new HttpError(429, 'Слишком много запросов. Попробуйте через час');
+    }
+    // Ответ одинаковый, есть такой пользователь или нет.
+    const answer = { ok: true, mail: mailConfigured() };
+    if (!email || !mailConfigured()) return c.json(answer);
+    const user = await store.getUserByEmail(email);
+    if (!user || user.status === 'disabled' || user.id === LOCAL_USER_ID)
+      return c.json(answer);
+    const { link } = await issueResetLink(c, user.id);
+    try {
+      await sendMail({ to: user.email, ...resetEmail(link, locale) });
+    } catch (error) {
+      console.error(
+        'Письмо со сбросом пароля не отправлено:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+    return c.json(answer);
+  });
+
+  app.post('/api/auth/reset', async (c) => {
+    const body = await readBody(c);
+    if (!isRecord(body) || typeof body.token !== 'string')
+      throw badRequest('Нужна ссылка для сброса');
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (password.length < 8) throw badRequest('Пароль не короче 8 символов');
+    if (password.length > 200) throw badRequest('Пароль слишком длинный');
+    const userId = await store.consumePasswordReset(
+      hashInviteToken(body.token.trim()),
+    );
+    if (!userId)
+      throw new HttpError(400, 'Ссылка недействительна или устарела');
+    const user = await store.getUser(userId);
+    if (!user || user.status === 'disabled')
+      throw new HttpError(400, 'Ссылка недействительна или устарела');
+    const updated = await store.updateUser(user.id, {
+      passwordHash: await hashPassword(password),
+      status:
+        user.status === 'pending' && !user.passwordHash
+          ? 'active'
+          : user.status,
+    });
+    if (!updated)
+      throw new HttpError(400, 'Ссылка недействительна или устарела');
+    await store.setPasswordChanged(updated.id);
+    await store.setInviteToken(updated.id, null);
+    if (updated.status !== 'active') return c.json({ ok: true, pending: true });
+    setSessionCookie(
+      c,
+      signSession(updated.id, auth.jwtSecret),
+      auth.secureCookie,
+    );
+    const agentIds = await store.listUserAgentIds(updated.id);
+    return c.json({ ok: true, user: toPublicUser(updated, agentIds) });
+  });
+
+  app.post('/api/admin/users/:id/reset-link', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const target = await store.getUser(c.req.param('id'));
+    if (!target || target.id === LOCAL_USER_ID)
+      return c.json({ error: 'Пользователь не найден' }, 404);
+    return c.json(await issueResetLink(c, target.id));
+  });
+
   app.post('/api/auth/logout', (c) => {
     clearSessionCookie(c, auth.secureCookie);
     return c.json({ ok: true });
@@ -255,6 +494,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       throw new HttpError(403, 'Эта модель недоступна');
     }
     return { providerId: provider.id, model: resolved };
+  };
+
+  /** Чужой личный ключ нельзя выбрать никому, даже администратору. */
+  const denyForeignProvider = async (
+    user: UserRecord,
+    providerId: string | null | undefined,
+  ) => {
+    if (!providerId) return;
+    const provider = await store.getProvider(providerId);
+    if (provider?.ownerUserId && provider.ownerUserId !== user.id)
+      throw new HttpError(403, 'Эта модель недоступна');
   };
 
   app.get('/api/auth/me', async (c) => {
@@ -319,7 +569,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const patch: Partial<
       Pick<
         UserRecord,
-        'name' | 'status' | 'dailyRequestLimit' | 'modelsRestricted'
+        'name' | 'status' | 'dailyRequestLimit' | 'modelsRestricted' | 'client'
       >
     > = {};
     if (typeof body.name === 'string' && body.name.trim())
@@ -338,6 +588,8 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       patch.dailyRequestLimit = parseLimit(body.dailyRequestLimit);
     if ('modelsRestricted' in body)
       patch.modelsRestricted = body.modelsRestricted === true;
+    if ('client' in body && current.role !== 'admin')
+      patch.client = body.client === true;
     const updated = await store.updateUser(current.id, patch);
     if (!updated) return c.json({ error: 'Пользователь не найден' }, 404);
     if (Array.isArray(body.agentIds)) {
@@ -362,6 +614,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const byModel = await store.usageByModel(since.toISOString());
     const byUser = new Map(summary.map((row) => [row.userId, row.calls]));
     const users = await store.listUsers();
+    const spend = await buildSpendReport(store, { period: 'day' });
     const usageRows = [];
     for (const item of users) {
       const tokens = await store.tokenSumSince(item.id, since.toISOString());
@@ -372,13 +625,131 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         calls: byUser.get(item.id) ?? 0,
         limit: item.dailyRequestLimit,
         tokens,
-        costUsd: Number(((tokens / 1_000_000) * 1).toFixed(4)),
+        costUsd:
+          spend.users.find((row) => row.userId === item.id)?.costUsd ?? 0,
         models: byModel
           .filter((row) => row.userId === item.id)
           .map((row) => ({ model: row.model, calls: row.calls })),
       });
     }
     return c.json(usageRows);
+  });
+
+  // Индикатор расхода (как в Codex): % дневного и недельного лимита.
+  app.get('/api/usage/meter', async (c) => {
+    const user = await actor(c);
+    return c.json(await usageMeter(store, user.id));
+  });
+
+  // Лимиты в долларах: общий по умолчанию (userId = 'default') или на пользователя.
+  app.get('/api/admin/budgets/:userId', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const id = c.req.param('userId');
+    if (id === 'default') {
+      const day = Number(await store.getSetting('budget_day_default'));
+      const week = Number(await store.getSetting('budget_week_default'));
+      return c.json({
+        day: day > 0 ? day : null,
+        week: week > 0 ? week : null,
+      });
+    }
+    const own = {
+      day: Number(await store.getSetting(`budget_day:${id}`)) || null,
+      week: Number(await store.getSetting(`budget_week:${id}`)) || null,
+    };
+    return c.json({ ...own, effective: await readBudgets(store, id) });
+  });
+
+  app.put('/api/admin/budgets/:userId', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const id = c.req.param('userId');
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const pick = (value: unknown) =>
+      value === null || value === ''
+        ? null
+        : typeof value === 'number' && Number.isFinite(value) && value >= 0
+          ? Math.round(value * 100) / 100
+          : undefined;
+    await saveBudgets(store, id === 'default' ? '' : id, {
+      day: pick(body.day),
+      week: pick(body.week),
+    });
+    return c.json({ ok: true });
+  });
+
+  // Расходы: админ видит всех, остальные — только себя.
+  app.get('/api/usage/report', async (c) => {
+    const user = await actor(c);
+    const raw = c.req.query('period');
+    const period = raw === 'week' || raw === 'month' ? raw : 'day';
+    const all = user.role === 'admin' && c.req.query('scope') !== 'mine';
+    return c.json(
+      await buildSpendReport(store, {
+        period,
+        userId: all ? undefined : user.id,
+      }),
+    );
+  });
+
+  // Каталог бесплатных LLM API (awesome-free-llm-apis): видят все, обновляет админ.
+  app.get('/api/free-providers', async (c) => {
+    await actor(c);
+    return c.json(await readFreeCatalog(store));
+  });
+
+  app.post('/api/admin/free-providers/refresh', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    try {
+      return c.json(await refreshFreeCatalog(store));
+    } catch (error) {
+      throw badRequest(
+        error instanceof Error ? error.message : 'Не удалось обновить каталог',
+      );
+    }
+  });
+
+  app.get('/api/admin/usage/balances', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const providers = (await store.listProviders()).filter(
+      (item) => item.kind !== 'mock' && !item.ownerUserId,
+    );
+    return c.json(await Promise.all(providers.map((item) => keyBalance(item))));
+  });
+
+  app.get('/api/admin/prices', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return c.json({
+      defaults: DEFAULT_PRICES,
+      overrides: await readPriceOverrides(store),
+    });
+  });
+
+  app.put('/api/admin/prices', async (c) => {
+    const admin = await actor(c);
+    if (admin.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      overrides?: unknown;
+    };
+    const next: Record<string, unknown> = {};
+    if (body.overrides && typeof body.overrides === 'object')
+      for (const [model, price] of Object.entries(body.overrides)) {
+        const key = model.trim().toLowerCase().slice(0, 120);
+        if (key && isPrice(price)) next[key] = price;
+      }
+    await store.setSetting('model_prices', JSON.stringify(next));
+    return c.json({ defaults: DEFAULT_PRICES, overrides: next });
   });
 
   app.put('/api/admin/models/shared', async (c) => {
@@ -394,6 +765,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const kept = models.filter((item) =>
       known.some(
         (provider) =>
+          !provider.ownerUserId &&
           provider.id === item.providerId &&
           provider.models.includes(item.model),
       ),
@@ -402,46 +774,164 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ models: kept });
   });
 
+  /** Провайдеры, которые видит пользователь: общие + свои личные. Чужие личные скрыты. */
+  const visibleProviders = async (user: UserRecord) =>
+    (await store.listProviders()).filter(
+      (row) => !row.ownerUserId || row.ownerUserId === user.id,
+    );
+
+  /** Провайдер, который пользователь может менять: админ — общие и свои, менеджер — только свои. */
+  const editableProvider = async (user: UserRecord, id: string) => {
+    const row = await store.getProvider(id);
+    if (!row) throw new HttpError(404, 'Провайдер не найден');
+    const mine = row.ownerUserId === user.id;
+    if (row.ownerUserId ? !mine : user.role !== 'admin')
+      throw new HttpError(403, 'Можно менять только свои модели');
+    return row;
+  };
+
+  /** Свой адрес у менеджера — только публичный https (защита внутренней сети сервера). */
+  const checkPersonalBaseUrl = async (user: UserRecord, baseUrl?: string) => {
+    if (user.role === 'admin' || !baseUrl?.trim()) return;
+    let url: URL;
+    try {
+      url = await assertPublicUrl(baseUrl.trim());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw badRequest(
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo/.test(message)
+          ? 'Не удалось найти адрес провайдера — проверьте базовый URL'
+          : message || 'Некорректный адрес',
+      );
+    }
+    if (url.protocol !== 'https:')
+      throw badRequest('Адрес провайдера должен начинаться с https://');
+  };
+
   app.get('/api/providers', async (c) => {
     const user = await actor(c);
-    const rows = await store.listProviders();
+    const rows = await visibleProviders(user);
+    const capsMap = await readCaps(store);
     const shared = await store.listModelAccess('');
     const allowed =
       user.role === 'manager' ? await store.allowedModels(user) : null;
     const visible = rows
       .map((row) => {
-        const managerModels = shared
-          .filter(
-            (item) =>
-              item.providerId === row.id && row.models.includes(item.model),
-          )
-          .map((item) => item.model);
-        const models = allowed
-          ? row.models.filter((model) =>
-              allowed.some(
-                (item) => item.providerId === row.id && item.model === model,
-              ),
-            )
-          : row.models;
-        return { ...toPublicProvider(row), models, managerModels };
+        const owned = row.ownerUserId === user.id;
+        const managerModels = row.ownerUserId
+          ? []
+          : shared
+              .filter(
+                (item) =>
+                  item.providerId === row.id && row.models.includes(item.model),
+              )
+              .map((item) => item.model);
+        const models =
+          allowed && !owned
+            ? row.models.filter((model) =>
+                allowed.some(
+                  (item) => item.providerId === row.id && item.model === model,
+                ),
+              )
+            : row.models;
+        return {
+          ...toPublicProvider(row),
+          // Менеджер не видит адрес общих провайдеров администратора.
+          baseUrl: user.role === 'manager' && !owned ? '' : row.baseUrl,
+          models,
+          managerModels,
+          owned,
+          keyless: isKeylessUrl(row.baseUrl),
+          needsKey: providerNeedsKey(row.kind, row.baseUrl),
+          caps: capsMap[row.id] ?? {},
+          checking: isChecking(row.id),
+        };
       })
       .filter(
         (row) =>
-          user.role !== 'manager' || (row.enabled && row.models.length > 0),
+          row.owned ||
+          user.role !== 'manager' ||
+          (row.enabled && row.models.length > 0),
       );
     return c.json(visible);
   });
 
+  // Определить провайдера по ключу или моделям и загрузить список моделей.
+  app.post('/api/providers/discover', async (c) => {
+    const user = await actor(c);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const apiKey =
+      typeof body.apiKey === 'string' && body.apiKey !== SECRET_MASK
+        ? body.apiKey
+        : undefined;
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : undefined;
+    await checkPersonalBaseUrl(user, baseUrl);
+    // Менеджер может подставить ключ только из своих провайдеров.
+    const existing = (await visibleProviders(user)).filter(
+      (row) => user.role === 'admin' || row.ownerUserId === user.id,
+    );
+    return c.json(
+      await discoverProvider({
+        apiKey,
+        baseUrl,
+        kind: isKind(body.kind) ? body.kind : undefined,
+        models: Array.isArray(body.models)
+          ? body.models.filter(
+              (item): item is string => typeof item === 'string',
+            )
+          : undefined,
+        currentId:
+          typeof body.providerId === 'string' &&
+          existing.some((row) => row.id === body.providerId)
+            ? body.providerId
+            : undefined,
+        existing,
+      }),
+    );
+  });
+
+  /** Ключ, скопированный на сервере из другого провайдера (в браузер не попадает). */
+  const borrowedKey = async (
+    user: UserRecord,
+    body: unknown,
+  ): Promise<string | undefined> => {
+    if (!isRecord(body) || typeof body.keyFromProviderId !== 'string')
+      return undefined;
+    const donor = await store.getProvider(body.keyFromProviderId);
+    if (!donor) return undefined;
+    const mayUse = donor.ownerUserId
+      ? donor.ownerUserId === user.id
+      : user.role === 'admin';
+    return mayUse ? donor.apiKey || undefined : undefined;
+  };
+
   app.post('/api/providers', async (c) => {
-    const input = parseProviderInput(await readBody(c));
+    const user = await actor(c);
+    const raw = await readBody(c);
+    const input = parseProviderInput(raw);
+    if (user.role === 'manager' && input.kind === 'mock')
+      throw badRequest('Демо-провайдер добавляет только администратор');
+    await checkPersonalBaseUrl(user, input.baseUrl);
     if (input.apiKey === SECRET_MASK) input.apiKey = undefined;
-    const row = await store.insertProvider(input);
-    return c.json(toPublicProvider(row), 201);
+    if (!input.apiKey) input.apiKey = await borrowedKey(user, raw);
+    const row = await store.insertProvider({
+      ...input,
+      ownerUserId: user.role === 'admin' ? null : user.id,
+    });
+    if (!process.env.VITEST)
+      void checkProviderModels(store, row, { gapMs: 3000 }).catch(
+        () => undefined,
+      );
+    return c.json(
+      { ...toPublicProvider(row), owned: Boolean(row.ownerUserId) },
+      201,
+    );
   });
 
   app.patch('/api/providers/:id', async (c) => {
-    const current = await store.getProvider(c.req.param('id'));
-    if (!current) return c.json({ error: 'Провайдер не найден' }, 404);
+    const user = await actor(c);
+    const current = await editableProvider(user, c.req.param('id'));
     const body = await readBody(c);
     const record = isRecord(body) ? body : {};
     const input = parseProviderInput(
@@ -452,22 +942,63 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       },
       true,
     );
+    if (current.ownerUserId) await checkPersonalBaseUrl(user, input.baseUrl);
     if (!input.apiKey || input.apiKey === SECRET_MASK) input.apiKey = undefined;
+    if (!input.apiKey) input.apiKey = await borrowedKey(user, body);
     const row = await store.updateProvider(current.id, input);
     if (!row) return c.json({ error: 'Провайдер не найден' }, 404);
-    return c.json(toPublicProvider(row));
+    if (!process.env.VITEST)
+      void checkProviderModels(store, row, { gapMs: 3000 }).catch(
+        () => undefined,
+      );
+    return c.json({
+      ...toPublicProvider(row),
+      owned: Boolean(row.ownerUserId),
+    });
   });
 
   app.delete('/api/providers/:id', async (c) => {
-    const ok = await store.deleteProvider(c.req.param('id'));
+    const user = await actor(c);
+    const current = await editableProvider(user, c.req.param('id'));
+    const ok = await store.deleteProvider(current.id);
     if (!ok) return c.json({ error: 'Провайдер не найден' }, 404);
     return c.json({ ok: true });
   });
 
+  // Проверить все модели у всех провайдеров, которые видит пользователь.
+  app.post('/api/providers/check-all', async (c) => {
+    const user = await actor(c);
+    const rows = (await visibleProviders(user)).filter(
+      (row) =>
+        row.enabled &&
+        row.kind !== 'mock' &&
+        (user.role === 'admin'
+          ? !row.ownerUserId || row.ownerUserId === user.id
+          : row.ownerUserId === user.id),
+    );
+    void (async () => {
+      for (const row of rows)
+        await checkProviderModels(store, row, { gapMs: 3000 }).catch(
+          () => undefined,
+        );
+    })();
+    return c.json({ started: rows.length }, 202);
+  });
+
+  // Проверить все модели провайдера: отвечает ли, умеет ли инструменты (MCP).
+  app.post('/api/providers/:id/check', async (c) => {
+    const user = await actor(c);
+    const provider = await editableProvider(user, c.req.param('id'));
+    void checkProviderModels(store, provider, { gapMs: 3000 }).catch(
+      () => undefined,
+    );
+    return c.json({ started: true }, 202);
+  });
+
   app.post('/api/providers/:id/test', async (c) => {
-    const provider = await store.getProvider(c.req.param('id'));
-    if (!provider) return c.json({ error: 'Провайдер не найден' }, 404);
-    if (providerNeedsKey(provider.kind) && !provider.apiKey)
+    const user = await actor(c);
+    const provider = await editableProvider(user, c.req.param('id'));
+    if (providerNeedsKey(provider.kind, provider.baseUrl) && !provider.apiKey)
       return c.json({ error: 'Сначала сохраните API-ключ' }, 400);
     const model = provider.models[0];
     if (!model) return c.json({ error: 'Добавьте хотя бы одну модель' }, 400);
@@ -498,35 +1029,129 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true, preview: preview.slice(0, 180) });
   });
 
-  app.get('/api/mcp', async (c) =>
-    c.json((await store.listMcp()).map((row) => presentMcp(row, mcp))),
-  );
+  // ---------- Коннекторы (MCP) ----------
+  // Общие ведёт администратор и решает, какие из них доступны менеджерам.
+  // Менеджер видит открытые ему общие (без адреса и ключей) и добавляет свои — только https.
+  const managerMcpIds = async (): Promise<string[]> => {
+    try {
+      const raw = JSON.parse(
+        (await store.getSetting('manager_mcp_ids')) ?? '[]',
+      );
+      return Array.isArray(raw)
+        ? raw.filter((id) => typeof id === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  };
 
-  app.get('/api/mcp/config', async (c) =>
-    c.json(toMcpFile(await store.listMcp())),
-  );
+  /** Коннекторы, которые пользователь может подключать к своим агентам. */
+  const usableMcp = async (user: UserRecord) => {
+    const rows = await store.listMcp();
+    const open = await managerMcpIds();
+    return rows.filter((row) => canUseConnector(user, row, open));
+  };
+
+  const presentFor = async (user: UserRecord, row: McpRow) => {
+    const open = await managerMcpIds();
+    const owned = row.ownerUserId === user.id;
+    const base = presentMcp(row, mcp);
+    const hideTarget = user.role !== 'admin' && !owned;
+    return {
+      ...base,
+      // В адресе общего коннектора бывает секрет (amoCRM) — менеджеру не показываем.
+      url: hideTarget ? '' : base.url,
+      command: hideTarget ? '' : base.command,
+      args: hideTarget ? [] : base.args,
+      owned,
+      forManagers:
+        !row.ownerUserId && !isBusinessConnector(row) && open.includes(row.id),
+    };
+  };
+
+  const editableMcp = async (user: UserRecord, id: string) => {
+    const row = await store.getMcp(id);
+    if (!row) throw new HttpError(404, 'MCP-сервер не найден');
+    const ok = row.ownerUserId
+      ? row.ownerUserId === user.id
+      : user.role === 'admin';
+    if (!ok) throw new HttpError(403, 'Можно менять только свои коннекторы');
+    return row;
+  };
+
+  /** Свой коннектор менеджера: только Streamable HTTP по https во внешний интернет. */
+  const checkPersonalMcp = async (input: McpServerInput) => {
+    if (input.transport !== 'http')
+      throw badRequest(
+        'Свой коннектор подключается по адресу (Streamable HTTP). Команды на сервере запускает только администратор.',
+      );
+    let url: URL;
+    try {
+      url = await assertPublicUrl(input.url ?? '');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw badRequest(
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo/.test(message)
+          ? 'Не удалось найти адрес коннектора'
+          : message || 'Некорректный адрес',
+      );
+    }
+    if (url.protocol !== 'https:')
+      throw badRequest('Адрес коннектора должен начинаться с https://');
+  };
+
+  app.get('/api/mcp', async (c) => {
+    const user = await actor(c);
+    const rows = await usableMcp(user);
+    return c.json(await Promise.all(rows.map((row) => presentFor(user, row))));
+  });
+
+  app.get('/api/mcp/config', async (c) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return c.json(
+      toMcpFile((await store.listMcp()).filter((row) => !row.ownerUserId)),
+    );
+  });
 
   app.post('/api/mcp/import', async (c) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
     const file = parseMcpFile(await readBody(c));
     for (const [name, entry] of Object.entries(file.mcpServers)) {
-      const input = entryToInput(name, entry, await store.getMcpByName(name));
+      const current = await store.getMcpByName(name);
+      if (current?.ownerUserId)
+        throw badRequest(`Имя «${name}» занято личным коннектором`);
+      const input = entryToInput(name, entry, current);
       const saved = await store.upsertMcp(input);
       if (saved.enabled) await mcp.connect(saved);
       else await mcp.disconnect(saved.id);
     }
-    return c.json((await store.listMcp()).map((row) => presentMcp(row, mcp)));
+    const rows = await usableMcp(user);
+    return c.json(await Promise.all(rows.map((row) => presentFor(user, row))));
   });
 
   app.post('/api/mcp', async (c) => {
+    const user = await actor(c);
     const input = parseMcpInput(await readBody(c));
-    const saved = await store.upsertMcp(input);
+    if (await store.getMcpByName(input.name))
+      throw badRequest('Коннектор с таким именем уже есть — выберите другое');
+    if (user.role !== 'admin') {
+      await checkPersonalMcp(input);
+      await assertCanCreate(store, user, 'connectors');
+    }
+    const saved = await store.upsertMcp(input, {
+      ownerUserId: user.role === 'admin' ? null : user.id,
+    });
     if (saved.enabled) await mcp.connect(saved);
-    return c.json(presentMcp(saved, mcp), 201);
+    return c.json(await presentFor(user, saved), 201);
   });
 
   app.patch('/api/mcp/:id', async (c) => {
-    const current = await store.getMcp(c.req.param('id'));
-    if (!current) return c.json({ error: 'MCP-сервер не найден' }, 404);
+    const user = await actor(c);
+    const current = await editableMcp(user, c.req.param('id'));
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
     if (typeof body.name === 'string' && body.name.trim() !== current.name) {
@@ -534,26 +1159,53 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         'Переименование MCP-сервера не поддерживается — удалите его и создайте заново.',
       );
     }
-    const saved = await store.upsertMcp(mergeMcp(current, body));
+    // Админ открывает или закрывает общий коннектор для менеджеров.
+    if (
+      typeof body.forManagers === 'boolean' &&
+      user.role === 'admin' &&
+      !current.ownerUserId
+    ) {
+      if (body.forManagers && isBusinessConnector(current))
+        throw badRequest(
+          'Авито и МойСклад подключаются только к собственному кабинету пользователя',
+        );
+      const open = new Set(await managerMcpIds());
+      if (body.forManagers) open.add(current.id);
+      else open.delete(current.id);
+      await store.setSetting('manager_mcp_ids', JSON.stringify([...open]));
+    }
+    const merged = mergeMcp(current, body);
+    if (current.ownerUserId) await checkPersonalMcp(merged);
+    const saved = await store.upsertMcp(merged);
     if (saved.enabled) await mcp.connect(saved);
     else await mcp.disconnect(saved.id);
-    return c.json(presentMcp(saved, mcp));
+    return c.json(await presentFor(user, saved));
   });
 
   app.delete('/api/mcp/:id', async (c) => {
-    const current = await store.getMcp(c.req.param('id'));
-    if (!current) return c.json({ error: 'MCP-сервер не найден' }, 404);
+    const user = await actor(c);
+    const current = await editableMcp(user, c.req.param('id'));
     await mcp.disconnect(current.id);
     await store.deleteMcp(current.id);
     return c.json({ ok: true });
   });
 
-  app.get('/api/skills', (c) =>
-    c.json({ directory: skills.directory, skills: skills.list() }),
-  );
+  app.get('/api/skills', async (c) => {
+    const user = await actor(c);
+    return c.json({
+      directory: user.role === 'admin' ? skills.directory : '',
+      skills: skills
+        .list()
+        .filter((skill) => user.role === 'admin' || isPublicSkill(skill.name)),
+    });
+  });
 
-  app.get('/api/skills/:name', (c) => {
-    const skill = skills.get(c.req.param('name'));
+  app.get('/api/skills/:name', async (c) => {
+    const user = await actor(c);
+    const name = c.req.param('name');
+    if (user.role !== 'admin' && !isPublicSkill(name))
+      return c.json({ error: 'Навык не найден' }, 404);
+    const skill = skills.get(name);
     if (!skill) return c.json({ error: 'Навык не найден' }, 404);
     return c.json(skill);
   });
@@ -576,31 +1228,198 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  // «Входящие»: всё, что агент сделал бы сам, но ждёт решения человека.
+  app.get('/api/inbox', async (c) => {
+    const user = await actor(c);
+    const items = await store.listApprovals(user.id);
+    return c.json({
+      items: items.map((item) => ({
+        id: item.id,
+        toolName: item.toolName,
+        preview: item.arguments.slice(0, 300),
+        conversationId: item.conversationId,
+        conversationTitle: item.conversationTitle,
+        agentName: item.agentName,
+        createdAt: item.createdAt,
+      })),
+    });
+  });
+
+  // Удалённые серверы: только администратор. Приватный ключ шифруется и
+  // наружу не отдаётся — в списке только имя, хост и пользователь.
+  const requireAdmin = async (c: Context) => {
+    const user = await actor(c);
+    if (user.role !== 'admin')
+      throw new HttpError(403, 'Только для администратора');
+    return user;
+  };
+
+  app.get('/api/servers', async (c) => {
+    await requireAdmin(c);
+    return c.json({ hosts: await hostSummaries(store, config.jwtSecret) });
+  });
+
+  app.post('/api/servers', async (c) => {
+    await requireAdmin(c);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const host = asString(body.host).trim();
+    const user = asString(body.user).trim();
+    const key = asString(body.privateKey).trim();
+    if (!host || !user || !key)
+      throw badRequest('Нужны host, user и приватный ключ');
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(host))
+      throw badRequest('host: только латиница, цифры, точка, дефис');
+    const port = Number(body.port) || 22;
+    const name = asString(body.name).trim();
+    const probe = await probeHost({
+      id: 'probe',
+      name: name || `${user}@${host}`,
+      host,
+      port,
+      user,
+      privateKey: key,
+    });
+    if (probe.startsWith('Не удалось подключиться')) throw badRequest(probe);
+    const saved = await addHost(store, config.jwtSecret, {
+      name,
+      host,
+      port,
+      user,
+      privateKey: key,
+    });
+    return c.json({ host: saved, probe });
+  });
+
+  app.post('/api/servers/:id/test', async (c) => {
+    await requireAdmin(c);
+    const id = c.req.param('id');
+    const host = (await listHosts(store, config.jwtSecret)).find(
+      (row) => row.id === id,
+    );
+    if (!host) return c.json({ error: 'Сервер не найден' }, 404);
+    return c.json({ probe: await probeHost(host) });
+  });
+
+  app.delete('/api/servers/:id', async (c) => {
+    await requireAdmin(c);
+    const ok = await removeHost(store, c.req.param('id'));
+    if (!ok) return c.json({ error: 'Сервер не найден' }, 404);
+    return c.json({ ok: true });
+  });
+
+  // Авито по ключам API: личный кабинет пользователя. Секрет хранится
+  // зашифрованным, наружу отдаётся только состояние подключения.
+  app.get('/api/avito', async (c) => {
+    const user = await actor(c);
+    return c.json(await avitoStatus(store, config.jwtSecret, user.id));
+  });
+
+  app.put('/api/avito', async (c) => {
+    const user = await actor(c);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const clientId = asString(body.clientId).trim();
+    const clientSecret = asString(body.clientSecret).trim();
+    const profileId = asString(body.profileId).trim();
+    if (!clientId || !clientSecret || !profileId)
+      throw badRequest('Нужны Client_id, Client_secret и Profile_id');
+    let who: Awaited<ReturnType<typeof checkAvito>>;
+    try {
+      who = await checkAvito({ clientId, secret: clientSecret });
+    } catch (error) {
+      throw badRequest(
+        error instanceof Error ? error.message : 'Авито не ответил',
+      );
+    }
+    await saveAvitoAccount(
+      store,
+      config.jwtSecret,
+      user.id,
+      { clientId, clientSecret, profileId },
+      who.name,
+    );
+    return c.json({
+      connected: true,
+      clientId,
+      profileId,
+      name: who.name,
+    });
+  });
+
+  app.delete('/api/avito', async (c) => {
+    const user = await actor(c);
+    await clearAvitoAccount(store, user.id);
+    return c.json({ ok: true, connected: false });
+  });
+
   app.get('/api/agent-templates', (c) => c.json(AGENT_TEMPLATES));
 
   app.get('/api/agents', async (c) => {
     const user = await actor(c);
-    const all = await store.listAgents();
-    if (user.role === 'admin') return c.json(all);
-    const allowed = new Set(await store.listUserAgentIds(user.id));
-    return c.json(all.filter((agent) => allowed.has(agent.id)));
+    return c.json(await store.listAgentsFor(user));
   });
 
+  const agentNameTaken = async (
+    name: string,
+    ownerId: string | null,
+    exceptId?: string,
+  ) => {
+    const normalized = name.trim().toLowerCase();
+    return (await store.listAgents()).some(
+      (agent) =>
+        agent.id !== exceptId &&
+        (agent.ownerId ?? null) === ownerId &&
+        agent.name.trim().toLowerCase() === normalized,
+    );
+  };
+
   app.post('/api/agents', async (c) => {
-    const input = parseAgentInput(await readBody(c), false);
-    if (await store.findAgentByName(input.name ?? '')) {
+    const user = await actor(c);
+    const input = await limitForManager(
+      user,
+      parseAgentInput(await readBody(c), false),
+    );
+    if (
+      await agentNameTaken(
+        input.name ?? '',
+        user.role === 'admin' ? null : user.id,
+      )
+    ) {
       throw badRequest('Агент с таким именем уже есть');
     }
-    const defaults = await defaultSelection(store);
+    if (user.role !== 'admin') await assertCanCreate(store, user, 'agents');
+    let defaults = await defaultSelection(store);
+    if (user.role !== 'admin' && input.model === undefined) {
+      // Менеджеру — первая из моделей, которые ему открыл админ.
+      const first = (await store.allowedModels(user))[0];
+      if (!first)
+        throw new HttpError(
+          403,
+          'Администратор ещё не открыл вам ни одной модели',
+        );
+      defaults = { providerId: first.providerId, model: first.model };
+    }
+    const providerId =
+      input.providerId === undefined ? defaults.providerId : input.providerId;
+    const model = input.model === undefined ? defaults.model : input.model;
+    await denyForeignProvider(user, providerId);
+    if (user.role !== 'admin' && providerId && model) {
+      await requireAllowedModel(
+        user,
+        providerId,
+        model,
+        input.model !== undefined,
+      );
+    }
     return c.json(
       await store.insertAgent({
         ...input,
         name: input.name ?? 'Агент',
-        providerId:
-          input.providerId === undefined
-            ? defaults.providerId
-            : input.providerId,
-        model: input.model === undefined ? defaults.model : input.model,
+        providerId,
+        model,
+        // Агент админа — общий; агент менеджера — личный.
+        ownerId: user.role === 'admin' ? null : user.id,
       }),
       201,
     );
@@ -616,19 +1435,68 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   });
 
   app.patch('/api/agents/:id', async (c) => {
+    const user = await actor(c);
     const current = await store.getAgent(c.req.param('id'));
-    if (!current) return c.json({ error: 'Агент не найден' }, 404);
-    const input = parseAgentInput(await readBody(c), true);
-    if (input.name && input.name.toLowerCase() !== current.name.toLowerCase()) {
-      const taken = await store.findAgentByName(input.name);
-      if (taken && taken.id !== current.id)
-        throw badRequest('Агент с таким именем уже есть');
+    if (!current || !(await canUseAgent(user, current.id)))
+      return c.json({ error: 'Агент не найден' }, 404);
+    if (!canEditAgent(user, current))
+      throw new HttpError(403, 'Общего агента настраивает администратор');
+    const raw = await readBody(c);
+    const input = await limitForManager(user, parseAgentInput(raw, true));
+    const willShare =
+      user.role === 'admin' &&
+      isRecord(raw) &&
+      raw.shared === true &&
+      Boolean(current.ownerId);
+    if (
+      await agentNameTaken(
+        input.name ?? current.name,
+        willShare ? null : (current.ownerId ?? null),
+        current.id,
+      )
+    )
+      throw badRequest('Агент с таким именем уже есть в вашем списке');
+
+    await denyForeignProvider(user, input.providerId);
+    if (user.role !== 'admin' && (input.providerId || input.model)) {
+      await requireAllowedModel(
+        user,
+        input.providerId ?? current.providerId,
+        input.model ?? current.model,
+        input.model !== undefined && input.model !== null,
+      );
+    }
+    // Админ может сделать личного агента менеджера общим для команды.
+    if (
+      user.role === 'admin' &&
+      isRecord(raw) &&
+      raw.shared === true &&
+      current.ownerId
+    ) {
+      const agentProvider = current.providerId
+        ? await store.getProvider(current.providerId)
+        : undefined;
+      if (agentProvider?.ownerUserId)
+        throw badRequest(
+          'Агент работает на личном ключе менеджера — выберите ему общую модель, потом делайте общим',
+        );
+      const owner = current.ownerId;
+      await store.setAgentOwner(current.id, null);
+      const ids = await store.listUserAgentIds(owner);
+      if (!ids.includes(current.id))
+        await store.setUserAgents(owner, [...ids, current.id]);
     }
     const updated = await store.updateAgent(current.id, input);
     return c.json(updated);
   });
 
   app.delete('/api/agents/:id', async (c) => {
+    const user = await actor(c);
+    const target = await store.getAgent(c.req.param('id'));
+    if (!target || !(await canUseAgent(user, target.id)))
+      return c.json({ error: 'Агент не найден' }, 404);
+    if (!canEditAgent(user, target))
+      throw new HttpError(403, 'Общего агента удаляет администратор');
     if ((await store.listAgents()).length <= 1) {
       return c.json({ error: 'Нельзя удалить последнего агента' }, 400);
     }
@@ -710,6 +1578,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     if (!(await canUseAgent(user, c.req.param('id')))) {
       return c.json({ error: 'Агент не найден' }, 404);
     }
+    if (user.role !== 'admin') await assertCanCreate(store, user, 'routines');
     const input = parseRoutineInput(await readBody(c), false);
     if (!input.name || !input.prompt) {
       throw badRequest('Укажите название и промпт');
@@ -763,13 +1632,23 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     ) {
       return c.json({ error: 'Расписание не найдено' }, 404);
     }
-    await runRoutineNow({ store, mcp, skills }, current.id);
+    await runRoutineNow(
+      { store, mcp, skills, jwtSecret: config.jwtSecret },
+      current.id,
+    );
     return c.json({ ok: true });
   });
 
   app.get('/api/conversations', async (c) => {
     const user = await actor(c);
     const agentId = c.req.query('agentId') || undefined;
+    const projectId = c.req.query('projectId') || undefined;
+    if (projectId) {
+      if (!(await store.getProject(projectId, user.id))) return c.json([]);
+      return c.json(
+        await store.listConversations(user.id, undefined, projectId),
+      );
+    }
     if (agentId && !(await canUseAgent(user, agentId))) return c.json([]);
     return c.json(await store.listConversations(user.id, agentId));
   });
@@ -797,6 +1676,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       typeof record.model === 'string'
         ? record.model
         : (agent.model ?? defaults.model);
+    await denyForeignProvider(user, providerId);
     if (user.role === 'manager' && providerId && model) {
       await requireAllowedModel(
         user,
@@ -805,14 +1685,62 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         typeof record.model === 'string',
       );
     }
+    let projectId: string | null = null;
+    if (typeof record.projectId === 'string' && record.projectId) {
+      if (!(await store.getProject(record.projectId, user.id)))
+        throw badRequest('Проект не найден');
+      projectId = record.projectId;
+    }
     const created = await store.insertConversation({
       title: locale === 'en' ? 'New chat' : 'Новый чат',
       agentId: agent.id,
       userId: user.id,
       providerId,
       model,
+      projectId,
     });
     return c.json(created, 201);
+  });
+
+  // Скачать папку или файл из своей рабочей папки (например, доработанный репозиторий).
+  app.get('/api/workspace/archive', async (c) => {
+    const user = await actor(c);
+    const scope = c.req.query('scope') ?? '';
+    if (!scope) return c.json({ error: 'Не указана папка' }, 400);
+    const root = workspaceRoot(config.dataDir, user.id, scope);
+    let full: string;
+    try {
+      full = resolveInside(root, c.req.query('path') || '.');
+    } catch {
+      return c.json({ error: 'Путь вне рабочей папки' }, 400);
+    }
+    if (!fs.existsSync(full)) return c.json({ error: 'Не найдено' }, 404);
+    const name =
+      full === path.resolve(root) ? 'workspace' : path.basename(full);
+    const child = spawn(
+      'tar',
+      [
+        '-czf',
+        '-',
+        '--exclude=node_modules',
+        '--exclude=.git',
+        '--exclude=.qastom',
+        '-C',
+        path.dirname(full),
+        path.basename(full),
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const safeName = name.replace(/[^\w.-]+/g, '_') || 'workspace';
+    return new Response(
+      Readable.toWeb(child.stdout) as unknown as ReadableStream,
+      {
+        headers: {
+          'content-type': 'application/gzip',
+          'content-disposition': `attachment; filename="${safeName}.tar.gz"`,
+        },
+      },
+    );
   });
 
   app.get('/api/conversations/:id', async (c) => {
@@ -841,6 +1769,7 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     const providerId =
       typeof body.providerId === 'string' ? body.providerId : undefined;
     const model = typeof body.model === 'string' ? body.model : undefined;
+    await denyForeignProvider(user, providerId);
     if (
       user.role === 'manager' &&
       (providerId !== undefined || model !== undefined)
@@ -852,12 +1781,69 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         model !== undefined,
       );
     }
+    let projectId: string | null | undefined;
+    if (body.projectId === null) projectId = null;
+    else if (typeof body.projectId === 'string') {
+      if (!(await store.getProject(body.projectId, user.id)))
+        throw badRequest('Проект не найден');
+      projectId = body.projectId;
+    }
     const updated = await store.updateConversation(current.id, {
       title: title || undefined,
       providerId,
       model,
+      projectId,
     });
     return c.json(updated);
+  });
+
+  // ---------- Проекты (клиент, сделка, задача) ----------
+  const parseProject = (body: unknown): ProjectInput => {
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    return {
+      name: typeof body.name === 'string' ? body.name : undefined,
+      client: typeof body.client === 'string' ? body.client : undefined,
+      instructions:
+        typeof body.instructions === 'string' ? body.instructions : undefined,
+      archived: typeof body.archived === 'boolean' ? body.archived : undefined,
+    };
+  };
+
+  app.get('/api/projects', async (c) => {
+    const user = await actor(c);
+    return c.json(await store.listProjects(user.id));
+  });
+
+  app.post('/api/projects', async (c) => {
+    const user = await actor(c);
+    const input = parseProject(await readBody(c));
+    if (!input.name?.trim()) throw badRequest('Укажите название проекта');
+    if ((await store.listProjects(user.id)).length >= 200)
+      throw badRequest('Слишком много проектов');
+    return c.json(
+      await store.insertProject(user.id, { ...input, name: input.name }),
+      201,
+    );
+  });
+
+  app.patch('/api/projects/:id', async (c) => {
+    const user = await actor(c);
+    if (!(await store.getProject(c.req.param('id'), user.id)))
+      return c.json({ error: 'Проект не найден' }, 404);
+    return c.json(
+      await store.updateProject(
+        c.req.param('id'),
+        parseProject(await readBody(c)),
+      ),
+    );
+  });
+
+  app.delete('/api/projects/:id', async (c) => {
+    const user = await actor(c);
+    if (!(await store.getProject(c.req.param('id'), user.id)))
+      return c.json({ error: 'Проект не найден' }, 404);
+    await store.deleteProject(c.req.param('id'));
+    return c.json({ ok: true });
   });
 
   app.delete('/api/conversations/:id', async (c) => {
@@ -868,6 +1854,27 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  // Ответ браузера на запрос к папке на компьютере.
+  app.post('/api/local-fs/:id', async (c) => {
+    const user = await actor(c);
+    const body = await readBody(c);
+    const ok = resolveLocalFs(
+      user.id,
+      c.req.param('id'),
+      isRecord(body)
+        ? {
+            result: body.result,
+            error:
+              typeof body.error === 'string'
+                ? body.error.slice(0, 500)
+                : undefined,
+          }
+        : { error: 'Пустой ответ' },
+    );
+    return c.json({ ok }, ok ? 200 : 404);
+  });
+
+  const runtimeDeps = { store, mcp, skills, jwtSecret: config.jwtSecret };
   app.post('/api/conversations/:id/messages', async (c) => {
     const user = await actor(c);
     const conversation = await store.getConversation(
@@ -878,14 +1885,24 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       return c.json({ error: 'Чат не найден' }, 404);
     }
     const body = await readBody(c);
-    if (
-      !isRecord(body) ||
-      typeof body.content !== 'string' ||
-      !body.content.trim()
-    ) {
-      throw badRequest('Пустое сообщение');
+    if (!isRecord(body)) throw badRequest('Пустое сообщение');
+    const attachments: Attachment[] = [];
+    if (Array.isArray(body.attachments)) {
+      for (const raw of body.attachments.slice(0, 10)) {
+        const id =
+          typeof raw === 'string' ? raw : isRecord(raw) ? raw.id : undefined;
+        if (typeof id !== 'string') continue;
+        const file = await store.getUpload(id, user.id);
+        if (!file) throw badRequest('Вложение не найдено');
+        attachments.push({ id: file.id, name: file.name, mime: file.mime });
+      }
     }
-    const content = body.content.trim();
+    const typed = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!typed && attachments.length === 0)
+      throw badRequest('Пустое сообщение');
+    const content =
+      typed ||
+      (body.locale === 'en' ? 'See the attached files.' : 'Посмотри вложения.');
     if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
     await assertQuota(store, user);
     const agent = conversation.agentId
@@ -903,6 +1920,10 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       explicitModel,
     );
     const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
+    const localFolder =
+      typeof body.localFolder === 'string' && body.localFolder.trim()
+        ? body.localFolder.trim().slice(0, 120)
+        : '';
     return streamSSE(c, async (stream) => {
       const write = async (event: ClientEvent) => {
         await stream.writeSSE({ data: JSON.stringify(event) });
@@ -913,12 +1934,17 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
           {
             conversationId: c.req.param('id'),
             content,
+            attachments,
             locale,
             userId: user.id,
             providerId: selection.providerId,
             model: selection.model,
             signal: c.req.raw.signal,
             onEvent: write,
+            // Папка на компьютере: файлы читает и пишет браузер пользователя.
+            localFs: localFolder
+              ? createLocalFs(user.id, localFolder, write)
+              : undefined,
           },
         );
         await write({ type: 'done' });
@@ -926,12 +1952,199 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
         if (isAbort(error)) return;
         const message =
           error instanceof Error ? error.message : 'Ошибка агента';
+        // Без этой строки сбой хода не виден нигде: клиент получает событие
+        // error, а в журнале контейнера остаётся пусто.
+        console.warn(
+          `[turn] чат ${conversation.id} · ${selection.model} · ${message}`,
+        );
         await write({ type: 'error', message }).catch(() => undefined);
       }
     });
   });
 
-  const runtime = { store, mcp, skills, jwtSecret: config.jwtSecret };
+  // Сравнение моделей: один вопрос — 2–3 модели параллельно, каждая в своём служебном чате
+  // с копией истории. Выбранный ответ переносится в основной чат (/compare/adopt).
+  app.post('/api/conversations/:id/compare', async (c) => {
+    const user = await actor(c);
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Пустое сообщение');
+    const content = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!content) throw badRequest('Пустое сообщение');
+    if (content.length > 32_000) throw badRequest('Сообщение слишком длинное');
+    const rawLanes = Array.isArray(body.lanes) ? body.lanes : [];
+    if (rawLanes.length < 2 || rawLanes.length > 3)
+      throw badRequest('Для сравнения выберите 2 или 3 модели');
+    await assertQuota(store, user);
+    const picks: { providerId: string; model: string }[] = [];
+    for (const raw of rawLanes) {
+      if (!isRecord(raw)) throw badRequest('Некорректная модель');
+      const providerId =
+        typeof raw.providerId === 'string' ? raw.providerId : undefined;
+      await denyForeignProvider(user, providerId);
+      picks.push(
+        await requireAllowedModel(
+          user,
+          providerId,
+          typeof raw.model === 'string' ? raw.model : undefined,
+          true,
+        ),
+      );
+    }
+    const attachments: Attachment[] = [];
+    if (Array.isArray(body.attachments)) {
+      for (const id of body.attachments.slice(0, 10)) {
+        if (typeof id !== 'string') continue;
+        const file = await store.getUpload(id, user.id);
+        if (file)
+          attachments.push({ id: file.id, name: file.name, mime: file.mime });
+      }
+    }
+    const locale: Locale = body.locale === 'en' ? 'en' : 'ru';
+    const history = await store.listMessages(conversation.id);
+    const lanes: CompareLane[] = [];
+    for (const pick of picks) {
+      const lane = await store.insertConversation({
+        title: conversation.title,
+        agentId: conversation.agentId,
+        userId: user.id,
+        providerId: pick.providerId,
+        model: pick.model,
+        projectId: conversation.projectId,
+        internal: true,
+      });
+      for (const message of history)
+        await store.insertMessage({
+          conversationId: lane.id,
+          role: message.role,
+          content: message.content,
+          toolCalls: message.toolCalls,
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          reasoning: message.reasoning,
+          attachments: message.attachments,
+          meta: message.meta,
+        });
+      lanes.push({ conversationId: lane.id, ...pick });
+    }
+    const group = lanes.map((lane) => lane.conversationId);
+    for (const lane of lanes)
+      await store.setSetting(
+        `compare:${lane.conversationId}`,
+        JSON.stringify({ main: conversation.id, from: history.length, group }),
+      );
+    return streamSSE(c, async (stream) => {
+      let queue = Promise.resolve();
+      // Колонки пишут в один поток по очереди, чтобы события не перемешались внутри кадра.
+      const write = (event: ClientEvent) => {
+        queue = queue.then(() =>
+          stream.writeSSE({ data: JSON.stringify(event) }),
+        );
+        return queue;
+      };
+      await write({ type: 'lanes', lanes });
+      await Promise.all(
+        lanes.map(async (lane, index) => {
+          const laneWrite = async (event: ClientEvent) => {
+            if (
+              event.type === 'text' ||
+              event.type === 'reasoning' ||
+              event.type === 'message' ||
+              event.type === 'tool_start' ||
+              event.type === 'error'
+            )
+              await write({ type: 'lane', lane: index, event });
+          };
+          try {
+            await runTurn(runtimeDeps, {
+              conversationId: lane.conversationId,
+              content,
+              attachments,
+              locale,
+              userId: user.id,
+              providerId: lane.providerId,
+              model: lane.model,
+              signal: c.req.raw.signal,
+              onEvent: laneWrite,
+              excludeTools: COMPARE_BLOCKED_TOOLS,
+            });
+          } catch (error) {
+            if (isAbort(error)) return;
+            await write({
+              type: 'lane',
+              lane: index,
+              event: {
+                type: 'error',
+                message:
+                  error instanceof Error ? error.message : 'Ошибка агента',
+              },
+            }).catch(() => undefined);
+          }
+          await write({ type: 'lane', lane: index, event: { type: 'done' } });
+        }),
+      );
+      await write({ type: 'done' }).catch(() => undefined);
+    });
+  });
+
+  // Взять ответ одной колонки: перенести вопрос и ответ в основной чат, колонки удалить.
+  app.post('/api/conversations/:id/compare/adopt', async (c) => {
+    const user = await actor(c);
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    const body = await readBody(c);
+    const laneId =
+      isRecord(body) && typeof body.lane === 'string' ? body.lane : '';
+    const raw = laneId
+      ? await store.getSetting(`compare:${laneId}`)
+      : undefined;
+    const info = raw
+      ? (JSON.parse(raw) as { main: string; from: number; group: string[] })
+      : undefined;
+    const lane = laneId
+      ? await store.getConversation(laneId, user.id)
+      : undefined;
+    if (!info || info.main !== conversation.id || !lane)
+      return c.json({ error: 'Сравнение не найдено или уже завершено' }, 404);
+    const laneMessages = (await store.listMessages(lane.id)).slice(info.from);
+    for (const message of laneMessages)
+      await store.insertMessage({
+        conversationId: conversation.id,
+        role: message.role,
+        content: message.content,
+        toolCalls: message.toolCalls,
+        toolCallId: message.toolCallId,
+        toolName: message.toolName,
+        reasoning: message.reasoning,
+        attachments: message.attachments,
+        meta: message.meta,
+      });
+    const defaultTitle =
+      !conversation.title || /^(Новый чат|New chat)$/i.test(conversation.title);
+    const updated = await store.updateConversation(conversation.id, {
+      providerId: lane.providerId,
+      model: lane.model,
+      ...(defaultTitle && lane.title ? { title: lane.title } : {}),
+    });
+    for (const id of info.group) {
+      await store.setSetting(`compare:${id}`, '');
+      const sibling = await store.getConversation(id, user.id);
+      if (sibling) await store.deleteConversation(sibling.id);
+    }
+    return c.json({
+      conversation: updated,
+      messages: await store.listMessages(conversation.id),
+    });
+  });
+
+  const runtime = runtimeDeps;
   registerGithubRoutes(app, {
     store,
     mcp,
@@ -949,6 +2162,16 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     readBody,
     runtime,
   });
+  registerChannelRoutes(app, {
+    store,
+    config,
+    actor,
+    readBody,
+    mcp,
+    skills,
+    runtime,
+  });
+  registerBillingRoutes(app, { store, config, actor, readBody, siteUrl });
 
   if (config.staticDir) {
     const root = path.resolve(config.staticDir);
@@ -1036,11 +2259,11 @@ async function ensureDefaultAgent(
   if ((await store.listAgents()).length === 0) {
     const defaults = await defaultSelection(store);
     await store.insertAgent({
-      name: 'Маяк',
-      emoji: '🏮',
-      description: 'Основной локальный ассистент',
+      name: 'QASTOM AGENT',
+      emoji: '🤖',
+      description: 'Основной ассистент команды',
       systemPrompt:
-        'Ты — Маяк, локальный ассистент на компьютере пользователя. Отвечай на языке пользователя, коротко и по делу.',
+        'Ты — QASTOM AGENT, ИИ-ассистент команды QASTOM. Отвечай на языке пользователя, коротко и по делу.',
       providerId: defaults.providerId,
       model: defaults.model,
       mcpServerIds: (await store.listMcp()).map((item) => item.id),
@@ -1224,6 +2447,14 @@ function parseAgentInput(
     body.mcpServerIds === undefined ? undefined : stringList(body.mcpServerIds);
   const skillNames =
     body.skillNames === undefined ? undefined : stringList(body.skillNames);
+  const plugins =
+    body.plugins === undefined
+      ? undefined
+      : body.plugins === null
+        ? null
+        : stringList(body.plugins).filter((id) =>
+            AGENT_PLUGINS.some((plugin) => plugin.id === id),
+          );
   const githubRepos =
     body.githubRepos === undefined
       ? undefined
@@ -1236,6 +2467,7 @@ function parseAgentInput(
     emoji,
     description,
     systemPrompt,
+    plugins,
     providerId:
       body.providerId === null
         ? null

@@ -10,3 +10,9 @@ data
 apps/desktop/dist
 coverage
 .vite
+
+# Резервные копии конфигов и окружения держим вне репозитория
+*.bak
+*.bak-*
+.env.*
+!.env.example

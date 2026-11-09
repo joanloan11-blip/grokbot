@@ -1,4 +1,17 @@
-import type { Agent, ChatMessage, ClientEvent, Locale } from '@mayak/shared';
+import { isPublicSkill } from '@mayak/shared';
+import { canUseConnector, parseSharedConnectorIds } from './connector-access';
+import fs from 'node:fs';
+import path from 'node:path';
+import type {
+  Agent,
+  Attachment,
+  ChatMessage,
+  ClientEvent,
+  Locale,
+  MessageMeta,
+  ProviderKind,
+} from '@mayak/shared';
+import { toolAllowedByPlugins } from '@mayak/shared';
 import { runAgentLoop } from './agent/loop';
 import type { Store, UserRecord } from './db';
 import { isValidCron } from './cron';
@@ -16,11 +29,61 @@ import type {
   ToolDefinition,
 } from './providers/types';
 import { readGithubToken, runGithubTool } from './github/tools';
+import {
+  cloneRepo,
+  describeChanges,
+  hasClonedRepos,
+  pushRepo,
+} from './github/workspace-repo';
 import { runSandboxed } from './sandbox';
 import { webFetch, webSearch } from './webtools';
+import { formatStock, searchStock } from './moysklad';
+import {
+  balance as avitoBalance,
+  checkAvito,
+  formatBalance,
+  formatItems,
+  formatStats,
+  itemStats,
+  listItems,
+} from './avito';
+import { readAvitoAccount } from './avito-account';
+import {
+  listHosts,
+  listRemote,
+  readRemote,
+  runOnHost,
+  writeRemote,
+} from './remote';
+import { readImageSettings, runImageTool } from './images';
+import { assertBudget } from './meter';
+import { assertCanSpend, chargeTokens } from './billing';
+import { costUsd } from './pricing';
+import { dateLine, withClock } from './clock';
+import { formatMailDigest, readMailAccount } from './mail-account';
+import { fetchRecentMessages } from './imap';
+import { CLOUD_ONLY_TOOLS, type LocalFs, localWorkspaceRuns } from './local-fs';
+import { localMemoryRuns } from './local-memory';
+import { priceForModel } from './spend';
+import { compactHistory } from './context';
+import { readCaps } from './model-caps';
+import { formatNews, NEWS_TOPICS, type NewsTopic, newsSearch } from './news';
+import { DELEGATE_LIMITS, normalizeTasks, runDelegation } from './orchestrator';
 import { decryptSecret } from './github/secret';
 import type { SkillLibrary } from './skills';
-import { asString, clampText, jsonObject } from './util';
+import { asString, clampText, isRecord, jsonObject } from './util';
+import {
+  deleteWorkspaceFile,
+  editWorkspaceFile,
+  globWorkspace,
+  listWorkspace,
+  readWorkspaceFile,
+  runWorkspaceShell,
+  resolveInside,
+  searchWorkspace,
+  workspaceRoot,
+  writeWorkspaceFile,
+} from './workspace';
 
 export interface TurnDeps {
   store: Store;
@@ -49,6 +112,12 @@ export interface TurnInput {
   depth?: number;
   signal?: AbortSignal;
   onEvent?: (event: ClientEvent) => Promise<void>;
+  /** Файлы из /api/conversations/:id/files, приложенные к сообщению. */
+  attachments?: Attachment[];
+  /** Эти инструменты модели не показываем (режим сравнения). */
+  excludeTools?: string[];
+  /** Рабочая папка — на компьютере пользователя (через браузер). */
+  localFs?: LocalFs;
 }
 
 export async function runTurn(
@@ -82,7 +151,7 @@ export async function runTurn(
   if (owner && !(await deps.store.isModelAllowed(owner, provider.id, model))) {
     throw new HttpError(403, 'Эта модель недоступна');
   }
-  if (providerNeedsKey(provider.kind) && !provider.apiKey) {
+  if (providerNeedsKey(provider.kind, provider.baseUrl) && !provider.apiKey) {
     throw badRequest('Сохраните API-ключ провайдера в настройках');
   }
 
@@ -100,50 +169,166 @@ export async function runTurn(
     conversationId: conversation.id,
     role: 'user',
     content: input.content,
+    attachments: input.attachments,
   });
   const emit = input.onEvent ?? (async () => undefined);
   await emit({ type: 'message', message: userMessage });
   if (freshTitle) await emit({ type: 'title', title: freshTitle });
 
   const depth = input.depth ?? 0;
-  const exposed = await exposeTools(
-    deps,
-    agent,
-    userId,
-    depth,
-    conversation.id,
-  );
-  const peers = (await deps.store.listAgents())
+  const excluded = new Set(input.excludeTools ?? []);
+  const localRuns = input.localFs ? localWorkspaceRuns(input.localFs) : null;
+  // Память в режиме «папка на компьютере» тоже лежит у пользователя: на сервер
+  // заметки не уходят и в базе не остаются.
+  const localMemory = input.localFs
+    ? localMemoryRuns(input.localFs, agent.id)
+    : null;
+  const exposed = (
+    await exposeTools(deps, agent, userId, depth, conversation.id)
+  )
+    .map((tool) => {
+      const local =
+        localRuns?.[tool.definition.name] ??
+        localMemory?.[tool.definition.name];
+      if (!local || !input.localFs) return tool;
+      // Те же инструменты, но файлы — в папке на компьютере пользователя.
+      return {
+        definition: {
+          ...tool.definition,
+          description: `${tool.definition.description} (Папка на компьютере пользователя: «${input.localFs.folder}».)`,
+        },
+        run: local,
+      };
+    })
+    .filter(
+      (tool) =>
+        !(localRuns && CLOUD_ONLY_TOOLS.includes(tool.definition.name)) &&
+        !excluded.has(tool.definition.name) &&
+        // В сравнении внешние коннекторы тоже выключены: два ответа не должны дважды создавать сделку.
+        !(excluded.size > 0 && tool.definition.description.startsWith('[MCP ')),
+    );
+  // Писать можно только агентам, которые доступны владельцу чата.
+  const peers = (
+    owner
+      ? await deps.store.listAgentsFor(owner)
+      : await deps.store.listAgents()
+  )
     .filter((item) => item.id !== agent.id)
     .map((item) => ({ name: item.name, description: item.description }));
-  const history = (await deps.store.listMessages(conversation.id)).map(
-    toModelMessage,
-  );
+  // Длинный чат: старое — кратким пересказом, свежее — целиком.
+  const history = await compactHistory(deps.store, {
+    history: await buildHistory(
+      deps.store,
+      await deps.store.listMessages(conversation.id),
+      provider.kind,
+    ),
+    conversationId: conversation.id,
+    provider,
+    model,
+    userId,
+    agentId: agent.id,
+  });
+  const toolsOff =
+    (await readCaps(deps.store))[provider.id]?.[model]?.tools === false;
+  const toolNames = new Set(exposed.map((tool) => tool.definition.name));
+  // Режим кода: агент с плагином GitHub или уже скачанный в рабочую папку репозиторий.
+  const coding =
+    toolNames.has('workspace_edit') &&
+    ((agent.plugins ?? []).includes('github') ||
+      hasClonedRepos(
+        workspaceRoot(
+          path.dirname(deps.skills.directory),
+          userId,
+          conversation.projectId
+            ? `project-${conversation.projectId}`
+            : agent.id,
+        ),
+      ));
+  const stepsSetting = Number(await deps.store.getSetting('agent_max_steps'));
+  // Код требует десятков шагов: найти, прочитать, поправить, запустить тесты, исправить.
+  const maxSteps =
+    Number.isFinite(stepsSetting) && stepsSetting > 0
+      ? stepsSetting
+      : coding
+        ? 60
+        : toolNames.has('workspace_edit') || toolNames.has('shell')
+          ? 25
+          : 12;
   let pending = '';
   let pendingReasoning = '';
   let finalText = '';
+  // Итог хода для подписи под ответом.
+  const startedAt = Date.now();
+  const totals = {
+    steps: 0,
+    tools: 0,
+    input: 0,
+    output: 0,
+    cached: 0,
+    exact: true,
+  };
+  const price = await priceForModel(deps.store, provider.baseUrl, model).catch(
+    () => null,
+  );
+  const turnMeta = (): MessageMeta => {
+    const cost = costUsd(price, {
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      cachedTokens: totals.cached,
+    });
+    return {
+      model,
+      provider: provider.name,
+      ms: Date.now() - startedAt,
+      steps: totals.steps,
+      tools: totals.tools,
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      costUsd: cost === null ? null : Math.round(cost * 1e6) / 1e6,
+      exact: totals.exact,
+    };
+  };
   try {
     await assertQuota(deps.store, owner);
     await runAgentLoop({
-      client: meteredClient(createClient(provider), async () => {
-        await assertQuota(deps.store, owner);
-        const cap = await deps.store.getSetting(`token_limit:${userId}`);
-        if (cap && Number(cap) > 0) {
-          const used = await deps.store.tokenSumSince(userId, utcDayStart());
-          if (used >= Number(cap)) {
-            throw new HttpError(429, 'Дневной лимит токенов исчерпан');
+      client: meteredClient(createClient(provider), {
+        before: async (messages) => {
+          await assertQuota(deps.store, owner);
+          await assertBudget(deps.store, userId);
+          // Клиент без пробных долларов, тарифа и баланса не тратит платные модели.
+          await assertCanSpend(deps.store, owner, provider, model);
+          const cap = await deps.store.getSetting(`token_limit:${userId}`);
+          if (cap && Number(cap) > 0) {
+            const used = await deps.store.tokenSumSince(userId, utcDayStart());
+            if (used >= Number(cap)) {
+              throw new HttpError(429, 'Дневной лимит токенов исчерпан');
+            }
           }
-        }
-        await deps.store.insertUsage({
-          userId,
-          providerId: provider.id,
-          model,
-          inputTokens: Math.ceil(
-            history.reduce((sum, message) => sum + message.content.length, 0) /
-              4,
-          ),
-          outputTokens: 0,
-        });
+          // Пока провайдер не ответил — оценка по длине; потом заменим реальными цифрами.
+          return deps.store.insertUsage({
+            userId,
+            providerId: provider.id,
+            model,
+            agentId: agent.id,
+            conversationId: conversation.id,
+            inputTokens: Math.ceil(
+              messages.reduce(
+                (sum, message) => sum + message.content.length,
+                0,
+              ) / 4,
+            ),
+            outputTokens: 0,
+          });
+        },
+        after: async (id, usage) => {
+          totals.steps += 1;
+          totals.input += usage.inputTokens;
+          totals.output += usage.outputTokens;
+          totals.cached += usage.cachedTokens;
+          if (!usage.exact) totals.exact = false;
+          await deps.store.updateUsageTokens(id, usage);
+          await chargeTokens(deps.store, userId, provider, model, usage);
+        },
       }),
       model,
       messages: [
@@ -152,19 +337,38 @@ export async function runTurn(
           content: buildSystemPrompt(
             deps.skills
               .listEnabled()
-              .filter((skill) => agent.skillNames.includes(skill.name)),
+              .filter(
+                (skill) =>
+                  agent.skillNames.includes(skill.name) &&
+                  (owner?.role === 'admin' || isPublicSkill(skill.name)),
+              ),
             input.locale,
-            { persona: agent.systemPrompt, peers: depth === 0 ? peers : [] },
+            {
+              persona: agent.systemPrompt,
+              peers: depth === 0 ? peers : [],
+              coding,
+              context: [
+                dateLine(input.locale),
+                input.localFs
+                  ? `Рабочая папка и память сейчас — на компьютере пользователя: «${input.localFs.folder}». Инструменты workspace_* читают и пишут файлы прямо там, а memory_read/memory_write/remember/recall — в файле .qastom/memory/ внутри этой папки (на сервер заметки не уходят). Терминала и GitHub в этом режиме нет.`
+                  : '',
+                await projectBlock(deps.store, conversation.projectId),
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
+            },
           ),
         },
-        ...history,
+        ...repairToolCalls(withClock(history, input.locale)),
       ],
-      tools: exposed.map((tool) => tool.definition),
+      // Модели без инструментов (по проверке) сразу получают запрос без них.
+      tools: toolsOff ? [] : exposed.map((tool) => tool.definition),
+      maxSteps,
       signal: input.signal,
       limitMessage:
         input.locale === 'en'
-          ? 'Stopped: the agent step limit was reached.'
-          : 'Остановлено: исчерпан лимит шагов агента.',
+          ? 'Stopped: the agent step limit was reached. Say "continue" to resume.'
+          : 'Остановлено: исчерпан лимит шагов агента. Напишите «продолжай», чтобы агент продолжил с того же места.',
       executeTool: async (call) => {
         const tool = exposed.find((item) => item.definition.name === call.name);
         if (!tool) return `Неизвестный инструмент ${call.name}`;
@@ -187,17 +391,20 @@ export async function runTurn(
           pendingReasoning += event.delta;
           await emit({ type: 'reasoning', delta: event.delta });
         } else if (event.type === 'tool_start') {
+          totals.tools += 1;
           await emit({ type: 'tool_start', call: event.call });
         } else if (event.type === 'assistant') {
           pending = '';
           pendingReasoning = '';
           finalText = event.content;
+          const final = !event.toolCalls?.length;
           const saved = await deps.store.insertMessage({
             conversationId: conversation.id,
             role: 'assistant',
             content: event.content,
             toolCalls: event.toolCalls,
             reasoning: event.reasoning,
+            meta: final ? turnMeta() : undefined,
           });
           await emit({ type: 'message', message: saved });
         } else if (event.type === 'tool_result') {
@@ -242,11 +449,18 @@ export async function deliverToAgent(
   },
 ): Promise<string> {
   if (input.depth > 0) return 'Вложенная пересылка между агентами отключена.';
-  const target = await deps.store.findAgentByName(input.targetName);
+  const sender = await deps.store.getUser(input.userId);
+  const reachable = sender
+    ? await deps.store.listAgentsFor(sender)
+    : await deps.store.listAgents();
+  const needle = input.targetName.trim().toLowerCase();
+  const named = (item: Agent) => item.name.trim().toLowerCase() === needle;
+  const target =
+    reachable.find((item) => item.id === input.targetName) ??
+    reachable.find((item) => item.ownerId === input.userId && named(item)) ??
+    reachable.find(named);
   if (!target) {
-    const names = (await deps.store.listAgents())
-      .map((agent) => agent.name)
-      .join(', ');
+    const names = reachable.map((agent) => agent.name).join(', ');
     return `Агент «${input.targetName}» не найден. Доступны: ${names || '—'}.`;
   }
   if (target.id === input.from.id)
@@ -267,6 +481,7 @@ export async function deliverToAgent(
       userId: input.userId,
       providerId: target.providerId,
       model: target.model,
+      internal: true,
     });
   }
   const result = await runTurn(deps, {
@@ -280,7 +495,7 @@ export async function deliverToAgent(
   return result.text.trim() || '(пустой ответ)';
 }
 
-async function exposeTools(
+export async function exposeTools(
   deps: TurnDeps,
   agent: Agent,
   userId: string,
@@ -299,7 +514,12 @@ async function exposeTools(
     'github_list_pulls',
     'create_routine',
   ]);
-  const allowedSkills = new Set(agent.skillNames);
+  const toolOwner = await deps.store.getUser(userId);
+  const allowedSkills = new Set(
+    agent.skillNames.filter(
+      (name) => toolOwner?.role === 'admin' || isPublicSkill(name),
+    ),
+  );
   const tools: ExposedTool[] = [
     {
       definition: {
@@ -500,6 +720,91 @@ async function exposeTools(
     },
     {
       definition: {
+        name: 'news_search',
+        description:
+          'Fresh news articles with dates and sources (Google News, fallback RIA/TASS/Lenta). Use it for any news request instead of web_search. Свежие новости по теме или запросу.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Optional keywords, e.g. "рулевые рейки" or "нефть"',
+            },
+            topic: {
+              type: 'string',
+              enum: Object.keys(NEWS_TOPICS),
+              description:
+                'Section when there is no query: top, world, russia, business, technology, science, health, sports',
+            },
+            period: { type: 'string', enum: ['day', 'week'] },
+          },
+        },
+      },
+      run: async (args) =>
+        formatNews(
+          await newsSearch({
+            query: asString(args.query) || undefined,
+            topic: (asString(args.topic) || undefined) as NewsTopic | undefined,
+            period: args.period === 'week' ? 'week' : 'day',
+          }),
+        ),
+    },
+    {
+      definition: {
+        name: 'mail_digest',
+        description:
+          'Read recent messages from the connected mailbox (IMAP): sender, subject, date and a short plain-text snippet. Use for mail digests and questions about letters. Письма за период — только для агента с плагином «Почта».',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            hours: {
+              type: 'number',
+              description: 'How many hours back to look, 1–168. Default 24.',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum messages, 1–50. Default 25.',
+            },
+          },
+        },
+      },
+      run: async (args) => {
+        if (!deps.jwtSecret) {
+          return 'Почта недоступна: на сервере не задан ключ шифрования.';
+        }
+        const rawHours = Number(args.hours);
+        const rawLimit = Number(args.limit);
+        const hours = Math.min(
+          168,
+          Math.max(1, Number.isFinite(rawHours) ? Math.round(rawHours) : 24),
+        );
+        const limit = Math.min(
+          50,
+          Math.max(1, Number.isFinite(rawLimit) ? Math.round(rawLimit) : 25),
+        );
+        const account = await readMailAccount(
+          deps.store,
+          userId,
+          deps.jwtSecret,
+        );
+        if (!account) {
+          return 'Почта не подключена. Подключите ящик в Настройки → Почта.';
+        }
+        try {
+          const messages = await fetchRecentMessages(account, {
+            since: new Date(Date.now() - hours * 3_600_000),
+            limit,
+          });
+          return formatMailDigest(messages, hours);
+        } catch (error) {
+          return `Не удалось прочитать почту: ${
+            error instanceof Error ? error.message : 'ошибка'
+          }`;
+        }
+      },
+    },
+    {
+      definition: {
         name: 'web_fetch',
         description:
           'Fetch a public http(s) page and return markdown. Private networks are blocked.',
@@ -538,6 +843,7 @@ async function exposeTools(
           enabled: (await deps.store.getSetting('code_sandbox')) === '1',
           language: asString(args.language).trim(),
           code: asString(args.code),
+          root: root(),
         }),
     },
     {
@@ -727,6 +1033,48 @@ async function exposeTools(
       .filter((item) => item.id !== agent.id)
       .map((item) => item.name)
       .join(', ');
+    used.add('delegate');
+    tools.push({
+      definition: {
+        name: 'delegate',
+        description: `Orchestrate: split a complex request into independent subtasks and run them IN PARALLEL on other agents (or on yourself with agent="self"). Each subtask gets its own chat; you receive all results together and must then compare and synthesize one final answer. Up to ${DELEGATE_LIMITS.maxTasks} subtasks, ${DELEGATE_LIMITS.concurrency} at a time, 5 minutes each. Use for research from several angles, checking stock + competitors + drafting a reply, etc. Available agents: ${names || 'only self'}. Оркестратор: параллельные подзадачи.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tasks: {
+              type: 'array',
+              description: 'Independent subtasks',
+              items: {
+                type: 'object',
+                properties: {
+                  agent: {
+                    type: 'string',
+                    description: 'Agent name, or "self"',
+                  },
+                  title: { type: 'string', description: 'Short label' },
+                  task: {
+                    type: 'string',
+                    description:
+                      'Full self-contained instruction with all needed context',
+                  },
+                },
+                required: ['task'],
+              },
+            },
+          },
+          required: ['tasks'],
+        },
+      },
+      run: (args) =>
+        runDelegation(deps, {
+          from: agent,
+          userId,
+          conversationId,
+          depth,
+          locale: 'ru',
+          tasks: normalizeTasks(args.tasks),
+        }),
+    });
     tools.push({
       definition: {
         name: 'send_to_agent',
@@ -752,24 +1100,904 @@ async function exposeTools(
     });
   }
 
-  const allowedMcp = new Set(agent.mcpServerIds);
-  for (const server of deps.mcp.listConnected()) {
-    if (!allowedMcp.has(server.id)) continue;
-    for (const tool of server.tools) {
-      let name = encodeMcpToolName(server.name, tool.name);
-      while (used.has(name)) name = `${name.slice(0, 60)}_${used.size}`;
-      used.add(name);
-      tools.push({
-        definition: {
-          name,
-          description: `[MCP ${server.name}] ${tool.description || tool.name}`,
-          inputSchema: normalizeSchema(tool),
+  for (const name of [
+    'generate_image',
+    'stock_lookup',
+    'skill_manage',
+    'workspace_list',
+    'workspace_read',
+    'workspace_write',
+    'workspace_edit',
+    'workspace_delete',
+    'workspace_search',
+    'workspace_glob',
+    'workspace_download',
+    'github_clone',
+    'github_changes',
+    'github_push',
+    'shell',
+  ])
+    used.add(name);
+  const dataDir = path.dirname(deps.skills.directory);
+  // В проекте рабочая папка общая для всех чатов проекта.
+  const conversationRow = await deps.store.getConversation(conversationId);
+  const workspaceScope = conversationRow?.projectId
+    ? `project-${conversationRow.projectId}`
+    : agent.id;
+  const root = () => workspaceRoot(dataDir, userId, workspaceScope);
+  // Токен администратора нужен и для чтения публичных репозиториев: без него GitHub даёт 60 запросов в час.
+  const githubReadToken =
+    githubToken ??
+    (deps.jwtSecret
+      ? await readGithubToken(deps.store, deps.jwtSecret)
+      : undefined);
+  const repoContext = () => ({
+    root: root(),
+    token: githubToken,
+    readToken: githubReadToken,
+    allow: agent.githubRepos,
+  });
+  const guardAsync = async (run: () => Promise<string>) => {
+    try {
+      return await run();
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Ошибка GitHub';
+    }
+  };
+  const guard = (run: () => string) => {
+    try {
+      return run();
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Ошибка рабочей папки';
+    }
+  };
+  const imageSettings = await readImageSettings(deps.store);
+  if (imageSettings.enabled) {
+    tools.push({
+      definition: {
+        name: 'generate_image',
+        description:
+          'Create a picture from a text prompt (or edit the images the user attached when edit_attached=true) and show it in the chat. Write a detailed visual prompt in English or Russian: subject, style, composition, colors, text on the image. Генерирует или правит картинку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: 'Detailed description of the image',
+            },
+            size: {
+              type: 'string',
+              enum: ['auto', '1024x1024', '1536x1024', '1024x1536'],
+              description: 'Square, landscape or portrait',
+            },
+            quality: {
+              type: 'string',
+              enum: ['auto', 'low', 'medium', 'high'],
+            },
+            edit_attached: {
+              type: 'boolean',
+              description:
+                'Edit the images attached to the latest user message instead of drawing from scratch',
+            },
+          },
+          required: ['prompt'],
         },
-        run: (args) => deps.mcp.callTool(server.id, tool.name, args),
-      });
+      },
+      run: async (args) =>
+        runImageTool({
+          store: deps.store,
+          dataDir,
+          userId,
+          conversationId,
+          prompt: asString(args.prompt),
+          size: asString(args.size) || undefined,
+          quality: asString(args.quality) || undefined,
+          editAttached: args.edit_attached === true,
+          agentId: agent.id,
+        }),
+    });
+  }
+
+  const moyskladStored = await deps.store.getSetting('moysklad_token');
+  if (toolOwner?.role === 'admin' && moyskladStored && deps.jwtSecret) {
+    const secret = deps.jwtSecret;
+    tools.push({
+      definition: {
+        name: 'stock_lookup',
+        description:
+          'Live stock and prices from MoySklad (read-only): search by name, article, OEM or code. Use it before telling a client whether an item is in stock or how much it costs. Наличие и цены из МойСклад.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Название, артикул, OEM-номер или код',
+            },
+            limit: {
+              type: 'number',
+              description: 'Сколько позиций вернуть (1–15)',
+            },
+          },
+          required: ['query'],
+        },
+      },
+      run: async (args) => {
+        const query = asString(args.query).trim();
+        if (!query) return 'Укажите query: название, артикул или OEM.';
+        const limit = Math.min(15, Math.max(1, Number(args.limit) || 8));
+        try {
+          const token = decryptSecret(moyskladStored, secret);
+          return formatStock(query, await searchStock(token, query, limit));
+        } catch (error) {
+          return error instanceof Error ? error.message : 'МойСклад недоступен';
+        }
+      },
+    });
+  }
+
+  // Авито: инструменты появляются, только если пользователь подключил ключи.
+  const avitoAccount = await readAvitoAccount(
+    deps.store,
+    deps.jwtSecret,
+    userId,
+  );
+  if (avitoAccount) {
+    const avitoGuard = async (run: () => Promise<string>) => {
+      try {
+        return await run();
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Авито недоступен';
+      }
+    };
+    const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+    tools.push(
+      {
+        definition: {
+          name: 'avito_account',
+          description:
+            'Who the connected Avito account is and how much money is on its wallet. Кто подключён в Авито и сколько на кошельке.',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        run: () =>
+          avitoGuard(async () => {
+            const [who, money] = await Promise.all([
+              checkAvito(avitoAccount),
+              avitoBalance(avitoAccount).catch(() => null),
+            ]);
+            return [
+              `Аккаунт Авито: ${who.name}${who.email ? ` (${who.email})` : ''}, id ${who.id ?? '—'}`,
+              money ? formatBalance(money) : 'Баланс недоступен.',
+            ].join('\n');
+          }),
+      },
+      {
+        definition: {
+          name: 'avito_items',
+          description:
+            'List own Avito listings with status and price. Use status active/removed/blocked or omit for all. Свои объявления Авито.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              status: {
+                type: 'string',
+                description: 'active, removed, blocked, rejected или пусто',
+              },
+              limit: {
+                type: 'number',
+                description: 'Сколько объявлений вернуть (1–50)',
+              },
+            },
+          },
+        },
+        run: (args) =>
+          avitoGuard(async () => {
+            const status = asString(args.status).trim() || undefined;
+            const limit = Number(args.limit) || 10;
+            return formatItems(
+              await listItems(avitoAccount, { status, limit }),
+              status,
+            );
+          }),
+      },
+      {
+        definition: {
+          name: 'avito_stats',
+          description:
+            'Avito performance for a period: views, contacts, favourites per listing. Dates are YYYY-MM-DD, max 30 days. Статистика объявлений.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              from: {
+                type: 'string',
+                description: 'Начало периода, YYYY-MM-DD',
+              },
+              to: { type: 'string', description: 'Конец периода, YYYY-MM-DD' },
+              itemIds: {
+                type: 'array',
+                items: { type: 'number' },
+                description: 'Только эти объявления (необязательно)',
+              },
+            },
+          },
+        },
+        run: (args) =>
+          avitoGuard(async () => {
+            const to = asString(args.to).trim() || isoDate(new Date());
+            const from =
+              asString(args.from).trim() ||
+              isoDate(new Date(Date.now() - 6 * 86_400_000));
+            const itemIds = Array.isArray(args.itemIds)
+              ? args.itemIds
+                  .filter((id): id is number => typeof id === 'number')
+                  .slice(0, 50)
+              : undefined;
+            const rows = await itemStats(avitoAccount, { from, to, itemIds });
+            return formatStats(rows, from, to);
+          }),
+      },
+      {
+        definition: {
+          name: 'avito_balance',
+          description:
+            'Avito wallet balance: real money and bonus. Баланс кошелька Авито.',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        run: () =>
+          avitoGuard(async () =>
+            formatBalance(await avitoBalance(avitoAccount)),
+          ),
+      },
+    );
+  }
+
+  // Удалённые серверы: только администратор и только если серверы заведены.
+  if (toolOwner?.role === 'admin') {
+    const hosts = await listHosts(deps.store, deps.jwtSecret);
+    if (hosts.length) {
+      const byName = (value: string) => {
+        const needle = value.trim().toLowerCase();
+        return (
+          hosts.find((row) => row.id === value) ??
+          hosts.find((row) => row.name.trim().toLowerCase() === needle) ??
+          hosts.find((row) => row.host.toLowerCase() === needle) ??
+          hosts[0]
+        );
+      };
+      const catalogue = hosts
+        .map((row) => `${row.name} (${row.user}@${row.host}:${row.port})`)
+        .join('; ');
+      const guard = async (run: () => Promise<string>) => {
+        try {
+          return await run();
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Ошибка SSH';
+        }
+      };
+      const hostArg = {
+        type: 'string' as const,
+        description: `Сервер: ${catalogue}`,
+      };
+      tools.push(
+        {
+          definition: {
+            name: 'server_list',
+            description: `Servers available over SSH. Список серверов: ${catalogue}.`,
+            inputSchema: { type: 'object', properties: {} },
+          },
+          run: async () =>
+            hosts
+              .map((row) => `${row.name} — ${row.user}@${row.host}:${row.port}`)
+              .join('\n'),
+        },
+        {
+          definition: {
+            name: 'server_exec',
+            description:
+              'Run a shell command on a remote server over SSH and return stdout, stderr and exit code. Use for services, logs, docker and deploys; prefer read-only commands. Команда на сервере по SSH.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                command: { type: 'string', description: 'Команда целиком' },
+                timeoutSec: {
+                  type: 'number',
+                  description: 'Таймаут в секундах (5–300, по умолчанию 60)',
+                },
+              },
+              required: ['command'],
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              const command = asString(args.command).trim();
+              if (!command) return 'Укажите command.';
+              const seconds = Number(args.timeoutSec) || 60;
+              const result = await runOnHost(target, command, {
+                timeoutMs: seconds * 1000,
+              });
+              const parts = [
+                `${target.name}: код ${result.code ?? '—'}, ${Math.round(result.ms / 1000)} с`,
+              ];
+              if (result.stdout.trim())
+                parts.push(`stdout:\n${result.stdout.trimEnd()}`);
+              if (result.stderr.trim())
+                parts.push(`stderr:\n${result.stderr.trimEnd()}`);
+              return parts.join('\n');
+            }),
+        },
+        {
+          definition: {
+            name: 'server_read',
+            description:
+              'Read a text file on the remote server (up to 60 KB). Прочитать файл на сервере.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                path: { type: 'string', description: 'Абсолютный путь' },
+                maxBytes: {
+                  type: 'number',
+                  description: 'Сколько байт прочитать',
+                },
+              },
+              required: ['path'],
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              const filePath = asString(args.path).trim();
+              if (!filePath) return 'Укажите path.';
+              return await readRemote(
+                target,
+                filePath,
+                Number(args.maxBytes) || 60_000,
+              );
+            }),
+        },
+        {
+          definition: {
+            name: 'server_write',
+            description:
+              'Write a text file on the remote server, creating folders. Dangerous: prefer showing the diff first. Записать файл на сервере.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                path: { type: 'string', description: 'Абсолютный путь' },
+                content: {
+                  type: 'string',
+                  description: 'Новое содержимое целиком',
+                },
+              },
+              required: ['path', 'content'],
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              const filePath = asString(args.path).trim();
+              if (!filePath) return 'Укажите path.';
+              const bytes = await writeRemote(
+                target,
+                filePath,
+                asString(args.content),
+              );
+              return `Записано ${bytes} байт в ${filePath} на ${target.name}.`;
+            }),
+        },
+        {
+          definition: {
+            name: 'server_ls',
+            description:
+              'List a directory on the remote server. Список файлов на сервере.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                host: hostArg,
+                path: {
+                  type: 'string',
+                  description: 'Каталог, по умолчанию /',
+                },
+              },
+            },
+          },
+          run: (args) =>
+            guard(async () => {
+              const target = byName(asString(args.host) || hosts[0].name);
+              return await listRemote(
+                target,
+                asString(args.path).trim() || '/',
+              );
+            }),
+        },
+      );
     }
   }
-  return tools;
+
+  tools.push(
+    {
+      definition: {
+        name: 'skill_manage',
+        description:
+          'Create, update or list reusable skills (SKILL.md). After solving a repeatable task, save the procedure as a skill so it can be reused with load_skill. Создаёт и улучшает навыки агента.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['list', 'create', 'update'] },
+            name: {
+              type: 'string',
+              description: 'latin, digits, - and _, e.g. weekly-report',
+            },
+            description: {
+              type: 'string',
+              description: 'One line: when to use the skill',
+            },
+            body: {
+              type: 'string',
+              description: 'Markdown instructions: steps, checks, examples',
+            },
+          },
+          required: ['action'],
+        },
+      },
+      run: async (args) => {
+        const action = asString(args.action).trim();
+        if (action === 'list') {
+          const list = deps.skills.list();
+          return list.length
+            ? list
+                .map(
+                  (skill) =>
+                    `${skill.name}${agent.skillNames.includes(skill.name) ? ' (подключён)' : ''} — ${skill.description}`,
+                )
+                .join('\n')
+            : 'Навыков пока нет.';
+        }
+        if (action !== 'create' && action !== 'update')
+          return 'action: list, create или update.';
+        const owner = await deps.store.getUser(userId);
+        if (owner && owner.role !== 'admin')
+          return 'Создавать и менять навыки может только администратор.';
+        const name = asString(args.name).trim().toLowerCase();
+        const body = asString(args.body).trim();
+        if (!name || !body) return 'Нужны name и body.';
+        let existing: ReturnType<SkillLibrary['get']>;
+        try {
+          existing = deps.skills.get(name);
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Некорректное имя';
+        }
+        if (action === 'create' && existing)
+          return `Навык «${name}» уже есть — используйте action=update.`;
+        if (action === 'update' && !existing)
+          return `Навыка «${name}» нет — используйте action=create.`;
+        try {
+          const saved = deps.skills.save({
+            name,
+            description:
+              asString(args.description).trim() || existing?.description || '',
+            enabled: existing?.enabled ?? true,
+            body,
+          });
+          if (!agent.skillNames.includes(saved.name)) {
+            const skillNames = [...agent.skillNames, saved.name];
+            await deps.store.updateAgent(agent.id, { skillNames });
+            agent.skillNames = skillNames;
+            allowedSkills.add(saved.name);
+          }
+          return `Навык «${saved.name}» ${action === 'create' ? 'создан' : 'обновлён'} и подключён к агенту.`;
+        } catch (error) {
+          return error instanceof Error
+            ? error.message
+            : 'Не удалось сохранить';
+        }
+      },
+    },
+    {
+      definition: {
+        name: 'workspace_list',
+        description:
+          'List files in the agent workspace folder. Список файлов рабочей папки.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Folder, default .' },
+          },
+        },
+      },
+      run: async (args) =>
+        guard(() => listWorkspace(root(), asString(args.path) || '.')),
+    },
+    {
+      definition: {
+        name: 'workspace_read',
+        description:
+          'Read a text file from the workspace with line numbers (cat -n format: number, tab, text). For big files pass offset (first line, 1-based) and limit (number of lines). The number and tab are not part of the file: never include them in workspace_edit. Читает файл с номерами строк.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            offset: { type: 'number', description: 'First line, 1-based' },
+            limit: { type: 'number', description: 'Max lines, default 2000' },
+          },
+          required: ['path'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          readWorkspaceFile(root(), asString(args.path), {
+            offset: typeof args.offset === 'number' ? args.offset : undefined,
+            limit: typeof args.limit === 'number' ? args.limit : undefined,
+            numbered: true,
+          }),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_write',
+        description:
+          'Create or overwrite a file in the workspace. Returns a diff. Создаёт или перезаписывает файл.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' }, content: { type: 'string' } },
+          required: ['path', 'content'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          writeWorkspaceFile(
+            root(),
+            asString(args.path),
+            asString(args.content),
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_edit',
+        description:
+          'Replace the exact fragment `old` with `new` in a workspace file (read the file first). `old` must be unique unless replace_all is true; include surrounding lines to make it unique and keep indentation exact. Returns a diff. Точечная правка файла.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            old: { type: 'string' },
+            new: { type: 'string' },
+            replace_all: {
+              type: 'boolean',
+              description: 'Replace every occurrence (e.g. rename)',
+            },
+          },
+          required: ['path', 'old', 'new'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          editWorkspaceFile(
+            root(),
+            asString(args.path),
+            asString(args.old),
+            asString(args.new),
+            args.replace_all === true,
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_glob',
+        description:
+          'Find files by glob pattern, e.g. **/*.ts or src/**/test_*.py. Newest first. Поиск файлов по маске.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string' },
+            path: { type: 'string', description: 'Folder, default .' },
+          },
+          required: ['pattern'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          globWorkspace(
+            root(),
+            asString(args.pattern),
+            asString(args.path) || '.',
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'workspace_delete',
+        description: 'Delete a file or folder in the workspace. Удаляет файл.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+        },
+      },
+      run: async (args) =>
+        guard(() => deleteWorkspaceFile(root(), asString(args.path))),
+    },
+    {
+      definition: {
+        name: 'workspace_search',
+        description:
+          'Search text in workspace files, like grep -n. Returns file:line: text. Поиск по коду в рабочей папке.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            path: { type: 'string', description: 'Folder or file, default .' },
+            regex: { type: 'boolean', description: 'query is a regex' },
+            glob: { type: 'string', description: 'File suffix, e.g. *.ts' },
+          },
+          required: ['query'],
+        },
+      },
+      run: async (args) =>
+        guard(() =>
+          searchWorkspace(
+            root(),
+            asString(args.query),
+            asString(args.path) || '.',
+            { regex: args.regex === true, glob: asString(args.glob) },
+          ),
+        ),
+    },
+    {
+      definition: {
+        name: 'github_clone',
+        description:
+          'Download a GitHub repository (public, or private if assigned to this agent) into the workspace, by default to repos/<name>. Then read, search and edit it with workspace_* tools. Скачать репозиторий GitHub в рабочую папку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            repo: {
+              type: 'string',
+              description: 'owner/name or https://github.com/owner/name',
+            },
+            ref: { type: 'string', description: 'branch, tag or commit' },
+            dir: { type: 'string', description: 'target folder' },
+          },
+          required: ['repo'],
+        },
+      },
+      run: async (args) =>
+        guardAsync(() =>
+          cloneRepo(repoContext(), {
+            repo: asString(args.repo),
+            ref: asString(args.ref),
+            dir: asString(args.dir),
+          }),
+        ),
+    },
+    {
+      definition: {
+        name: 'github_changes',
+        description:
+          'List files changed, added or deleted in a cloned repository folder since it was downloaded. Что изменено в скачанном репозитории.',
+        inputSchema: {
+          type: 'object',
+          properties: { dir: { type: 'string', description: 'e.g. repos/x' } },
+          required: ['dir'],
+        },
+      },
+      run: async (args) =>
+        guard(() => describeChanges(root(), asString(args.dir))),
+    },
+    {
+      definition: {
+        name: 'workspace_download',
+        description:
+          'Give the user a download link (tar.gz) for a workspace folder or file, e.g. a cloned and edited repository. Ссылка на скачивание результата.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+        },
+      },
+      run: async (args) =>
+        guard(() => {
+          const rel = asString(args.path) || '.';
+          const full = resolveInside(root(), rel);
+          if (!fs.existsSync(full)) return `«${rel}» нет в рабочей папке.`;
+          const link = `/api/workspace/archive?scope=${encodeURIComponent(workspaceScope)}&path=${encodeURIComponent(rel)}`;
+          return `Ссылка для скачивания (дайте её пользователю как есть): [Скачать ${rel}.tar.gz](${link})`;
+        }),
+    },
+    ...(githubToken
+      ? [
+          {
+            definition: {
+              name: 'github_push',
+              description: `Commit the changes of a cloned repository to a NEW branch and open a pull request. Only for repositories assigned to this agent (${agent.githubRepos.join(', ')}); never the default branch. Отправить правки в ветку и открыть PR.`,
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  dir: { type: 'string', description: 'e.g. repos/x' },
+                  branch: { type: 'string', description: 'new branch name' },
+                  title: { type: 'string', description: 'commit/PR title' },
+                  body: { type: 'string', description: 'PR description' },
+                },
+                required: ['dir', 'title'],
+              },
+            },
+            run: async (args: Record<string, unknown>) =>
+              guardAsync(() =>
+                pushRepo(repoContext(), {
+                  dir: asString(args.dir),
+                  branch: asString(args.branch),
+                  title: asString(args.title),
+                  body: asString(args.body),
+                }),
+              ),
+          } satisfies ExposedTool,
+        ]
+      : []),
+    {
+      definition: {
+        name: 'shell',
+        description:
+          'Run a bash command in the sandbox; the current directory is the workspace root (cloned repos are in repos/<name>). Node 22, npm/pnpm/yarn, Python 3 with pip/venv, git, ripgrep. Internet only for npm, PyPI and GitHub. Use it to install dependencies, run tests, linters, builds and scripts. Each call is a fresh shell: chain with && and cd inside the command. Background processes are killed when the command ends. Терминал в песочнице.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            command: { type: 'string' },
+            timeout_sec: {
+              type: 'number',
+              description:
+                'Default 120, max 600 (for installs and long test runs)',
+            },
+          },
+          required: ['command'],
+        },
+      },
+      run: async (args) =>
+        runWorkspaceShell({
+          enabled: (await deps.store.getSetting('code_sandbox')) === '1',
+          root: root(),
+          command: asString(args.command),
+          timeoutMs:
+            typeof args.timeout_sec === 'number' && args.timeout_sec > 0
+              ? Math.min(600, args.timeout_sec) * 1000
+              : undefined,
+        }),
+    },
+  );
+
+  const allowedMcp = new Set(agent.mcpServerIds);
+  const rows = await deps.store.listMcp();
+  const sharedIds = parseSharedConnectorIds(
+    await deps.store.getSetting('manager_mcp_ids'),
+  );
+  const permitted = new Set(
+    rows
+      .filter((row) => toolOwner && canUseConnector(toolOwner, row, sharedIds))
+      .map((row) => row.id),
+  );
+  const servers = deps.mcp
+    .listConnected()
+    .filter((server) => allowedMcp.has(server.id) && permitted.has(server.id));
+  const totalMcpTools = servers.reduce(
+    (sum, server) => sum + server.tools.length,
+    0,
+  );
+  const thresholdRaw =
+    (await deps.store.getSetting('lazy_mcp_threshold')) ?? '';
+  const threshold =
+    thresholdRaw.trim() !== '' && Number.isFinite(Number(thresholdRaw))
+      ? Number(thresholdRaw)
+      : LAZY_MCP_THRESHOLD;
+  if (totalMcpTools > threshold) {
+    // Много инструментов: вместо всех схем — каталог коннекторов и два «ленивых» инструмента.
+    // Схемы модель запрашивает только для нужного коннектора — экономия тысяч токенов на шаг.
+    const catalog = servers
+      .map(
+        (server) =>
+          `${server.name}: ${server.tools.map((tool) => tool.name).join(', ')}`,
+      )
+      .join('\n');
+    const byName = (name: string) =>
+      servers.find((server) => server.name === name.trim());
+    used.add('connector_tools');
+    used.add('connector_call');
+    tools.push(
+      {
+        definition: {
+          name: 'connector_tools',
+          description: `Get parameter schemas of a connector's tools before calling them. Сначала узнай параметры инструментов коннектора.\nConnectors and their tools:\n${catalog}`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              connector: { type: 'string', enum: servers.map((s) => s.name) },
+              tools: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Only these tools (optional)',
+              },
+            },
+            required: ['connector'],
+          },
+        },
+        run: async (args) => {
+          const server = byName(asString(args.connector));
+          if (!server) return `Нет коннектора «${asString(args.connector)}».`;
+          const only = Array.isArray(args.tools)
+            ? args.tools.map((item) => String(item))
+            : [];
+          const picked = server.tools.filter(
+            (tool) => !only.length || only.includes(tool.name),
+          );
+          return JSON.stringify(
+            picked.map((tool) => ({
+              name: tool.name,
+              description: (tool.description ?? '').slice(0, 300),
+              parameters: normalizeSchema(tool),
+            })),
+          );
+        },
+      },
+      {
+        definition: {
+          name: 'connector_call',
+          description:
+            'Call a connector tool (amoCRM, MoySklad, Avito, browser, …) with arguments that match its schema from connector_tools. Вызвать инструмент коннектора.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              connector: { type: 'string', enum: servers.map((s) => s.name) },
+              tool: { type: 'string' },
+              arguments: { type: 'object' },
+            },
+            required: ['connector', 'tool'],
+          },
+        },
+        run: async (args) => {
+          const server = byName(asString(args.connector));
+          if (!server) return `Нет коннектора «${asString(args.connector)}».`;
+          const toolName = asString(args.tool);
+          if (!server.tools.some((tool) => tool.name === toolName))
+            return `У коннектора ${server.name} нет инструмента «${toolName}». Есть: ${server.tools.map((tool) => tool.name).join(', ')}.`;
+          const callArgs = isRecord(args.arguments) ? args.arguments : {};
+          return deps.mcp.callTool(server.id, toolName, callArgs);
+        },
+      },
+    );
+  } else {
+    for (const server of servers) {
+      for (const tool of server.tools) {
+        let name = encodeMcpToolName(server.name, tool.name);
+        while (used.has(name)) name = `${name.slice(0, 60)}_${used.size}`;
+        used.add(name);
+        tools.push({
+          definition: {
+            name,
+            description: `[MCP ${server.name}] ${tool.description || tool.name}`,
+            inputSchema: normalizeSchema(tool),
+          },
+          run: (args) => deps.mcp.callTool(server.id, tool.name, args),
+        });
+      }
+    }
+  }
+  // Клиенту не даём данные компании: склад и репозитории по токену администратора.
+  const companyOnly = new Set([
+    'stock_lookup',
+    'github_list_repos',
+    'github_read_file',
+    'github_search_code',
+    'github_list_issues',
+    'github_list_pulls',
+    'github_push',
+  ]);
+  // Плагины агента: выключенные группы встроенных инструментов не показываем модели.
+  return tools.filter(
+    (tool) =>
+      toolAllowedByPlugins(tool.definition.name, agent.plugins) &&
+      !(toolOwner?.client && companyOnly.has(tool.definition.name)),
+  );
 }
 
 async function searchKey(deps: TurnDeps): Promise<string | undefined> {
@@ -793,7 +2021,17 @@ export async function toolNeedsApproval(
     .filter(Boolean);
   if (auto.includes('*') || auto.includes(name)) return false;
   return (
-    name === 'send_to_agent' || name === 'run_code' || name.startsWith('mcp__')
+    name === 'send_to_agent' ||
+    name === 'connector_call' ||
+    name === 'delegate' ||
+    name === 'run_code' ||
+    name === 'shell' ||
+    name === 'workspace_delete' ||
+    name === 'github_push' ||
+    name === 'skill_manage' ||
+    name === 'server_exec' ||
+    name === 'server_write' ||
+    name.startsWith('mcp__')
   );
 }
 
@@ -815,6 +2053,7 @@ async function runBackgroundTask(
       userId: input.userId,
       providerId: input.agent.providerId,
       model: input.agent.model,
+      internal: true,
     });
     const result = await runTurn(deps, {
       conversationId: chat.id,
@@ -855,6 +2094,156 @@ function toModelMessage(message: ChatMessage): ModelMessage {
   };
 }
 
+/** Провайдеры, которые принимают картинки. DeepSeek и демо — только текст. */
+export function supportsVision(kind: ProviderKind): boolean {
+  return kind === 'openai' || kind === 'anthropic' || kind === 'gemini';
+}
+
+const IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+const MAX_IMAGES = 6;
+/** Больше стольких MCP-инструментов — показываем модели каталог вместо всех схем. */
+const LAZY_MCP_THRESHOLD = 15;
+/** Старые результаты инструментов и файлы в истории обрезаются до стольких символов. */
+const OLD_TOOL_CHARS = 1_500;
+const OLD_FILE_CHARS = 2_000;
+/** Картинки отправляем только из последних N сообщений пользователя. */
+const IMAGE_TURNS = 2;
+const MAX_IMAGE_BYTES = 5_000_000;
+
+/**
+ * История для модели. Вложения пользователя раскрываются: текст документов
+ * дописывается к сообщению, картинки уходят как image parts (самые свежие, до 6).
+ */
+/**
+ * Провайдеры (OpenAI, Anthropic, Gemini) требуют, чтобы на каждый tool_call
+ * ассистента был ответ инструмента с тем же id. В базе так бывает не всегда:
+ * пользователь может отправить новое сообщение, пока вызов ещё выполнялся,
+ * а сокращение истории может выбросить часть результатов. Ремонтируем пары
+ * перед отправкой: недостающие ответы добавляем заглушкой, сиротские убираем.
+ */
+export function repairToolCalls(messages: ModelMessage[]): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!;
+    // Результат без своего вызова провайдеру не нужен и вызывает отказ.
+    if (message.role === 'tool') continue;
+    out.push(message);
+    const calls = message.toolCalls ?? [];
+    if (!calls.length) continue;
+    const answered = new Set<string>();
+    let next = index + 1;
+    while (next < messages.length && messages[next]!.role === 'tool') {
+      const tool = messages[next]!;
+      const id = tool.toolCallId ?? '';
+      const known = calls.some((call) => call.id === id);
+      if (known && !answered.has(id)) {
+        answered.add(id);
+        out.push(tool);
+      }
+      next++;
+    }
+    for (const call of calls) {
+      if (answered.has(call.id)) continue;
+      out.push({
+        role: 'tool',
+        toolCallId: call.id,
+        content:
+          '[Результата нет: вызов прерван до ответа инструмента. Если он ещё нужен — вызови его снова.]',
+      });
+    }
+    index = next - 1;
+  }
+  return out;
+}
+
+export async function buildHistory(
+  store: Store,
+  messages: ChatMessage[],
+  kind: ProviderKind,
+): Promise<ModelMessage[]> {
+  const vision = supportsVision(kind);
+  let imageBudget = MAX_IMAGES;
+  const out: ModelMessage[] = [];
+  // Сколько сообщений пользователя уже пройдено от конца: 0 — текущий ход.
+  let userTurns = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    const model = toModelMessage(message);
+    const old = userTurns > 0;
+    if (
+      message.role === 'tool' &&
+      old &&
+      model.content.length > OLD_TOOL_CHARS
+    ) {
+      // Старый результат инструмента: начало и пометка, полный текст в истории не нужен.
+      model.content = `${model.content.slice(0, OLD_TOOL_CHARS)}\n…[сокращено для экономии: было ${model.content.length} символов; вызови инструмент снова, если нужны детали]`;
+    }
+    if (message.role === 'user') userTurns++;
+    if (message.role === 'user' && message.attachments?.length) {
+      const notes: string[] = [];
+      for (const attachment of message.attachments) {
+        const file = await store.getUpload(attachment.id);
+        if (!file) {
+          notes.push(`[Файл ${attachment.name} недоступен]`);
+          continue;
+        }
+        if (IMAGE_MIMES.has(file.mime)) {
+          if (!vision) {
+            notes.push(
+              `[Изображение ${file.name}: выбранная модель не видит картинки. Чтобы модель её разобрала, выберите OpenAI, Anthropic или Gemini.]`,
+            );
+            continue;
+          }
+          if (userTurns > IMAGE_TURNS) {
+            // Картинку модель уже видела в прошлых ответах — повторно не шлём.
+            notes.push(
+              `[Изображение ${file.name} было приложено раньше — модель уже видела его]`,
+            );
+            continue;
+          }
+          if (imageBudget <= 0) {
+            notes.push(
+              `[Изображение ${file.name} пропущено: лимит картинок в истории]`,
+            );
+            continue;
+          }
+          try {
+            const bytes = fs.readFileSync(file.path);
+            if (bytes.length > MAX_IMAGE_BYTES) {
+              notes.push(`[Изображение ${file.name} больше 5 МБ]`);
+              continue;
+            }
+            model.images = [
+              ...(model.images ?? []),
+              { mime: file.mime, data: bytes.toString('base64') },
+            ];
+            imageBudget--;
+            notes.push(`[Изображение ${file.name}]`);
+          } catch {
+            notes.push(`[Изображение ${file.name} не прочитано]`);
+          }
+          continue;
+        }
+        const text = file.text?.trim();
+        notes.push(
+          text
+            ? `[Файл ${file.name}]\n${text.slice(0, userTurns > 1 ? OLD_FILE_CHARS : 20_000)}${userTurns > 1 && text.length > OLD_FILE_CHARS ? '\n…[сокращено: полный текст был в начале разговора]' : ''}`
+            : `[Файл ${file.name}: текст не извлечён]`,
+        );
+      }
+      if (notes.length)
+        model.content = `${model.content}\n\n${notes.join('\n\n')}`;
+    }
+    out.push(model);
+  }
+  return out.reverse();
+}
+
 async function maybeRetitle(
   store: Store,
   title: string,
@@ -886,13 +2275,60 @@ export async function assertQuota(
 
 function meteredClient(
   client: LLMClient,
-  onCall: () => Promise<void>,
+  hooks: {
+    before: (messages: ModelMessage[]) => Promise<string>;
+    after: (
+      id: string,
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cachedTokens: number;
+        exact: boolean;
+      },
+    ) => Promise<void>;
+  },
 ): LLMClient {
   return {
     stream(input) {
       return (async function* () {
-        await onCall();
-        yield* client.stream(input);
+        const id = await hooks.before(input.messages);
+        let outputChars = 0;
+        let reported = false;
+        try {
+          for await (const event of client.stream(input)) {
+            if (event.type === 'usage') {
+              reported = true;
+              await hooks.after(id, {
+                inputTokens: event.inputTokens,
+                outputTokens: event.outputTokens,
+                cachedTokens: event.cachedTokens ?? 0,
+                exact: true,
+              });
+              continue;
+            }
+            if (event.type === 'text' || event.type === 'reasoning')
+              outputChars += event.delta.length;
+            if (event.type === 'tool_call_delta')
+              outputChars += (event.argumentsDelta ?? '').length;
+            yield event;
+          }
+        } finally {
+          // Провайдер не прислал usage (или поток оборвался) — хотя бы оценим ответ.
+          if (!reported && outputChars > 0)
+            await hooks
+              .after(id, {
+                inputTokens: Math.ceil(
+                  input.messages.reduce(
+                    (sum, message) => sum + message.content.length,
+                    0,
+                  ) / 4,
+                ),
+                outputTokens: Math.ceil(outputChars / 4),
+                cachedTokens: 0,
+                exact: false,
+              })
+              .catch(() => undefined);
+        }
       })();
     },
   };
@@ -903,4 +2339,21 @@ function isAbort(error: unknown): boolean {
     error instanceof Error &&
     (error.name === 'AbortError' || error.message === 'Запрос отменён')
   );
+}
+
+/** Контекст проекта для системного промпта. */
+async function projectBlock(
+  store: Store,
+  projectId?: string | null,
+): Promise<string> {
+  if (!projectId) return '';
+  const project = await store.getProject(projectId);
+  if (!project) return '';
+  return [
+    `## Проект: ${project.name}${project.client ? ` (клиент: ${project.client})` : ''}`,
+    project.instructions.trim(),
+    'Все чаты этого проекта используют одну рабочую папку (workspace_*). Храни там материалы по проекту.',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }

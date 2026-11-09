@@ -268,3 +268,195 @@ describe('mock provider', () => {
     expect(events.at(-1)?.type).toBe('done');
   });
 });
+
+describe('usage from providers', () => {
+  it('reads the OpenAI usage chunk that arrives after finish_reason', async () => {
+    let sent: Record<string, unknown> = {};
+    globalThis.fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body));
+      return sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`,
+        `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 4 } } })}`,
+        'data: [DONE]',
+      ]);
+    }) as typeof fetch;
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'k',
+        model: 'gpt-5-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(sent.stream_options).toEqual({ include_usage: true });
+    expect(events).toContainEqual({
+      type: 'usage',
+      inputTokens: 12,
+      outputTokens: 3,
+      cachedTokens: 4,
+    });
+    expect(events.at(-1)).toEqual({ type: 'done', finishReason: 'stop' });
+  });
+
+  it('retries without stream_options when the API rejects it', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      if (bodies.length === 1)
+        return new Response(
+          '{"error":{"message":"Unknown field stream_options"}}',
+          {
+            status: 400,
+          },
+        );
+      return sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`,
+        'data: [DONE]',
+      ]);
+    }) as typeof fetch;
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'k',
+        model: 'x',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]!.stream_options).toBeUndefined();
+    expect(events).toContainEqual({ type: 'text', delta: 'ok' });
+  });
+
+  it('reads Anthropic usage from message_start and message_delta', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      sseResponse([
+        `data: ${JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 1 } } })}`,
+        `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } })}`,
+        `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 7 } })}`,
+        `data: ${JSON.stringify({ type: 'message_stop' })}`,
+      ]),
+    ) as typeof fetch;
+    const events = await collect(
+      streamAnthropic({
+        baseUrl: '',
+        apiKey: 'k',
+        model: 'claude-sonnet-4-5',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(events).toContainEqual({
+      type: 'usage',
+      inputTokens: 15,
+      outputTokens: 7,
+      cachedTokens: 5,
+    });
+  });
+});
+
+describe('models without tool calling', () => {
+  it('retries without tools and remembers the model', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      if (body.tools)
+        return new Response(
+          '{"message":"feature \'tool calls\' is not currently supported"}',
+          { status: 400 },
+        );
+      return sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`,
+        'data: [DONE]',
+      ]);
+    }) as typeof fetch;
+    const tools = [
+      {
+        name: 'stock_lookup',
+        description: 'x',
+        inputSchema: { type: 'object' },
+      },
+    ];
+    const run = () =>
+      collect(
+        streamOpenAI({
+          baseUrl: 'https://notools.test/v1',
+          apiKey: 'k',
+          model: 'qwen2.5-7b',
+          messages: [{ role: 'user', content: 'hi' }],
+          tools,
+        }),
+      );
+    const first = await run();
+    expect(first).toContainEqual({ type: 'text', delta: 'ok' });
+    expect(first.some((event) => event.type === 'reasoning')).toBe(true);
+    expect(bodies).toHaveLength(2);
+    await run();
+    // Второй раз — сразу без инструментов, без лишнего запроса.
+    expect(bodies).toHaveLength(3);
+    expect(bodies[2]!.tools).toBeUndefined();
+  });
+});
+
+describe('rate limits', () => {
+  it('waits and retries on 429', async () => {
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      if (calls < 3)
+        return new Response('slow down', {
+          status: 429,
+          headers: { 'retry-after': '2' },
+        });
+      return sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`,
+        'data: [DONE]',
+      ]);
+    }) as typeof fetch;
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://limited.test/v1',
+        apiKey: 'k',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(calls).toBe(3);
+    expect(events).toContainEqual({ type: 'text', delta: 'ok' });
+    expect(
+      events.some(
+        (event) => event.type === 'reasoning' && /жду 2 с/.test(event.delta),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('auth errors', () => {
+  it('explains that a keyless provider needs a key for this model', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          '{"error":{"message":"Missing API key.","code":"missing_api_key"}}',
+          {
+            status: 401,
+          },
+        ),
+    ) as typeof fetch;
+    const events = await collect(
+      streamOpenAI({
+        baseUrl: 'https://api.llm7.io/v1',
+        apiKey: '',
+        model: 'kimi-k2.7-code',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    );
+    expect(events[0]).toMatchObject({ type: 'error' });
+    expect(events[0]?.type === 'error' ? events[0].message : '').toMatch(
+      /требует ключ/,
+    );
+  });
+});

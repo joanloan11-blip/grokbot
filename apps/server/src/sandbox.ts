@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { runInRunner, runnerConfigured } from './workspace';
 
 export function sandboxCommand(
   language: string,
@@ -51,10 +52,27 @@ export async function runSandboxed(input: {
   enabled: boolean;
   language: string;
   code: string;
+  /** Рабочая папка: если есть runner, код выполняется в ней. */
+  root?: string;
   spawnImpl?: typeof spawn;
 }): Promise<string> {
   if (!input.enabled) return 'Песочница выключена. Её включает администратор.';
   if (input.code.length > 20_000) return 'Код слишком длинный.';
+  if (input.root && runnerConfigured() && !input.spawnImpl) {
+    const interpreter =
+      input.language === 'python'
+        ? 'python3 -'
+        : input.language === 'node'
+          ? 'node -'
+          : '';
+    if (!interpreter) return 'Язык: python или node.';
+    return runInRunner({
+      root: input.root,
+      command: interpreter,
+      stdin: input.code,
+      timeoutMs: 60_000,
+    });
+  }
   const spec = sandboxCommand(input.language, input.code);
   if (!spec) return 'Язык: python или node.';
   const spawnImpl = input.spawnImpl ?? spawn;

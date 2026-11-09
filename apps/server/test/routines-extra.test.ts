@@ -25,28 +25,36 @@ describe('routine webhooks and history', () => {
     }[];
     const agentId = agents[0]?.id;
     if (!agentId) throw new Error('нет агента');
-    const created = await handle.app.request(`/api/agents/${agentId}/routines`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        name: 'Вебхук',
-        cron: '',
-        prompt: 'Скажи: готово',
-      }),
-    });
+    const created = await handle.app.request(
+      `/api/agents/${agentId}/routines`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Вебхук',
+          cron: '',
+          prompt: 'Скажи: готово',
+        }),
+      },
+    );
     expect(created.status).toBe(201);
     const routine = (await created.json()) as {
       id: string;
       webhookToken: string;
     };
     expect(routine.webhookToken).toBeTruthy();
-    const hook = await handle.app.request(`/api/hooks/${routine.webhookToken}`, {
-      method: 'POST',
-      body: 'payload-1',
-    });
+    const hook = await handle.app.request(
+      `/api/hooks/${routine.webhookToken}`,
+      {
+        method: 'POST',
+        body: 'payload-1',
+      },
+    );
     expect(hook.status).toBe(200);
     const runs = (await (
-      await handle.app.request(`/api/agents/${agentId}/routines/${routine.id}/runs`)
+      await handle.app.request(
+        `/api/agents/${agentId}/routines/${routine.id}/runs`,
+      )
     ).json()) as { status: string; output: string }[];
     expect(runs[0]?.status).toBe('ok');
     expect(runs[0]?.output.length).toBeGreaterThan(0);
