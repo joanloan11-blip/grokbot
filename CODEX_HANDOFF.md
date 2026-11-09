@@ -480,3 +480,25 @@ managers.test.ts: общий и два разных личных «Разраб�
   Откат: `mayak-app:before-local-storage` (создан перед деплоем, образ c61b09da45c6).
 - Если хост не вернётся сам — перезагрузить через панель провайдера; данные в томе `mayak_data`
   и Postgres не затронуты.
+
+## Пост-аварийное восстановление и резервный контур — 2026-11-09
+
+- qastom вернулся после техработ; данные и последний бэкап целы. Выложен отложенный релиз
+  3516a1a (папка/память на компьютере): overlay-образ `mayak-app:latest` fae69ae5d101,
+  откат `mayak-app:before-local-storage`; health 200, новый бандл `index-0iFAKUon.js` с
+  «Папка на компьютере», `/api/mail` и `/api/telegram` отдают 401 без сессии.
+- Причина сбоя offsite-выгрузки: с 2026-11-04 Google Drive отвечал `storageQuotaExceeded`,
+  2026-11-08 — DNS (127.0.0.53). Сейчас Drive работает (400 ГиБ), ночью 2026-11-09 бэкап
+  загружен, `restore-check-mayak.sh` восстановил снимок (integrity=ok).
+- `~/backups/backup-all.sh`: добавлены (а) вторая offsite-копия на vds.1185 через
+  `~/.ssh/mayak-relay` в `/root/qastom-backups` с ретенцией 14 дней только для `*.gpg`,
+  (б) три ретрая выгрузки в Drive, (в) копии passphrase, rclone-конфига и runbook лежат на vds.
+  Резервная копия скрипта: `~/backups/backup-all.sh.bak-2026-11-09-1707`.
+- Холодный стенд на vds.1185: `/root/mayak-standby/` (repo из git-бандла, `.env` из conf-архива,
+  `compose.standby.yml`, образ `mayak-standby-app`, том `mayak_standby_data` со снимком
+  2026-11-09 17:08, nginx-конфиг `app.geminibot.ru.standby` выключен, `RUNBOOK.md`).
+  Проверен: `docker compose -f compose.standby.yml up -d` → health 200 на 127.0.0.1:8095,
+  users=2/agents=16/messages=1147, Telegram TLS напрямую работает. Контейнер остановлен.
+- Осталось за владельцем: продублировать `.backup-passphrase` в менеджер паролей и снизить
+  TTL DNS у reg.ru (сейчас ~35 минут). `bible_git` в ночном бэкапе падает — чужой проект,
+  не трогали.
