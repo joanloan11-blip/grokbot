@@ -3511,6 +3511,25 @@ input[type="checkbox"]:checked::after {
   border-radius: 4px;
   background: var(--bg-2);
 }
+/* Подсказки для встроенных бизнес-коннекторов (админский раздел MCP). */
+.mcp-guide { margin-bottom: 14px; }
+.mcp-guide h3 { margin: 0 0 8px; font-size: 15px; }
+.mcp-guide .mcp-guide-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.mcp-guide .mcp-guide-list li { line-height: 1.45; }
+.mcp-guide code {
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-1);
+}
+.mcp-guide details { margin-top: 8px; }
+.mcp-guide pre { margin: 6px 0 0; font-size: 12px; }
 
 /* Список серверов и результат проверки SSH (панель администратора). */
 .plain-list {

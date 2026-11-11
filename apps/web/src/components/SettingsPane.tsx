@@ -1031,6 +1031,57 @@ function McpPanel({ personal = false }: { personal?: boolean }) {
         </button>
       </div>
       {error && <p className="error-line">{error}</p>}
+      {!personal && (
+        <section className="card mcp-guide">
+          <h3>Встроенные коннекторы: amoCRM, МойСклад, Авито</h3>
+          <p className="hint">
+            Эти серверы уже запущены на qastom в docker-сети <code>mayak_mcp</code>.
+            В Маяке они регистрируются один раз адресом ниже; ключи хранятся в{' '}
+            <code>.env</code> их контейнеров и в Маяк не копируются. Подключить
+            сервер к агенту — карточка агента → «Коннекторы».
+          </p>
+          <ul className="plain-list mcp-guide-list">
+            <li>
+              <strong>amoCRM</strong> — <code>http://amocrm-mcp:8765/&lt;MCP_SECRET&gt;/mcp</code>
+              (Streamable HTTP). Секрет и ключ amoCRM — в{' '}
+              <code>deploy/qastom-mcp</code> (контейнер <code>amocrm-mcp</code>).
+              Адрес содержит секрет, поэтому менеджерам он не показывается.
+              Менеджерам и клиентам этот коннектор недоступен по правилам
+              бизнес-коннекторов.
+            </li>
+            <li>
+              <strong>МойСклад</strong> — <code>http://moysklad:8000/mcp</code>,
+              только чтение (запись включается <code>MOYSKLAD_ALLOW_WRITE</code> в
+              контейнере <code>moysklad</code>).
+            </li>
+            <li>
+              <strong>Авито</strong> — по кабинету:{' '}
+              <code>http://avito-&lt;кабинет&gt;:3000/mcp</code>; ключи —{' '}
+              <code>deploy/qastom-mcp/avito/secrets/&lt;кабинет&gt;.env</code>.
+              Отправка сообщений и ответы на отзывы требуют подтверждения{' '}
+              <code>meta_confirm_action</code>.
+            </li>
+          </ul>
+          <p className="hint">
+            Новый сервер: «Добавить сервер» → транспорт Streamable HTTP → URL
+            (для встроенных — внутренний адрес вида{' '}
+            <code>http://amocrm-mcp:8765/&lt;секрет&gt;/mcp</code>, не наружный
+            https). Или вставьте JSON в блок импорта ниже — формат как у Claude
+            Desktop/Cursor, секреты вида <code>••••••</code> не перезаписываются.
+          </p>
+          <details>
+            <summary>Пример JSON для импорта (Streamable HTTP)</summary>
+            <pre>{`{
+  "mcpServers": {
+    "amocrm": {
+      "url": "http://amocrm-mcp:8765/ВАШ_MCP_SECRET/mcp",
+      "enabled": true
+    }
+  }
+}`}</pre>
+          </details>
+        </section>
+      )}
       {open && (
         <form
           className="card form"

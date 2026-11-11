@@ -286,7 +286,7 @@ const ru = {
   mcpPersonalHint:
     'Свой MCP-сервер: только https и транспорт Streamable HTTP, адрес обычно заканчивается на /mcp. Адрес и токен берите из документации сервера. Токен — в «Заголовки»: Authorization=Bearer <токен>. Видите и используете его только вы.',
   mcpHttpHint:
-    'Streamable HTTP: вставьте URL MCP-сервера из его документации (обычно …/mcp). Токен — в «Заголовки» одной строкой: Authorization=Bearer <токен>.',
+    'Streamable HTTP: вставьте URL MCP-сервера из его документации (обычно …/mcp; для встроенных коннекторов — внутренний адрес вида http://amocrm-mcp:8765/<секрет>/mcp). Токен — в «Заголовки» одной строкой: Authorization=Bearer <токен>.',
   headersHint:
     'KEY=value, по одной паре на строку. Для токена: Authorization=Bearer <токен>. Пустое поле не стирает сохранённые секреты.',
   customAgent: 'Свой агент',
@@ -721,7 +721,7 @@ const en: Dictionary = {
   mcpPersonalHint:
     'Your own MCP server: https and Streamable HTTP only, URL usually ends with /mcp. Take the URL and token from the server docs. Token goes to Headers as Authorization=Bearer <token>. Only you can see and use it.',
   mcpHttpHint:
-    'Streamable HTTP: paste the MCP server URL from its docs (usually …/mcp). Token goes to Headers as a single line: Authorization=Bearer <token>.',
+    'Streamable HTTP: paste the MCP server URL from its docs (usually …/mcp; for built-in connectors — the internal address like http://amocrm-mcp:8765/<secret>/mcp). Token goes to Headers as a single line: Authorization=Bearer <token>.',
   headersHint:
     'KEY=value, one pair per line. For a token: Authorization=Bearer <token>. An empty field does not erase saved secrets.',
   customAgent: 'Custom agent',
