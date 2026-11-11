@@ -284,15 +284,20 @@ const ru = {
   myConnectors: 'Мои коннекторы',
   mcpForManagers: 'Доступен менеджерам',
   mcpPersonalHint:
-    'Свой MCP-коннектор по адресу (Streamable HTTP, только https). Ключ или токен — в заголовках, например Authorization=Bearer …. Видите и используете его только вы.',
+    'Свой MCP-сервер: только https и транспорт Streamable HTTP, адрес обычно заканчивается на /mcp. Адрес и токен берите из документации сервера. Токен — в «Заголовки»: Authorization=Bearer <токен>. Видите и используете его только вы.',
+  mcpHttpHint:
+    'Streamable HTTP: вставьте URL MCP-сервера из его документации (обычно …/mcp). Токен — в «Заголовки» одной строкой: Authorization=Bearer <токен>.',
+  headersHint:
+    'KEY=value, по одной паре на строку. Для токена: Authorization=Bearer <токен>. Пустое поле не стирает сохранённые секреты.',
   customAgent: 'Свой агент',
   customAgentHint: 'С нуля: своё имя, инструкция, навыки, коннекторы и плагины',
   capsSkills: 'Навыки',
   capsSkillsHint: 'Готовые инструкции, которые агент загружает под задачу',
   capsConnectors: 'Коннекторы',
-  capsConnectorsHint: 'MCP-серверы: amoCRM, МойСклад, Авито, браузер и другие',
+  capsConnectorsHint:
+    'MCP-серверы: amoCRM, МойСклад, Авито, браузер и другие. Нет нужного — добавьте в «Настройки → Мои коннекторы».',
   capsConnectorsAdmin:
-    'Ваши коннекторы и те, что открыл администратор. Свой коннектор — в меню «Мои модели».',
+    'Ваши коннекторы и те, что открыл администратор. Свой коннектор — «Настройки → Мои коннекторы»: понадобится адрес MCP-сервера и токен, если он нужен.',
   capsManyConnectors:
     'Каждый коннектор добавляет 25–36 инструментов в каждый запрос — подключайте только нужные, иначе ответы дороже и медленнее.',
   capsPlugins: 'Плагины',
@@ -714,7 +719,11 @@ const en: Dictionary = {
   myConnectors: 'My connectors',
   mcpForManagers: 'Available to managers',
   mcpPersonalHint:
-    'Your own MCP connector by URL (Streamable HTTP, https only). Put the key or token in headers, e.g. Authorization=Bearer …. Only you can see and use it.',
+    'Your own MCP server: https and Streamable HTTP only, URL usually ends with /mcp. Take the URL and token from the server docs. Token goes to Headers as Authorization=Bearer <token>. Only you can see and use it.',
+  mcpHttpHint:
+    'Streamable HTTP: paste the MCP server URL from its docs (usually …/mcp). Token goes to Headers as a single line: Authorization=Bearer <token>.',
+  headersHint:
+    'KEY=value, one pair per line. For a token: Authorization=Bearer <token>. An empty field does not erase saved secrets.',
   customAgent: 'Custom agent',
   customAgentHint:
     'From scratch: your own name, instructions, skills, connectors and plugins',
@@ -722,9 +731,9 @@ const en: Dictionary = {
   capsSkillsHint: 'Ready instructions the agent loads for a task',
   capsConnectors: 'Connectors',
   capsConnectorsHint:
-    'MCP servers: amoCRM, MoySklad, Avito, browser and others',
+    'MCP servers: amoCRM, MoySklad, Avito, browser and others. Missing one? Add it in Settings → My connectors.',
   capsConnectorsAdmin:
-    'Your connectors and the ones the admin opened to you. Add your own under My models.',
+    'Your connectors and the ones the admin opened to you. Add your own in Settings → My connectors: you will need the MCP server URL and a token if required.',
   capsManyConnectors:
     'Each connector adds 25–36 tools to every request — attach only what you need, otherwise replies cost more and are slower.',
   capsPlugins: 'Plugins',

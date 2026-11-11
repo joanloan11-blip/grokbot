@@ -1100,6 +1100,7 @@ function McpPanel({ personal = false }: { personal?: boolean }) {
             </>
           ) : (
             <>
+              <p className="hint">{t('mcpHttpHint')}</p>
               <label>
                 {t('url')}
                 <input
@@ -1118,7 +1119,7 @@ function McpPanel({ personal = false }: { personal?: boolean }) {
                 {t('headers')}
                 <textarea
                   rows={3}
-                  placeholder={t('envHint')}
+                  placeholder={t('headersHint')}
                   onChange={(event) =>
                     setForm({
                       ...form,

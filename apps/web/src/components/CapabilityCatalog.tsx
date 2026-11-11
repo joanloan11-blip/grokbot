@@ -295,17 +295,21 @@ export function CapabilityCatalog({
           </div>
           <h3>Подключить свой аккаунт</h3>
           <p className="hint">
-            Используйте собственный MCP-сервер сервиса: HTTPS-адрес Streamable
-            HTTP и, если нужен, токен. Это не адрес обычного сайта и не прямой
-            REST API. Общие кабинеты Авито и МойСклад доступны только
-            администратору.
+            Нужен MCP-сервер сервиса (Streamable HTTP), а не обычный сайт и не
+            прямой REST API. Нажмите «Настроить» — в форме будет подсказка, какой
+            адрес вставить в поле «HTTPS MCP-адрес» и где взять токен. Общие
+            кабинеты Авито и МойСклад доступны только администратору.
           </p>
           {!installedOnly && (
             <div className="catalog-grid">
               {CONNECTOR_PRESETS.filter((item) =>
                 matches(`${item.name} ${item.description}`),
               ).map((item) => (
-                <article key={item.id} className="catalog-card">
+                <article
+                  key={item.id}
+                  className="catalog-card"
+                  title={item.hint}
+                >
                   <span className="catalog-icon">{item.emoji}</span>
                   <div>
                     <h3>{item.name}</h3>
@@ -402,9 +406,32 @@ export function CapabilityCatalog({
           </h3>
           {error && <p role="alert" className="error-line">{error}</p>}
           <p className="hint">
-            Укажите данные своего MCP-сервера. Токен сохранится на сервере.
-            Подключение использует права, выданные вашему MCP-серверу.
+            <strong>{preset.hint}</strong>
           </p>
+          <div className="connector-help">
+            <p>
+              <strong>Куда что вставлять</strong>
+            </p>
+            <ol>
+              <li>
+                <strong>Название</strong> — как коннектор будет называться у
+                агента, например <code>github-work</code>.
+              </li>
+              <li>
+                <strong>HTTPS MCP-адрес</strong> — endpoint MCP-сервера
+                (Streamable HTTP), обычно заканчивается на <code>/mcp</code>.
+                Это не адрес сайта и не REST API.
+              </li>
+              <li>
+                <strong>Bearer-токен</strong> — ключ сервиса, если он требует
+                авторизацию. Если сервер работает без токена, оставьте пустым.
+              </li>
+            </ol>
+            <p className="muted">
+              Токен хранится зашифрованным на сервере и не возвращается в
+              браузер. Проверить подключение можно в «Мои коннекторы».
+            </p>
+          </div>
           <label>
             Название
             <input
@@ -418,20 +445,23 @@ export function CapabilityCatalog({
             <input
               required
               type="url"
-              placeholder="https://your-mcp.example/mcp"
+              placeholder={preset.urlPlaceholder}
               value={url}
               onChange={(event) => setUrl(event.target.value)}
             />
           </label>
+          <small className="muted">Пример: {preset.urlPlaceholder}</small>
           <label>
-            Bearer-токен (если требуется)
+            {preset.tokenLabel}
             <input
               autoComplete="off"
               type="password"
+              placeholder="Вставьте токен или оставьте пустым"
               value={token}
               onChange={(event) => setToken(event.target.value)}
             />
           </label>
+          <small className="muted">{preset.tokenHint}</small>
           <div className="row-actions">
             <button disabled={busy} className="primary-btn" type="submit">
               {busy
