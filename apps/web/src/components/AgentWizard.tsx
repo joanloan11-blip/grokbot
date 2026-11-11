@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type {
+  Agent,
   AgentTemplate,
   McpServerPublic,
   ProviderPublic,
@@ -34,6 +35,7 @@ export function AgentWizard({
   const { t } = useI18n();
   const [step, setStep] = useState(0);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [providers, setProviders] = useState<ProviderPublic[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [servers, setServers] = useState<McpServerPublic[]>([]);
@@ -56,6 +58,8 @@ export function AgentWizard({
     storageMode(null) === 'local' ? 'local' : 'cloud',
   );
   const [error, setError] = useState('');
+  // Имя подставили с суффиксом, потому что такое уже занято.
+  const [nameAdjusted, setNameAdjusted] = useState(false);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: шаблон применяется один раз при загрузке
   useEffect(() => {
@@ -64,30 +68,65 @@ export function AgentWizard({
       api.providers(),
       api.skills(),
       api.mcp().catch(() => []),
+      api.agents().catch(() => []),
     ])
-      .then(([nextTemplates, nextProviders, nextSkills, nextServers]) => {
-        setTemplates(nextTemplates);
-        setProviders(nextProviders);
-        setSkills(nextSkills.skills);
-        setServers(nextServers);
-        const first = nextTemplates[0];
-        if (first)
-          applyTemplate(first, nextSkills.skills, nextServers, nextProviders);
-      })
+      .then(
+        ([nextTemplates, nextProviders, nextSkills, nextServers, nextAgents]) => {
+          setTemplates(nextTemplates);
+          setProviders(nextProviders);
+          setSkills(nextSkills.skills);
+          setServers(nextServers);
+          setAgents(nextAgents);
+          const first = nextTemplates[0];
+          if (first)
+            applyTemplate(
+              first,
+              nextSkills.skills,
+              nextServers,
+              nextProviders,
+              nextAgents,
+            );
+        },
+      )
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : t('error')),
       );
   }, [t]);
+
+  /** Имена, которые сервер не даст повторить: свои (менеджер) или общие (админ). */
+  function takenNames(list: Agent[]): Set<string> {
+    const relevant = restricted
+      ? list.filter((agent) => agent.ownerId)
+      : list.filter((agent) => !agent.ownerId);
+    return new Set(
+      relevant.map((agent) => agent.name.trim().toLowerCase()),
+    );
+  }
+
+  /** Свободное имя на основе шаблона: «Помощник по продажам 2», «… 3» и т. д. */
+  function freeName(base: string, taken: Set<string>): string {
+    const clean = base.trim();
+    if (!taken.has(clean.toLowerCase())) return clean;
+    for (let index = 2; index < 100; index += 1) {
+      const candidate = `${clean} ${index}`;
+      if (!taken.has(candidate.toLowerCase())) return candidate;
+    }
+    return `${clean} ${Date.now()}`;
+  }
 
   function applyTemplate(
     template: AgentTemplate,
     nextSkills = skills,
     nextServers = servers,
     nextProviders = providers,
+    nextAgents = agents,
   ) {
     setTemplateId(template.id);
     setPlugins(template.plugins ?? null);
-    setName(template.name);
+    const taken = takenNames(nextAgents);
+    const free = freeName(template.name, taken);
+    setName(free);
+    setNameAdjusted(free !== template.name.trim());
     setEmoji(template.emoji);
     setDescription(template.description);
     setSystemPrompt(template.systemPrompt);
@@ -122,8 +161,19 @@ export function AgentWizard({
     setModel(provider?.models[0] ?? '');
   }
 
+  const taken = takenNames(agents);
+  const nameTaken =
+    name.trim().length > 0 && taken.has(name.trim().toLowerCase());
+
   async function create() {
     setError('');
+    if (nameTaken) {
+      setError(
+        'Агент с таким именем уже есть — измените имя на шаге «Кто это».',
+      );
+      setStep(1);
+      return;
+    }
     try {
       const created = await api.createAgent({
         name: name.trim(),
@@ -222,10 +272,19 @@ export function AgentWizard({
               {t('agentName')}
               <input
                 value={name}
-                onChange={(event) => setName(event.target.value)}
+                onChange={(event) => {
+                  setName(event.target.value);
+                  setNameAdjusted(false);
+                }}
                 required
               />
             </label>
+            {nameTaken && (
+              <p className="fault">
+                Агент с таким именем уже есть. Добавьте к имени номер или
+                название проекта — например, «{name.trim()} 2».
+              </p>
+            )}
             <label>
               {t('agentDescription')}
               <input
@@ -347,6 +406,20 @@ export function AgentWizard({
             <p>
               <span>{emoji}</span> <strong>{name}</strong>
             </p>
+            {nameAdjusted && (
+              <p className="hint">
+                Имя подставлено с номером: агент с именем «{name.replace(
+                  / \d+$/,
+                  '',
+                )}» уже есть.
+              </p>
+            )}
+            {nameTaken && (
+              <p className="fault">
+                Такое имя уже занято — вернитесь на шаг «Кто это» и измените
+                его.
+              </p>
+            )}
             <p>{description}</p>
             <p>
               {t('agentNiche')}: {selectedNiche || t('agentNicheGeneral')}
