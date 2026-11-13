@@ -3603,3 +3603,55 @@ input[type="checkbox"]:checked::after {
   font-size: 12px;
   line-height: 1.35;
 }
+
+/* План агента (todo_write) над полем ввода. */
+.plan-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  font-size: 13px;
+}
+.plan-toggle {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.plan-panel ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+.plan-panel li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  line-height: 1.35;
+}
+.plan-panel li.done span {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+/* Кнопка отката файлов хода под ответом. */
+.undo-checkpoint {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}

@@ -27,6 +27,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { resolveInside, workspaceRoot } from './workspace';
+import { listCheckpoints, restoreCheckpoint } from './checkpoints';
 import {
   SECRET_MASK,
   type Attachment,
@@ -1742,6 +1743,71 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       },
     );
   });
+
+  // План агента (todo_write): список дел, который видит пользователь.
+  app.get('/api/agents/:id/todos', async (c) => {
+    const user = await actor(c);
+    const agent = await store.getAgent(c.req.param('id'));
+    if (!agent || !(await canUseAgent(user, agent.id))) {
+      return c.json({ error: 'Агент не найден' }, 404);
+    }
+    return c.json({ todos: await store.listTodos(user.id, agent.id) });
+  });
+
+  app.patch('/api/todos/:id', async (c) => {
+    const user = await actor(c);
+    const body = await readBody(c);
+    if (!isRecord(body) || typeof body.done !== 'boolean') {
+      throw badRequest('Ожидался { done: boolean }');
+    }
+    await store.setTodoDone(c.req.param('id'), user.id, body.done);
+    return c.json({ ok: true });
+  });
+
+  // Точки отката файлов рабочей папки для чата.
+  const conversationScope = async (
+    user: UserRecord,
+    conversation: NonNullable<Awaited<ReturnType<typeof store.getConversation>>>,
+  ): Promise<string> => {
+    if (conversation.projectId) return `project-${conversation.projectId}`;
+    if (conversation.agentId) return conversation.agentId;
+    const agents = await store.listAgentsFor(user);
+    return agents[0]?.id ?? '';
+  };
+
+  app.get('/api/conversations/:id/checkpoints', async (c) => {
+    const user = await actor(c);
+    const conversation = await store.getConversation(
+      c.req.param('id'),
+      user.id,
+    );
+    if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+    return c.json({
+      checkpoints: listCheckpoints(config.dataDir, conversation.id),
+    });
+  });
+
+  app.post(
+    '/api/conversations/:id/checkpoints/:checkpointId/restore',
+    async (c) => {
+      const user = await actor(c);
+      const conversation = await store.getConversation(
+        c.req.param('id'),
+        user.id,
+      );
+      if (!conversation) return c.json({ error: 'Чат не найден' }, 404);
+      const scope = await conversationScope(user, conversation);
+      if (!scope) return c.json({ error: 'Нет рабочей папки для отката' }, 400);
+      const result = await restoreCheckpoint({
+        dataDir: config.dataDir,
+        conversationId: conversation.id,
+        checkpointId: c.req.param('checkpointId'),
+        workspace: workspaceRoot(config.dataDir, user.id, scope),
+      });
+      if (!result) return c.json({ error: 'Точка отката не найдена' }, 404);
+      return c.json(result);
+    },
+  );
 
   app.get('/api/conversations/:id', async (c) => {
     const user = await actor(c);

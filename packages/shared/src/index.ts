@@ -555,6 +555,29 @@ export interface MessageMeta {
   costUsd: number | null;
   /** Токены посчитаны провайдером, а не оценены. */
   exact: boolean;
+  /** Точка отката рабочей папки перед этим ходом (если была создана). */
+  checkpointId?: string;
+}
+
+/** Точка отката файлов рабочей папки перед ходом агента. */
+export interface CheckpointInfo {
+  id: string;
+  createdAt: string;
+  messageId?: string;
+  bytes: number;
+  files: number;
+}
+
+export interface RestoreCheckpointResult {
+  restored: number;
+  removed: number;
+}
+
+/** Пункт плана агента (todo_write). */
+export interface TodoItem {
+  id: string;
+  text: string;
+  done: boolean;
 }
 
 export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error';

@@ -72,23 +72,52 @@ export async function runAgentLoop(
       toolCalls: turn.toolCalls,
     });
 
-    for (const call of turn.toolCalls) {
-      throwIfAborted(input.signal);
-      await input.onEvent({ type: 'tool_start', call });
-      let content: string;
+    // Независимые read-only инструменты (поиск, чтение файлов, память) запускаем
+    // параллельно — это ускоряет ход, не меняя порядок ответов в истории.
+    const safeNames = new Set(
+      input.tools.filter((tool) => tool.parallelSafe).map((tool) => tool.name),
+    );
+    const parallel =
+      turn.toolCalls.length > 1 &&
+      turn.toolCalls.every((call) => safeNames.has(call.name));
+    const runTool = async (call: ToolCall): Promise<string> => {
       try {
-        content = await input.executeTool(call);
+        return await input.executeTool(call);
       } catch (error) {
-        content = `Ошибка инструмента: ${error instanceof Error ? error.message : String(error)}`;
+        return `Ошибка инструмента: ${error instanceof Error ? error.message : String(error)}`;
       }
-      const toolMessage: ModelMessage = {
-        role: 'tool',
-        content,
-        toolCallId: call.id,
-        name: call.name,
-      };
-      history.push(toolMessage);
-      await input.onEvent({ type: 'tool_result', call, content });
+    };
+    if (parallel) {
+      for (const call of turn.toolCalls) {
+        throwIfAborted(input.signal);
+        await input.onEvent({ type: 'tool_start', call });
+      }
+      const results = await Promise.all(
+        turn.toolCalls.map((call) => runTool(call)),
+      );
+      for (const [index, call] of turn.toolCalls.entries()) {
+        const content = results[index] ?? '';
+        history.push({
+          role: 'tool',
+          content,
+          toolCallId: call.id,
+          name: call.name,
+        });
+        await input.onEvent({ type: 'tool_result', call, content });
+      }
+    } else {
+      for (const call of turn.toolCalls) {
+        throwIfAborted(input.signal);
+        await input.onEvent({ type: 'tool_start', call });
+        const content = await runTool(call);
+        history.push({
+          role: 'tool',
+          content,
+          toolCallId: call.id,
+          name: call.name,
+        });
+        await input.onEvent({ type: 'tool_result', call, content });
+      }
     }
   }
 

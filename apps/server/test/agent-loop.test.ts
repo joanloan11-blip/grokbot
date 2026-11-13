@@ -193,3 +193,64 @@ describe('runAgentLoop', () => {
     expect(messages.at(-1)?.content).toBe('recovered');
   });
 });
+
+describe('параллельные read-only инструменты', () => {
+  const readTool = (name: string): ToolDefinition => ({
+    name,
+    description: name,
+    parallelSafe: true,
+    inputSchema: { type: 'object', properties: {} },
+  });
+
+  it('выполняет независимые чтения одновременно и сохраняет порядок', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const messages = await runAgentLoop({
+      client: scripted([
+        [
+          {
+            type: 'tool_call_delta',
+            index: 0,
+            id: 'call_1',
+            name: 'read_a',
+            argumentsDelta: '{}',
+          },
+          {
+            type: 'tool_call_delta',
+            index: 1,
+            id: 'call_2',
+            name: 'read_b',
+            argumentsDelta: '{}',
+          },
+          { type: 'done', finishReason: 'tool_calls' },
+        ],
+        [
+          { type: 'text', delta: 'готово' },
+          { type: 'done', finishReason: 'stop' },
+        ],
+      ]),
+      model: 'mock',
+      messages: [{ role: 'user', content: 'прочитай' }],
+      tools: [readTool('read_a'), readTool('read_b')],
+      executeTool: async (call) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+        return `result-${call.name}`;
+      },
+      onEvent: () => undefined,
+    });
+
+    expect(maxActive).toBe(2);
+    const toolMessages = messages.filter((message) => message.role === 'tool');
+    expect(toolMessages.map((message) => message.name)).toEqual([
+      'read_a',
+      'read_b',
+    ]);
+    expect(toolMessages.map((message) => message.content)).toEqual([
+      'result-read_a',
+      'result-read_b',
+    ]);
+  });
+});

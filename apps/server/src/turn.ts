@@ -64,6 +64,7 @@ import { formatMailDigest, readMailAccount } from './mail-account';
 import { fetchRecentMessages } from './imap';
 import { CLOUD_ONLY_TOOLS, type LocalFs, localWorkspaceRuns } from './local-fs';
 import { localMemoryRuns } from './local-memory';
+import { createCheckpoint } from './checkpoints';
 import { priceForModel } from './spend';
 import { compactHistory } from './context';
 import { readCaps } from './model-caps';
@@ -119,6 +120,34 @@ export interface TurnInput {
   /** Рабочая папка — на компьютере пользователя (через браузер). */
   localFs?: LocalFs;
 }
+
+/** Инструменты, которые меняют файлы: для них нужна точка отката. */
+const MODIFY_TOOL_NAMES = new Set([
+  'workspace_write',
+  'workspace_edit',
+  'workspace_delete',
+  'shell',
+  'run_code',
+  'github_clone',
+  'github_push',
+  'server_exec',
+  'server_write',
+]);
+
+/** Инструменты только на чтение: их можно выполнять параллельно. */
+const PARALLEL_SAFE_TOOLS = new Set([
+  'workspace_read',
+  'workspace_list',
+  'workspace_glob',
+  'workspace_search',
+  'memory_read',
+  'recall',
+  'web_search',
+  'web_fetch',
+  'news_search',
+  'connector_tools',
+  'load_skill',
+]);
 
 export async function runTurn(
   deps: TurnDeps,
@@ -187,14 +216,19 @@ export async function runTurn(
     await exposeTools(deps, agent, userId, depth, conversation.id)
   )
     .map((tool) => {
+      const parallelSafe = PARALLEL_SAFE_TOOLS.has(tool.definition.name);
       const local =
         localRuns?.[tool.definition.name] ??
         localMemory?.[tool.definition.name];
-      if (!local || !input.localFs) return tool;
+      if (!local || !input.localFs)
+        return parallelSafe
+          ? { ...tool, definition: { ...tool.definition, parallelSafe } }
+          : tool;
       // Те же инструменты, но файлы — в папке на компьютере пользователя.
       return {
         definition: {
           ...tool.definition,
+          parallelSafe,
           description: `${tool.definition.description} (Папка на компьютере пользователя: «${input.localFs.folder}».)`,
         },
         run: local,
@@ -231,6 +265,29 @@ export async function runTurn(
   const toolsOff =
     (await readCaps(deps.store))[provider.id]?.[model]?.tools === false;
   const toolNames = new Set(exposed.map((tool) => tool.definition.name));
+  const workspaceScope = conversation.projectId
+    ? `project-${conversation.projectId}`
+    : agent.id;
+  // Точка отката: снимок рабочей папки до того, как агент начнёт её менять.
+  // В режиме «папка на компьютере» файлы живут у пользователя — серверную
+  // папку не снимаем, откат там не поддерживается. Агентам без инструментов
+  // записи снимок не нужен.
+  const canMutate = [...toolNames].some((name) =>
+    MODIFY_TOOL_NAMES.has(name),
+  );
+  const checkpoint =
+    input.localFs || !canMutate
+      ? null
+      : await createCheckpoint({
+          dataDir: path.dirname(deps.skills.directory),
+          conversationId: conversation.id,
+          workspace: workspaceRoot(
+            path.dirname(deps.skills.directory),
+            userId,
+            workspaceScope,
+          ),
+          messageId: userMessage.id,
+        }).catch(() => null);
   // Режим кода: агент с плагином GitHub или уже скачанный в рабочую папку репозиторий.
   const coding =
     toolNames.has('workspace_edit') &&
@@ -239,9 +296,7 @@ export async function runTurn(
         workspaceRoot(
           path.dirname(deps.skills.directory),
           userId,
-          conversation.projectId
-            ? `project-${conversation.projectId}`
-            : agent.id,
+          workspaceScope,
         ),
       ));
   const stepsSetting = Number(await deps.store.getSetting('agent_max_steps'));
@@ -267,10 +322,12 @@ export async function runTurn(
     cached: 0,
     exact: true,
   };
+  // Менял ли агент файлы: только тогда показываем кнопку отката.
+  let didMutate = false;
   const price = await priceForModel(deps.store, provider.baseUrl, model).catch(
     () => null,
   );
-  const turnMeta = (): MessageMeta => {
+  const turnMeta = (checkpointId?: string): MessageMeta => {
     const cost = costUsd(price, {
       inputTokens: totals.input,
       outputTokens: totals.output,
@@ -286,6 +343,7 @@ export async function runTurn(
       outputTokens: totals.output,
       costUsd: cost === null ? null : Math.round(cost * 1e6) / 1e6,
       exact: totals.exact,
+      checkpointId,
     };
   };
   try {
@@ -392,6 +450,7 @@ export async function runTurn(
           await emit({ type: 'reasoning', delta: event.delta });
         } else if (event.type === 'tool_start') {
           totals.tools += 1;
+          if (MODIFY_TOOL_NAMES.has(event.call.name)) didMutate = true;
           await emit({ type: 'tool_start', call: event.call });
         } else if (event.type === 'assistant') {
           pending = '';
@@ -404,7 +463,9 @@ export async function runTurn(
             content: event.content,
             toolCalls: event.toolCalls,
             reasoning: event.reasoning,
-            meta: final ? turnMeta() : undefined,
+            meta: final
+              ? turnMeta(didMutate ? checkpoint?.id : undefined)
+              : undefined,
           });
           await emit({ type: 'message', message: saved });
         } else if (event.type === 'tool_result') {

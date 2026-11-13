@@ -2,6 +2,8 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Только чтение: такие вызовы можно выполнять одновременно. */
+  parallelSafe?: boolean;
 }
 
 export interface ModelToolCall {

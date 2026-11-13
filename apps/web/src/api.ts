@@ -5,6 +5,9 @@ import type {
   DiscoverResult,
   ProviderKind,
   ChatMessage,
+  CheckpointInfo,
+  RestoreCheckpointResult,
+  TodoItem,
   UsageMeter,
   FreeCatalog,
   ClientEvent,
@@ -577,6 +580,22 @@ export const api = {
     }),
   deleteConversation: (id: string) =>
     request<{ ok: boolean }>(`/api/conversations/${id}`, { method: 'DELETE' }),
+  checkpoints: (conversationId: string) =>
+    request<{ checkpoints: CheckpointInfo[] }>(
+      `/api/conversations/${conversationId}/checkpoints`,
+    ),
+  restoreCheckpoint: (conversationId: string, checkpointId: string) =>
+    request<RestoreCheckpointResult>(
+      `/api/conversations/${conversationId}/checkpoints/${checkpointId}/restore`,
+      { method: 'POST' },
+    ),
+  todos: (agentId: string) =>
+    request<{ todos: TodoItem[] }>(`/api/agents/${agentId}/todos`),
+  setTodo: (todoId: string, done: boolean) =>
+    request<{ ok: boolean }>(`/api/todos/${todoId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ done }),
+    }),
   uploadFile: async (
     conversationId: string,
     file: File,

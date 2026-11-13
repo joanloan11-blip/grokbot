@@ -4,6 +4,7 @@ import type {
   MessageMeta,
   Conversation,
   ProviderPublic,
+  TodoItem,
   ToolCall,
 } from '@mayak/shared';
 import { adoptCompare, api, streamCompare, streamMessage } from '../api';
@@ -109,6 +110,8 @@ export function ChatPane({
   const [workLocal, setWorkLocal] = useState(
     () => storageMode(agentId) === 'local',
   );
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [planOpen, setPlanOpen] = useState(true);
   const [extraModels, setExtraModels] = useState<string[]>([]);
   const [compare, setCompare] = useState<CompareView | null>(null);
   const [adopting, setAdopting] = useState(false);
@@ -124,6 +127,20 @@ export function ChatPane({
   const box = useRef<HTMLTextAreaElement>(null);
 
   const choices = useMemo(() => flattenChoices(providers), [providers]);
+
+  const refreshTodos = async () => {
+    try {
+      const result = await api.todos(agentId);
+      setTodos(result.todos);
+    } catch {
+      // план — необязательная подсказка, ошибку не показываем
+    }
+  };
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: обновляем при смене агента
+  useEffect(() => {
+    void refreshTodos();
+  }, [agentId]);
 
   useEffect(() => {
     if (localFsSupported()) void savedFolder().then(setFolder);
@@ -459,6 +476,7 @@ export function ChatPane({
     } finally {
       setBusy(false);
       abortRef.current = null;
+      void refreshTodos();
       setCompare((current) =>
         current
           ? {
@@ -622,6 +640,7 @@ export function ChatPane({
       setStreaming('');
       setPendingTools([]);
       abortRef.current = null;
+      void refreshTodos();
       window.dispatchEvent(new Event(USAGE_EVENT));
     }
   }
@@ -656,6 +675,43 @@ export function ChatPane({
       }}
     >
       <ComposerOrbit busy={busy} />
+      {todos.length > 0 && (
+        <div className="plan-panel">
+          <button
+            type="button"
+            className="plan-toggle"
+            aria-expanded={planOpen}
+            onClick={() => setPlanOpen((value) => !value)}
+          >
+            📋 План · {todos.filter((item) => item.done).length}/{todos.length}
+            <span>{planOpen ? '▾' : '▸'}</span>
+          </button>
+          {planOpen && (
+            <ul>
+              {todos.map((item) => (
+                <li key={item.id} className={item.done ? 'done' : ''}>
+                  <input
+                    type="checkbox"
+                    checked={item.done}
+                    onChange={(event) => {
+                      const done = event.target.checked;
+                      setTodos((current) =>
+                        current.map((todo) =>
+                          todo.id === item.id ? { ...todo, done } : todo,
+                        ),
+                      );
+                      void api.setTodo(item.id, done).catch(() =>
+                        void refreshTodos(),
+                      );
+                    }}
+                  />
+                  <span>{item.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {files.length > 0 && (
         <div className="attach-list">
           {files.map((file) => (
@@ -968,6 +1024,7 @@ export function ChatPane({
                 t,
                 (text) => void send(text),
                 editHandlers,
+                conversationId,
               )}
               {(reasoning || streaming) && (
                 <article className="bubble assistant">
@@ -1093,6 +1150,7 @@ function renderMessages(
   t: ReturnType<typeof useI18n>['t'],
   onSend: (text: string) => void,
   edit: EditHandlers,
+  conversationId: string | null,
 ) {
   const nodes = [];
   for (const message of messages) {
@@ -1144,6 +1202,12 @@ function renderMessages(
         )}
         {message.content && <EditableText message={message} edit={edit} />}
         {message.meta && <MetaLine meta={message.meta} />}
+        {message.meta?.checkpointId && conversationId && (
+          <UndoCheckpoint
+            conversationId={conversationId}
+            checkpointId={message.meta.checkpointId}
+          />
+        )}
         {calls.map((call) => {
           const result = messages.find(
             (item) => item.role === 'tool' && item.toolCallId === call.id,
@@ -1405,6 +1469,60 @@ export function formatCost(usd: number): string {
   if (usd === 0) return '$0';
   if (usd < 0.01) return `$${usd.toPrecision(2)}`;
   return `$${usd.toFixed(usd < 1 ? 3 : 2)}`;
+}
+
+/** Кнопка «Отменить изменения хода»: возвращает файлы рабочей папки к точке до хода. */
+function UndoCheckpoint({
+  conversationId,
+  checkpointId,
+}: {
+  conversationId: string;
+  checkpointId: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [note, setNote] = useState('');
+  async function restore() {
+    if (busy || done) return;
+    if (
+      !window.confirm(
+        'Вернуть файлы рабочей папки к состоянию до этого хода? Изменения агента за ход будут отменены.',
+      )
+    )
+      return;
+    setBusy(true);
+    setNote('');
+    try {
+      const result = await api.restoreCheckpoint(conversationId, checkpointId);
+      setDone(true);
+      setNote(
+        `Восстановлено файлов: ${result.restored}, удалено новых: ${result.removed}`,
+      );
+    } catch (error) {
+      setNote(
+        error instanceof Error ? error.message : 'Не удалось откатить файлы',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="undo-checkpoint">
+      <button
+        type="button"
+        className="ghost slim"
+        disabled={busy || done}
+        onClick={() => void restore()}
+      >
+        {busy
+          ? 'Откатываю…'
+          : done
+            ? '↶ Изменения отменены'
+            : '↶ Отменить изменения хода'}
+      </button>
+      {note && <span className="hint">{note}</span>}
+    </div>
+  );
 }
 
 /** Подпись под ответом: модель, время, шаги, токены и цена хода. */
