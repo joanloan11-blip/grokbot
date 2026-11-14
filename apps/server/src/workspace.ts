@@ -530,3 +530,200 @@ export async function runWorkspaceShell(input: {
     });
   });
 }
+
+export type ShellStreamEvent =
+  | { type: 'chunk'; stream: 'stdout' | 'stderr'; data: string }
+  | {
+      type: 'exit';
+      code: number | null;
+      timedOut: boolean;
+      ms: number;
+      bytes: number;
+      truncated?: boolean;
+      error?: string;
+    }
+  | { type: 'error'; message: string };
+
+/**
+ * Запуск команды с потоковым выводом для интерактивного терминала.
+ * В проде идёт через runner (`POST /stream`, NDJSON); без runner — локальный
+ * bash в рабочей папке (только для разработки).
+ */
+export async function streamWorkspaceShell(input: {
+  enabled: boolean;
+  root: string;
+  command: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+  onEvent: (event: ShellStreamEvent) => void | Promise<void>;
+}): Promise<void> {
+  if (!input.enabled) {
+    await input.onEvent({
+      type: 'error',
+      message:
+        'Терминал выключен. Его включает администратор: Настройки → Общие → песочница кода.',
+    });
+    return;
+  }
+  const command = input.command.trim();
+  if (!command) {
+    await input.onEvent({ type: 'error', message: 'Пустая команда.' });
+    return;
+  }
+  if (command.length > 4000) {
+    await input.onEvent({ type: 'error', message: 'Команда слишком длинная.' });
+    return;
+  }
+  const timeoutMs = Math.min(
+    600_000,
+    Math.max(5_000, input.timeoutMs ?? 120_000),
+  );
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), timeoutMs + 20_000);
+  const signal = input.signal
+    ? AbortSignal.any([input.signal, timeout.signal])
+    : timeout.signal;
+  try {
+    const fetchImpl = input.fetchImpl ?? fetch;
+    if (runnerConfigured()) {
+      const response = await fetchImpl(
+        `${process.env.RUNNER_URL!.replace(/\/$/, '')}/stream`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-runner-token': process.env.RUNNER_TOKEN ?? '',
+          },
+          body: JSON.stringify({
+            ...runnerTarget(input.root),
+            command,
+            timeoutMs,
+          }),
+          signal,
+        },
+      );
+      if (!response.ok || !response.body) {
+        // Старый runner без /stream: выполняем обычным /run и отдаём вывод целиком.
+        if (response.status === 404 || response.status === 405) {
+          const legacy = await fetchImpl(
+            `${process.env.RUNNER_URL!.replace(/\/$/, '')}/run`,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-runner-token': process.env.RUNNER_TOKEN ?? '',
+              },
+              body: JSON.stringify({
+                ...runnerTarget(input.root),
+                command,
+                timeoutMs,
+              }),
+              signal,
+            },
+          );
+          const data = (await legacy.json().catch(() => ({}))) as {
+            output?: string;
+            code?: number | null;
+            timedOut?: boolean;
+            ms?: number;
+            bytes?: number;
+          };
+          if (legacy.ok && typeof data.output === 'string') {
+            await input.onEvent({
+              type: 'chunk',
+              stream: 'stdout',
+              data: data.output,
+            });
+            await input.onEvent({
+              type: 'exit',
+              code: data.code ?? null,
+              timedOut: Boolean(data.timedOut),
+              ms: data.ms ?? 0,
+              bytes: data.bytes ?? data.output.length,
+            });
+            return;
+          }
+        }
+        await input.onEvent({
+          type: 'error',
+          message: `Песочница недоступна: ${response.status}`,
+        });
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            await input.onEvent(JSON.parse(trimmed) as ShellStreamEvent);
+          } catch {
+            // строка не JSON — пропускаем
+          }
+        }
+      }
+      return;
+    }
+    // Локальный запасной вариант для разработки: без изоляции runner.
+    const child = spawn('bash', ['--norc', '--noprofile', '-c', command], {
+      cwd: input.root,
+      env: { ...process.env, CI: '1', NO_COLOR: '1' },
+    });
+    let bytes = 0;
+    const started = Date.now();
+    let timedOut = false;
+    const kill = () => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // уже завершился
+      }
+    };
+    input.signal?.addEventListener('abort', kill, { once: true });
+    const streamChunk = (stream: 'stdout' | 'stderr') => (chunk: Buffer) => {
+      bytes += chunk.length;
+      void input.onEvent({
+        type: 'chunk',
+        stream,
+        data: chunk.toString('utf8'),
+      });
+    };
+    child.stdout?.on('data', streamChunk('stdout'));
+    child.stderr?.on('data', streamChunk('stderr'));
+    const timerStream = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (code: number | null) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timerStream);
+        void input.onEvent({
+          type: 'exit',
+          code,
+          timedOut,
+          ms: Date.now() - started,
+          bytes,
+        });
+        resolve();
+      };
+      child.on('error', (error) => {
+        void input.onEvent({ type: 'error', message: error.message });
+        finish(null);
+      });
+      child.on('close', (code) => finish(code));
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}

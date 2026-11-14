@@ -26,7 +26,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
-import { resolveInside, workspaceRoot } from './workspace';
+import {
+  resolveInside,
+  streamWorkspaceShell,
+  workspaceRoot,
+} from './workspace';
 import { listCheckpoints, restoreCheckpoint } from './checkpoints';
 import {
   SECRET_MASK,
@@ -1808,6 +1812,69 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
       return c.json(result);
     },
   );
+
+  // Интерактивный терминал: стримит stdout/stderr команды в рабочей папке.
+  // Только администратор и менеджеры, и только если включена песочница кода.
+  app.post('/api/workspace/terminal', async (c) => {
+    const user = await actor(c);
+    if (user.client)
+      throw new HttpError(
+        403,
+        'Терминал доступен администратору и менеджерам',
+      );
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const scope = typeof body.scope === 'string' ? body.scope.trim() : '';
+    const command = typeof body.command === 'string' ? body.command : '';
+    if (!scope || !command.trim())
+      return c.json({ error: 'Нужны scope и command' }, 400);
+    if (scope.startsWith('project-')) {
+      const project = await store.getProject(scope.slice(8), user.id);
+      if (!project) return c.json({ error: 'Проект не найден' }, 404);
+    } else {
+      const agent = await store.getAgent(scope);
+      if (!agent || !(await canUseAgent(user, agent.id)))
+        return c.json({ error: 'Агент не найден' }, 404);
+    }
+    if ((await store.getSetting('code_sandbox')) !== '1')
+      return c.json(
+        {
+          error:
+            'Терминал выключен администратором: Настройки → Общие → песочница кода.',
+        },
+        400,
+      );
+    const timeoutSec =
+      typeof body.timeoutSec === 'number' ? body.timeoutSec : 600;
+    const root = workspaceRoot(config.dataDir, user.id, scope);
+    return streamSSE(c, async (stream) => {
+      const controller = new AbortController();
+      stream.onAbort(() => controller.abort());
+      const write = async (event: unknown) =>
+        stream.writeSSE({ data: JSON.stringify(event) });
+      await write({
+        type: 'start',
+        scope,
+        command,
+        startedAt: new Date().toISOString(),
+      });
+      try {
+        await streamWorkspaceShell({
+          enabled: true,
+          root,
+          command,
+          timeoutMs: Math.min(600, Math.max(5, timeoutSec)) * 1000,
+          signal: controller.signal,
+          onEvent: (event) => write(event),
+        });
+      } catch (error) {
+        await write({
+          type: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  });
 
   app.get('/api/conversations/:id', async (c) => {
     const user = await actor(c);

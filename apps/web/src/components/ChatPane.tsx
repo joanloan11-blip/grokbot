@@ -112,6 +112,26 @@ export function ChatPane({
   );
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [planOpen, setPlanOpen] = useState(true);
+  // Терминал: команды пользователя в рабочей папке агента с живым выводом.
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalCommand, setTerminalCommand] = useState('');
+  const [terminalOutput, setTerminalOutput] = useState('');
+  const [terminalRunning, setTerminalRunning] = useState(false);
+  const [terminalHistory, setTerminalHistory] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(
+        localStorage.getItem('qastom-terminal-history') ?? '[]',
+      );
+      return Array.isArray(raw)
+        ? raw.filter((item): item is string => typeof item === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const terminalAbort = useRef<AbortController | null>(null);
+  const terminalOut = useRef<HTMLPreElement>(null);
   const [extraModels, setExtraModels] = useState<string[]>([]);
   const [compare, setCompare] = useState<CompareView | null>(null);
   const [adopting, setAdopting] = useState(false);
@@ -141,6 +161,104 @@ export function ChatPane({
   useEffect(() => {
     void refreshTodos();
   }, [agentId]);
+
+  useEffect(() => {
+    if (terminalOut.current)
+      terminalOut.current.scrollTop = terminalOut.current.scrollHeight;
+  }, [terminalOutput]);
+
+  useEffect(
+    () => () => {
+      terminalAbort.current?.abort();
+    },
+    [],
+  );
+
+  const appendTerminal = (text: string) =>
+    setTerminalOutput((current) => (current + text).slice(-200_000));
+
+  async function runTerminal() {
+    const command = terminalCommand.trim();
+    if (!command || terminalRunning) return;
+    const scope = projectId ? `project-${projectId}` : agentId;
+    const controller = new AbortController();
+    terminalAbort.current = controller;
+    setTerminalRunning(true);
+    appendTerminal(`$ ${command}\n`);
+    setTerminalCommand('');
+    setTerminalHistory((current) => {
+      const next = [...current.filter((item) => item !== command), command].slice(
+        -50,
+      );
+      try {
+        localStorage.setItem(
+          'qastom-terminal-history',
+          JSON.stringify(next),
+        );
+      } catch {
+        // история просто не запомнится
+      }
+      return next;
+    });
+    setHistoryIndex(-1);
+    try {
+      const response = await fetch('/api/workspace/terminal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ scope, command, timeoutSec: 600 }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        appendTerminal(`Ошибка: ${data.error ?? response.status}\n`);
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) {
+        appendTerminal('Пустой поток вывода\n');
+        return;
+      }
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (event.type === 'chunk' && typeof event.data === 'string')
+            appendTerminal(event.data);
+          else if (event.type === 'error' && typeof event.message === 'string')
+            appendTerminal(`\n${event.message}\n`);
+          else if (event.type === 'exit')
+            appendTerminal(
+              `\n[код выхода ${String(event.code ?? '—')}${
+                event.timedOut ? ', таймаут' : ''
+              }, ${String(event.ms ?? 0)} мс]\n`,
+            );
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError'))
+        appendTerminal(
+          `Ошибка: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+    } finally {
+      setTerminalRunning(false);
+      terminalAbort.current = null;
+    }
+  }
 
   useEffect(() => {
     if (localFsSupported()) void savedFolder().then(setFolder);
@@ -675,6 +793,96 @@ export function ChatPane({
       }}
     >
       <ComposerOrbit busy={busy} />
+      {terminalOpen && (
+        <section className="terminal-panel">
+          <header>
+            <strong>🖥 Терминал</strong>
+            <span className="muted">
+              {projectId ? 'папка проекта' : 'папка агента'}
+            </span>
+            <button
+              type="button"
+              className="ghost slim"
+              onClick={() => setTerminalOutput('')}
+            >
+              Очистить
+            </button>
+            <button
+              type="button"
+              className="icon-btn quiet tiny"
+              aria-label="Закрыть терминал"
+              onClick={() => {
+                terminalAbort.current?.abort();
+                setTerminalOpen(false);
+              }}
+            >
+              <IconClose />
+            </button>
+          </header>
+          <pre ref={terminalOut} className="terminal-output">
+            {terminalOutput || 'Команды выполняются в рабочей папке. Например: npm test, git status, ls -la'}
+          </pre>
+          <div className="terminal-row">
+            <span>$</span>
+            <input
+              value={terminalCommand}
+              placeholder="npm test"
+              disabled={terminalRunning}
+              onChange={(event) => setTerminalCommand(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void runTerminal();
+                  return;
+                }
+                if (event.key === 'ArrowUp' && terminalHistory.length > 0) {
+                  event.preventDefault();
+                  const next =
+                    historyIndex <= 0
+                      ? 0
+                      : Math.max(0, historyIndex - 1);
+                  setHistoryIndex(next);
+                  setTerminalCommand(terminalHistory[terminalHistory.length - 1 - next] ?? '');
+                }
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  if (historyIndex <= 0) {
+                    setHistoryIndex(-1);
+                    setTerminalCommand('');
+                  } else {
+                    const next = historyIndex - 1;
+                    setHistoryIndex(next);
+                    setTerminalCommand(
+                      terminalHistory[terminalHistory.length - 1 - next] ?? '',
+                    );
+                  }
+                }
+              }}
+            />
+            {terminalRunning ? (
+              <button
+                type="button"
+                className="ghost slim"
+                onClick={() => terminalAbort.current?.abort()}
+              >
+                ■ Стоп
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="primary-btn slim"
+                onClick={() => void runTerminal()}
+              >
+                Запустить
+              </button>
+            )}
+          </div>
+          <p className="hint">
+            Команда идёт в песочнице (свой пользователь, без прямого интернета).
+            «Стоп» прерывает выполнение. Ctrl+C в поле команды не работает.
+          </p>
+        </section>
+      )}
       {todos.length > 0 && (
         <div className="plan-panel">
           <button
@@ -876,6 +1084,17 @@ export function ChatPane({
               </button>
             )}
           </span>
+        )}
+        {!(workLocal && folder) && (
+          <button
+            type="button"
+            className={terminalOpen ? 'compare-chip on' : 'compare-chip'}
+            title="Терминал: выполнить команду в рабочей папке агента и видеть вывод"
+            aria-pressed={terminalOpen}
+            onClick={() => setTerminalOpen((value) => !value)}
+          >
+            🖥 Терминал
+          </button>
         )}
         <span className="composer-spacer" />
         <button
