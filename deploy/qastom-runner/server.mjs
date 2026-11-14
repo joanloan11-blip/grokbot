@@ -234,7 +234,7 @@ function streamRun({ user, scope, command, timeoutMs, onEvent, onChild }) {
 // Процесс запускается от uid песочницы и НЕ убивается после ответа; остановка —
 // явная (POST /serve/:id/stop), по таймауту жизни или при перезапуске контейнера.
 const serves = new Map();
-const MAX_SERVES = Number(process.env.RUNNER_MAX_SERVES) || 6;
+const MAX_SERVES = Number(process.env.RUNNER_MAX_SERVES) || 4;
 const SERVE_MAX_MS = Number(process.env.RUNNER_SERVE_MAX_MS) || 2 * 60 * 60 * 1000;
 let serveSeq = 0;
 const SERVE_ID = () => `s${Date.now().toString(36)}${(serveSeq += 1).toString(36)}`;

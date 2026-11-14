@@ -163,6 +163,7 @@ export async function proxyPreview(input: {
     headers,
     body: input.body,
     redirect: 'manual',
+    signal: AbortSignal.timeout(120_000),
   });
   const outgoing = new Headers();
   for (const name of [
