@@ -280,7 +280,8 @@ const server = http.createServer((req, res) => {
           if (child) process.kill(-child.pid, 'SIGKILL');
         } catch {}
       };
-      req.on('close', kill);
+      // req 'close' срабатывает сразу после чтения тела — это не обрыв клиента.
+      // Отменяем команду только когда закрылся ответ (клиент ушёл).
       res.on('close', kill);
       try {
         await streamRun({
