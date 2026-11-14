@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   MessageMeta,
   Conversation,
+  PreviewServeInfo,
   ProviderPublic,
   TodoItem,
   ToolCall,
@@ -120,6 +121,15 @@ export function ChatPane({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewPath, setPreviewPath] = useState('/');
   const [previewKey, setPreviewKey] = useState(0);
+  const [previewMode, setPreviewMode] = useState<'static' | 'live'>('static');
+  const [serve, setServe] = useState<PreviewServeInfo | null>(null);
+  const [serveBusy, setServeBusy] = useState(false);
+  const [serveError, setServeError] = useState('');
+  const [serveLogs, setServeLogs] = useState('');
+  const [serveCommand, setServeCommand] = useState(
+    'npm run dev -- --host 0.0.0.0 --port 5173 --base {base}',
+  );
+  const [servePort, setServePort] = useState(5173);
   const [terminalHistory, setTerminalHistory] = useState<string[]>(() => {
     try {
       const raw = JSON.parse(
@@ -185,6 +195,79 @@ export function ChatPane({
     .split('/')
     .map((part) => encodeURIComponent(part))
     .join('/')}`;
+  const liveSrc = serve ? `/api/preview/live/${serve.id}/` : '';
+  const activePreviewSrc =
+    previewMode === 'live' && serve?.status === 'running'
+      ? liveSrc
+      : previewSrc;
+
+  // При открытии превью подтягиваем уже запущенный dev-сервер этого scope.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: реагируем на открытие/смену агента
+  useEffect(() => {
+    if (!previewOpen) return;
+    let cancelled = false;
+    void api
+      .previewServes(previewScope)
+      .then((result) => {
+        if (cancelled) return;
+        const running = result.serves.find(
+          (item) => item.status === 'running' || item.status === 'starting',
+        );
+        if (running) {
+          setServe(running);
+          setPreviewMode('live');
+          setServePort(running.port);
+          setServeCommand(running.command);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [previewOpen, previewScope]);
+
+  async function startServe() {
+    if (serveBusy) return;
+    setServeBusy(true);
+    setServeError('');
+    setServeLogs('');
+    try {
+      const started = await api.startPreviewServe({
+        scope: previewScope,
+        command: serveCommand.trim(),
+        port: servePort,
+      });
+      setServe(started);
+      setPreviewMode('live');
+      if (started.status !== 'running') {
+        setServeError(started.error || 'Dev-сервер не запустился');
+        const info = await api.previewServe(started.id).catch(() => null);
+        if (info?.logs) setServeLogs(info.logs);
+      }
+    } catch (error) {
+      setServeError(
+        error instanceof Error ? error.message : 'Не удалось запустить',
+      );
+    } finally {
+      setServeBusy(false);
+    }
+  }
+
+  async function stopServe() {
+    if (!serve || serveBusy) return;
+    setServeBusy(true);
+    setServeError('');
+    try {
+      await api.stopPreviewServe(serve.id);
+      setServe({ ...serve, status: 'stopped' });
+    } catch (error) {
+      setServeError(
+        error instanceof Error ? error.message : 'Не удалось остановить',
+      );
+    } finally {
+      setServeBusy(false);
+    }
+  }
 
   async function runTerminal() {
     const command = terminalCommand.trim();
@@ -1340,33 +1423,63 @@ export function ChatPane({
           <div className="preview-window">
             <header>
               <strong>👁 Превью</strong>
-              <input
-                value={previewPath}
-                placeholder="/"
-                aria-label="Путь в рабочей папке"
-                onChange={(event) => setPreviewPath(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    setPreviewKey((value) => value + 1);
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="ghost slim"
-                onClick={() => setPreviewKey((value) => value + 1)}
-              >
-                Обновить
-              </button>
-              <a
-                className="ghost slim"
-                href={previewSrc}
-                target="_blank"
-                rel="noreferrer"
-              >
-                В новой вкладке
-              </a>
+              <span className="preview-tabs">
+                <button
+                  type="button"
+                  className={previewMode === 'static' ? 'on' : ''}
+                  onClick={() => setPreviewMode('static')}
+                >
+                  Статика
+                </button>
+                <button
+                  type="button"
+                  className={previewMode === 'live' ? 'on' : ''}
+                  onClick={() => setPreviewMode('live')}
+                >
+                  Dev-сервер
+                </button>
+              </span>
+              {previewMode === 'static' ? (
+                <input
+                  value={previewPath}
+                  placeholder="/"
+                  aria-label="Путь в рабочей папке"
+                  onChange={(event) => setPreviewPath(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      setPreviewKey((value) => value + 1);
+                    }
+                  }}
+                />
+              ) : (
+                <span className="muted">
+                  {serve
+                    ? serve.status === 'running'
+                      ? `работает на порту ${serve.port}`
+                      : `${serve.status === 'starting' ? 'запускается' : serve.status === 'error' ? 'ошибка' : 'остановлен'}`
+                    : 'не запущен'}
+                </span>
+              )}
+              {previewMode === 'static' && (
+                <button
+                  type="button"
+                  className="ghost slim"
+                  onClick={() => setPreviewKey((value) => value + 1)}
+                >
+                  Обновить
+                </button>
+              )}
+              {activePreviewSrc && (
+                <a
+                  className="ghost slim"
+                  href={activePreviewSrc}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  В новой вкладке
+                </a>
+              )}
               <button
                 type="button"
                 className="icon-btn quiet tiny"
@@ -1376,16 +1489,83 @@ export function ChatPane({
                 <IconClose />
               </button>
             </header>
-            <iframe
-              key={previewKey}
-              title="Превью"
-              src={previewSrc}
-              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
-            />
+            {previewMode === 'static' ? (
+              <iframe
+                key={previewKey}
+                title="Превью"
+                src={previewSrc}
+                sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+              />
+            ) : serve?.status === 'running' ? (
+              <iframe
+                key={serve.id}
+                title="Dev-сервер превью"
+                src={liveSrc}
+                sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+              />
+            ) : (
+              <div className="preview-live-form">
+                <p className="hint">
+                  Запустите dev-сервер в рабочей папке. Команда должна слушать
+                  <code> 0.0.0.0</code> и порт. Для Vite подставьте{' '}
+                  <code>{'{base}'}</code> — Маяк заменит его на путь превью,
+                  чтобы ассеты и HMR работали.
+                </p>
+                <label>
+                  Команда
+                  <input
+                    value={serveCommand}
+                    onChange={(event) => setServeCommand(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Порт
+                  <input
+                    type="number"
+                    min={1024}
+                    max={65535}
+                    value={servePort}
+                    onChange={(event) =>
+                      setServePort(Number(event.target.value) || 0)
+                    }
+                  />
+                </label>
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="primary-btn slim"
+                    disabled={serveBusy}
+                    onClick={() => void startServe()}
+                  >
+                    {serveBusy ? 'Запускаю…' : 'Запустить dev-сервер'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {previewMode === 'live' && serve && (
+              <div className="preview-live-actions">
+                <span className="muted">{serve.command}</span>
+                <button
+                  type="button"
+                  className="ghost slim"
+                  disabled={serveBusy}
+                  onClick={() => void stopServe()}
+                >
+                  Остановить
+                </button>
+              </div>
+            )}
+            {serveError && <p className="error-line">{serveError}</p>}
+            {serveLogs && (
+              <details className="preview-live-logs">
+                <summary>Логи dev-сервера</summary>
+                <pre>{serveLogs}</pre>
+              </details>
+            )}
             <p className="hint">
-              Превью из рабочей папки агента. Для сайта нужен index.html в корне
-              или собранный проект (например, npm run build). Скрипты превью
-              изолированы от аккаунта и не видят cookie Маяка.
+              {previewMode === 'static'
+                ? 'Статика из рабочей папки: index.html в корне или собранный проект (dist/index.html). Скрипты изолированы от аккаунта.'
+                : 'Живой dev-сервер работает в песочнице до 2 часов или до кнопки «Остановить». Если HMR не обновился — перезагрузите превью.'}
             </p>
           </div>
         </div>

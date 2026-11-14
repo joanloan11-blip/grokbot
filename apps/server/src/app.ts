@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isPublicSkill } from '@mayak/shared';
 import { canUseConnector, isBusinessConnector } from './connector-access';
 import { readBudgets, saveBudgets, usageMeter } from './meter';
@@ -32,6 +33,13 @@ import {
   workspaceRoot,
 } from './workspace';
 import { listCheckpoints, restoreCheckpoint } from './checkpoints';
+import {
+  getRunnerServe,
+  listRunnerServes,
+  proxyPreview,
+  startPreviewServe,
+  stopPreviewServe,
+} from './preview-serve';
 import {
   SECRET_MASK,
   type Attachment,
@@ -1905,6 +1913,191 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     }
     return c.text('Файл не найден', 404);
   };
+  // --- Живые dev-серверы превью (npm run dev и т. п.) ---
+  const previewAccessError = async (user: UserRecord): Promise<string> => {
+    if (user.client) {
+      const access = (await store.getSetting('terminal_access')) || 'all';
+      if (access !== 'all') return 'Превью выключено для клиентов';
+    }
+    if ((await store.getSetting('code_sandbox')) !== '1')
+      return 'Превью выключено: администратор не включил песочницу кода';
+    return '';
+  };
+  const previewScopeOk = async (
+    user: UserRecord,
+    scope: string,
+  ): Promise<boolean> => {
+    if (!scope) return false;
+    if (scope.startsWith('project-'))
+      return Boolean(await store.getProject(scope.slice(8), user.id));
+    const agent = await store.getAgent(scope);
+    return Boolean(agent && (await canUseAgent(user, agent.id)));
+  };
+  const refreshServeRows = async (
+    rows: Awaited<ReturnType<typeof store.listPreviewServes>>,
+  ) => {
+    try {
+      const runnerServes = await listRunnerServes();
+      const byId = new Map(runnerServes.map((item) => [item.id, item]));
+      for (const row of rows) {
+        const live = byId.get(row.id);
+        const status = !live
+          ? 'stopped'
+          : live.status === 'running' ||
+              live.status === 'starting' ||
+              live.status === 'error'
+            ? live.status
+            : 'stopped';
+        if (status !== row.status) {
+          await store.updatePreviewServeStatus(
+            row.id,
+            status,
+            status === 'stopped' ? 'dev-сервер остановлен' : '',
+          );
+          row.status = status;
+          if (status === 'stopped') row.error = 'dev-сервер остановлен';
+        }
+      }
+    } catch {
+      // runner недоступен — показываем сохранённые статусы
+    }
+  };
+
+  app.post('/api/preview/serve', async (c) => {
+    const user = await actor(c);
+    const accessError = await previewAccessError(user);
+    if (accessError) throw new HttpError(403, accessError);
+    const body = await readBody(c);
+    if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');
+    const scope = typeof body.scope === 'string' ? body.scope.trim() : '';
+    const command =
+      typeof body.command === 'string' ? body.command.trim() : '';
+    const port =
+      typeof body.port === 'number'
+        ? body.port
+        : Number.parseInt(String(body.port ?? ''), 10);
+    if (!(await previewScopeOk(user, scope)))
+      return c.json({ error: 'Агент или проект не найден' }, 404);
+    if (!command || command.length > 1_000)
+      return c.json({ error: 'Нужна команда до 1000 символов' }, 400);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535)
+      return c.json({ error: 'Порт должен быть 1024..65535' }, 400);
+    const id = randomUUID().replace(/-/g, '').slice(0, 16);
+    const prepared = command
+      .replaceAll('{base}', `/api/preview/live/${id}/`)
+      .replaceAll('{port}', String(port));
+    let started;
+    try {
+      started = await startPreviewServe({
+        id,
+        userId: user.id,
+        scope,
+        command: prepared,
+        port,
+      });
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error ? error.message : 'Не удалось запустить',
+        },
+        502,
+      );
+    }
+    await store.insertPreviewServe({
+      id: started.id,
+      userId: user.id,
+      scope,
+      command,
+      port,
+      status: started.status,
+      error: started.error,
+    });
+    return c.json(started, 201);
+  });
+
+  app.get('/api/preview/serve', async (c) => {
+    const user = await actor(c);
+    const scope = c.req.query('scope') ?? '';
+    if (scope && !(await previewScopeOk(user, scope)))
+      return c.json({ error: 'Агент или проект не найден' }, 404);
+    const rows = await store.listPreviewServes(user.id, scope || undefined);
+    await refreshServeRows(rows);
+    return c.json({ serves: rows });
+  });
+
+  app.post('/api/preview/serve/:id/stop', async (c) => {
+    const user = await actor(c);
+    const row = await store.getPreviewServe(c.req.param('id'));
+    if (!row || row.userId !== user.id)
+      return c.json({ error: 'Dev-сервер не найден' }, 404);
+    try {
+      await stopPreviewServe(row.id);
+    } catch {
+      // runner мог уже остановить процесс — всё равно помечаем
+    }
+    await store.updatePreviewServeStatus(row.id, 'stopped', 'остановлен');
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/preview/serve/:id', async (c) => {
+    const user = await actor(c);
+    const row = await store.getPreviewServe(c.req.param('id'));
+    if (!row || row.userId !== user.id)
+      return c.json({ error: 'Dev-сервер не найден' }, 404);
+    const live = await getRunnerServe(row.id);
+    return c.json({ serve: live ?? null, logs: live?.logs ?? '' });
+  });
+
+  const liveProxy = async (c: Context) => {
+    const user = await actor(c);
+    const id = c.req.param('id') ?? '';
+    const row = await store.getPreviewServe(id);
+    if (!row || row.userId !== user.id)
+      return c.json({ error: 'Dev-сервер не найден' }, 404);
+    const live = await getRunnerServe(id);
+    if (!live || live.status !== 'running')
+      return c.json(
+        {
+          error: live?.error || row.error || 'Dev-сервер не запущен',
+          logs: live?.logs ?? '',
+        },
+        409,
+      );
+    const prefix = `/api/preview/live/${id}`;
+    let path = c.req.path.slice(prefix.length) || '/';
+    if (!path.startsWith('/')) path = `/${path}`;
+    // Если dev-сервер запущен с base = наш префикс (Vite), он ожидает путь
+    // вместе с префиксом; иначе проксируем путь от корня.
+    const forwardPath = row.command.includes(prefix) ? c.req.path : path;
+    const search = new URL(c.req.url).search;
+    const hasBody = c.req.method !== 'GET' && c.req.method !== 'HEAD';
+    let body: ArrayBuffer | undefined;
+    if (hasBody) body = await c.req.arrayBuffer();
+    try {
+      return await proxyPreview({
+        port: live.port,
+        path: forwardPath,
+        search,
+        method: c.req.method,
+        headers: c.req.raw.headers,
+        body,
+        livePrefix: prefix,
+      });
+    } catch (error) {
+      return c.json(
+        {
+          error: `Dev-сервер не отвечает: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        502,
+      );
+    }
+  };
+  app.all('/api/preview/live/:id', liveProxy);
+  app.all('/api/preview/live/:id/*', liveProxy);
+
   app.get('/api/preview/:scope', previewHandler);
   app.get('/api/preview/:scope/*', previewHandler);
 

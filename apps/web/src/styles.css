@@ -3767,3 +3767,80 @@ input[type="checkbox"]:checked::after {
   font-size: 11px;
   border-top: 1px solid var(--line);
 }
+
+/* Вкладки превью: статика и живой dev-сервер. */
+.preview-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.preview-tabs button {
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.preview-tabs button.on {
+  background: var(--bg-2);
+  color: var(--text);
+}
+.preview-live-form {
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+}
+.preview-live-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.preview-live-form input {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+}
+.preview-live-form code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+.preview-live-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.preview-live-actions .muted {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-live-logs {
+  padding: 0 12px 8px;
+}
+.preview-live-logs pre {
+  max-height: 140px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  font-size: 11px;
+}
+.preview-window .error-line {
+  margin: 0;
+  padding: 6px 12px;
+}

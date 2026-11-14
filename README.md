@@ -96,7 +96,10 @@ xattr -dr com.apple.quarantine /Applications/Mayak.app
 - **Превью статики.** `GET /api/preview/:scope/*` отдаёт файлы рабочей папки агента/проекта
   (index.html, ассеты, собранный `dist/`) с `Content-Security-Policy: sandbox` без
   `allow-same-origin` — скрипты превью не видят cookie и API. UI: кнопка «👁 Превью» и iframe
-  в чате. Живой dev-сервер (HMR/прокси портов) — следующий шаг.
+  в чате. Живой dev-сервер: `POST /api/preview/serve` (runner `POST /serve`), список/остановка,
+  HTTP-прокси `ALL /api/preview/live/:id/*`, WebSocket-upgrade для HMR (`index.ts`), команда
+  может содержать `{base}`/`{port}` — сервер подставит префикс и порт. Процессы живут в runner
+  до 2 часов, один запущенный сервер на пользователя, лимит 6 на контейнер.
 - **План агента.** `todo_write` пишет список дел в таблицу `todos`; в чате над вводом показывается
   панель «📋 План» с прогрессом и чекбоксами (`GET /api/agents/:id/todos`,
   `PATCH /api/todos/:id`).

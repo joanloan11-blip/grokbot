@@ -35,6 +35,7 @@ import type {
   McpServerInput,
   McpServerPublic,
   McpServersFile,
+  PreviewServeInfo,
   Project,
   ProjectInput,
   ProviderInput,
@@ -603,6 +604,27 @@ export const api = {
     request<RestoreCheckpointResult>(
       `/api/conversations/${conversationId}/checkpoints/${checkpointId}/restore`,
       { method: 'POST' },
+    ),
+  previewServes: (scope: string) =>
+    request<{ serves: PreviewServeInfo[] }>(
+      `/api/preview/serve?scope=${encodeURIComponent(scope)}`,
+    ),
+  startPreviewServe: (input: {
+    scope: string;
+    command: string;
+    port: number;
+  }) =>
+    request<PreviewServeInfo>('/api/preview/serve', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  stopPreviewServe: (id: string) =>
+    request<{ ok: boolean }>(`/api/preview/serve/${id}/stop`, {
+      method: 'POST',
+    }),
+  previewServe: (id: string) =>
+    request<{ serve: PreviewServeInfo | null; logs: string }>(
+      `/api/preview/serve/${id}`,
     ),
   todos: (agentId: string) =>
     request<{ todos: TodoItem[] }>(`/api/agents/${agentId}/todos`),

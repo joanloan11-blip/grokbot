@@ -582,6 +582,17 @@ export class Store {
         text_content TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS preview_serves (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        command TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -2372,6 +2383,97 @@ export class Store {
     }));
   }
 
+  async insertPreviewServe(input: {
+    id: string;
+    userId: string;
+    scope: string;
+    command: string;
+    port: number;
+    status: 'starting' | 'running' | 'stopped' | 'error';
+    error?: string;
+  }): Promise<void> {
+    await this.sql.run(
+      `INSERT INTO preview_serves (id, user_id, scope, command, port, status, error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.userId,
+        input.scope,
+        input.command,
+        input.port,
+        input.status,
+        input.error ?? '',
+        nowIso(),
+        nowIso(),
+      ],
+    );
+  }
+
+  async listPreviewServes(
+    userId: string,
+    scope?: string,
+  ): Promise<
+    {
+      id: string;
+      scope: string;
+      command: string;
+      port: number;
+      status: 'starting' | 'running' | 'stopped' | 'error';
+      error?: string;
+      createdAt: string;
+    }[]
+  > {
+    const rows = (
+      scope
+        ? await this.sql.all<PreviewServeSql>(
+            'SELECT * FROM preview_serves WHERE user_id = ? AND scope = ? ORDER BY created_at DESC',
+            [userId, scope],
+          )
+        : await this.sql.all<PreviewServeSql>(
+            'SELECT * FROM preview_serves WHERE user_id = ? ORDER BY created_at DESC',
+            [userId],
+          )
+    ) as unknown as PreviewServeSql[];
+    return rows.map(mapPreviewServe);
+  }
+
+  async getPreviewServe(id: string): Promise<
+    | {
+        id: string;
+        userId: string;
+        scope: string;
+        command: string;
+        port: number;
+        status: 'starting' | 'running' | 'stopped' | 'error';
+        error?: string;
+        createdAt: string;
+      }
+    | undefined
+  > {
+    const row = (await this.sql.get<PreviewServeSql>(
+      'SELECT * FROM preview_serves WHERE id = ?',
+      [id],
+    )) as unknown as PreviewServeSql | undefined;
+    return row
+      ? { ...mapPreviewServe(row), userId: row.user_id }
+      : undefined;
+  }
+
+  async updatePreviewServeStatus(
+    id: string,
+    status: 'starting' | 'running' | 'stopped' | 'error',
+    error = '',
+  ): Promise<void> {
+    await this.sql.run(
+      'UPDATE preview_serves SET status = ?, error = ?, updated_at = ? WHERE id = ?',
+      [status, error.slice(0, 2_000), nowIso(), id],
+    );
+  }
+
+  async deletePreviewServe(id: string): Promise<void> {
+    await this.sql.run('DELETE FROM preview_serves WHERE id = ?', [id]);
+  }
+
   async addTodo(
     userId: string,
     agentId: string,
@@ -2836,6 +2938,44 @@ function mapMcp(row: McpSql): McpRow {
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     ownerUserId: row.owner_user_id ?? null,
+  };
+}
+
+interface PreviewServeSql {
+  id: string;
+  user_id: string;
+  scope: string;
+  command: string;
+  port: number;
+  status: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapPreviewServe(row: PreviewServeSql): {
+  id: string;
+  scope: string;
+  command: string;
+  port: number;
+  status: 'starting' | 'running' | 'stopped' | 'error';
+  error?: string;
+  createdAt: string;
+} {
+  const status =
+    row.status === 'running' ||
+    row.status === 'stopped' ||
+    row.status === 'error'
+      ? row.status
+      : 'starting';
+  return {
+    id: row.id,
+    scope: row.scope,
+    command: row.command,
+    port: row.port,
+    status,
+    error: row.error || undefined,
+    createdAt: row.created_at,
   };
 }
 

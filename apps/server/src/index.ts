@@ -1,10 +1,13 @@
+import net from 'node:net';
 import path from 'node:path';
-import { serve } from '@hono/node-server';
+import { createAdaptorServer } from '@hono/node-server';
 import { createApp } from './app';
 import { loadConfig, repoRoot } from './config';
 import { loadDotEnv } from './env';
 import { notifyTelegram, startTelegram } from './telegram';
 import { notifyUserTelegram, startTelegramBots } from './telegram-bots';
+import { readSession } from './auth';
+import { getRunnerServe, previewRunnerHost } from './preview-serve';
 
 loadDotEnv(path.join(repoRoot, '.env'));
 
@@ -160,12 +163,78 @@ const renewTimer = setInterval(
 );
 renewTimer.unref();
 
-const server = serve(
-  { fetch: handle.app.fetch, hostname: config.host, port: config.port },
-  (info) => {
-    console.log(`QASTOM AGENT слушает http://${info.address}:${info.port}`);
-  },
-);
+const server = createAdaptorServer({
+  fetch: handle.app.fetch,
+}) as import('node:http').Server;
+
+/**
+ * WebSocket-прокси для HMR живого превью: `/api/preview/live/<id>/...`.
+ * Обычный HTTP уже проксируется через Hono; здесь — upgrade-запросы Vite и др.
+ * Авторизация по cookie сессии, cookie в dev-сервер не передаём.
+ */
+async function handlePreviewUpgrade(
+  req: import('node:http').IncomingMessage,
+  socket: import('node:net').Socket,
+  head: Buffer,
+): Promise<void> {
+  const destroy = (): void => {
+    socket.destroy();
+  };
+  try {
+    const url = req.url ?? '';
+    const match = url.match(/^\/api\/preview\/live\/([a-z0-9]+)(\/.*)?$/);
+    if (!match) return destroy();
+    const id = match[1] as string;
+    const cookie = req.headers.cookie ?? '';
+    const token = cookie
+      .split(';')
+      .map((item) => item.trim())
+      .find((item) => item.startsWith('mayak_session='))
+      ?.slice('mayak_session='.length);
+    const userId = token ? readSession(token, config.jwtSecret) : undefined;
+    if (!userId) return destroy();
+    const user = await handle.runtime.store.getUser(userId);
+    if (!user || user.status === 'disabled') return destroy();
+    const row = await handle.runtime.store.getPreviewServe(id);
+    if (!row || row.userId !== user.id) return destroy();
+    const live = await getRunnerServe(id);
+    if (!live || live.status !== 'running') return destroy();
+
+    const upstream = net.connect(live.port, previewRunnerHost());
+    upstream.on('connect', () => {
+      const headers = { ...req.headers };
+      delete headers.cookie;
+      delete headers.authorization;
+      upstream.write(
+        `${req.method ?? 'GET'} ${url} HTTP/${req.httpVersion}\r\n`,
+      );
+      for (const [name, value] of Object.entries(headers)) {
+        if (value === undefined) continue;
+        if (Array.isArray(value))
+          for (const item of value) upstream.write(`${name}: ${item}\r\n`);
+        else upstream.write(`${name}: ${value}\r\n`);
+      }
+      upstream.write('\r\n');
+      if (head?.length) upstream.write(head);
+      socket.pipe(upstream);
+      upstream.pipe(socket);
+    });
+    upstream.on('error', destroy);
+    socket.on('error', () => upstream.destroy());
+    socket.on('close', () => upstream.destroy());
+  } catch {
+    destroy();
+  }
+}
+
+server.on('upgrade', (req, socket, head) => {
+  void handlePreviewUpgrade(req, socket as import('node:net').Socket, head);
+});
+server.listen(config.port, config.host, () => {
+  console.log(
+    `QASTOM AGENT слушает http://${config.host === '0.0.0.0' ? '0.0.0.0' : config.host}:${config.port}`,
+  );
+});
 
 async function shutdown(): Promise<void> {
   stopScheduler();

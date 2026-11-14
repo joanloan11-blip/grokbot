@@ -573,6 +573,17 @@ export interface RestoreCheckpointResult {
   removed: number;
 }
 
+/** Живой dev-сервер для превью (preview serve). */
+export interface PreviewServeInfo {
+  id: string;
+  scope: string;
+  command: string;
+  port: number;
+  status: 'starting' | 'running' | 'stopped' | 'error';
+  error?: string;
+  createdAt: string;
+}
+
 /** Пункт плана агента (todo_write). */
 export interface TodoItem {
   id: string;
