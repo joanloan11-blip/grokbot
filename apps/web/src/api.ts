@@ -105,6 +105,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ on }),
     }),
+  searchSettings: () =>
+    request<{
+      sandbox: boolean;
+      terminalAccess: 'all' | 'staff';
+      approvals: boolean;
+      approvalAuto: string;
+    }>('/api/admin/search'),
+  saveSearchSettings: (patch: {
+    sandbox?: boolean;
+    terminalAccess?: 'all' | 'staff';
+  }) =>
+    request<{ ok: boolean }>('/api/admin/search', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
   billingSettings: () => request<BillingSettings>('/api/admin/billing'),
   saveBillingSettings: (
     body: Partial<BillingSettings> & { secretKey?: string },

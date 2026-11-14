@@ -249,6 +249,8 @@ export function registerExtraRoutes(
       url: (await deps.store.getSetting('search_url')) || '',
       hasKey: Boolean(await deps.store.getSetting('search_key')),
       sandbox: (await deps.store.getSetting('code_sandbox')) === '1',
+      terminalAccess:
+        (await deps.store.getSetting('terminal_access')) || 'all',
       approvals: (await deps.store.getSetting('approvals_enabled')) === '1',
       approvalAuto: (await deps.store.getSetting('approval_auto')) || '',
       telegram: Boolean(await deps.store.getSetting('telegram_token')),
@@ -363,6 +365,9 @@ export function registerExtraRoutes(
     }
     if (typeof body.sandbox === 'boolean') {
       await deps.store.setSetting('code_sandbox', body.sandbox ? '1' : '0');
+    }
+    if (body.terminalAccess === 'all' || body.terminalAccess === 'staff') {
+      await deps.store.setSetting('terminal_access', body.terminalAccess);
     }
     if (typeof body.approvals === 'boolean') {
       await deps.store.setSetting(

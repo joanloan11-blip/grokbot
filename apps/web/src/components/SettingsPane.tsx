@@ -1651,6 +1651,37 @@ function MoyskladPanel() {
 function GeneralPanel() {
   const { t, locale, setLocale } = useI18n();
   const [theme, setTheme] = useTheme();
+  const [sandbox, setSandbox] = useState<boolean | null>(null);
+  const [terminalAll, setTerminalAll] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    void api
+      .searchSettings()
+      .then((settings) => {
+        setSandbox(settings.sandbox);
+        setTerminalAll(settings.terminalAccess === 'all');
+      })
+      .catch(() => setSandbox(null));
+  }, []);
+
+  const saveSandbox = (enabled: boolean) => {
+    setSandbox(enabled);
+    void api
+      .saveSearchSettings({ sandbox: enabled })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : 'Не сохранилось'),
+      );
+  };
+  const saveTerminal = (enabled: boolean) => {
+    setTerminalAll(enabled);
+    void api
+      .saveSearchSettings({ terminalAccess: enabled ? 'all' : 'staff' })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : 'Не сохранилось'),
+      );
+  };
+
   return (
     <div className="panel card form">
       <p>{t('generalLead')}</p>
@@ -1678,6 +1709,29 @@ function GeneralPanel() {
           <option value="light">{t('themeLight')}</option>
         </select>
       </label>
+      {sandbox !== null && (
+        <>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={sandbox}
+              onChange={(event) => saveSandbox(event.target.checked)}
+            />
+            {t('sandboxCode')}
+          </label>
+          <p className="hint">{t('sandboxHint')}</p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={terminalAll}
+              onChange={(event) => saveTerminal(event.target.checked)}
+            />
+            {t('terminalForClients')}
+          </label>
+          <p className="hint">{t('terminalAccessHint')}</p>
+        </>
+      )}
+      {error && <p className="error-line">{error}</p>}
     </div>
   );
 }

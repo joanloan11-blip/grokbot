@@ -1814,13 +1814,16 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
   );
 
   // Интерактивный терминал: стримит stdout/stderr команды в рабочей папке.
-  // Только администратор и менеджеры, и только если включена песочница кода.
+  // Доступ: админ и менеджеры всегда, клиенты — если админ включил
+  // terminal_access=all; плюс должна быть включена песочница кода.
   app.post('/api/workspace/terminal', async (c) => {
     const user = await actor(c);
-    if (user.client)
+    const terminalAccess =
+      (await store.getSetting('terminal_access')) || 'all';
+    if (user.client && terminalAccess !== 'all')
       throw new HttpError(
         403,
-        'Терминал доступен администратору и менеджерам',
+        'Терминал выключен для клиентов — включает администратор',
       );
     const body = await readBody(c);
     if (!isRecord(body)) throw badRequest('Ожидался JSON-объект');

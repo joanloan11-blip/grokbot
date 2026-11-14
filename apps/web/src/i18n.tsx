@@ -160,6 +160,12 @@ const ru = {
   themeLight: 'День',
   generalLead:
     'Интерфейс по умолчанию на русском. Английские строки уже лежат рядом и переключаются здесь.',
+  sandboxCode: 'Песочница кода',
+  sandboxHint:
+    'Разрешает агенту и терминалу запускать команды в изолированной песочнице (свой пользователь, без прямого интернета).',
+  terminalForClients: 'Терминал доступен клиентам',
+  terminalAccessHint:
+    'Выключено — терминал видят только администратор и менеджеры. Клиенты получают shell в песочнице: включайте, только если доверяете им.',
   saved: 'Сохранено',
   noProviders: 'Нет провайдеров. Демо-модель создаётся при первом запуске.',
   edit: 'Изменить',
@@ -595,6 +601,12 @@ const en: Dictionary = {
   themeLight: 'Day',
   generalLead:
     'The interface defaults to Russian. English strings are already here and switch from this page.',
+  sandboxCode: 'Code sandbox',
+  sandboxHint:
+    'Lets the agent and the terminal run commands in an isolated sandbox (own user, no direct internet).',
+  terminalForClients: 'Terminal available to clients',
+  terminalAccessHint:
+    'Off — only admins and managers see the terminal. Clients get a shell in the sandbox: enable only if you trust them.',
   saved: 'Saved',
   noProviders: 'No providers. The demo model is created on first launch.',
   edit: 'Edit',
