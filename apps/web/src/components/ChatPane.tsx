@@ -1542,7 +1542,9 @@ export function ChatPane({
                 </div>
               </div>
             )}
-            {previewMode === 'live' && serve && (
+            {previewMode === 'live' &&
+              serve &&
+              (serve.status === 'running' || serve.status === 'starting') && (
               <div className="preview-live-actions">
                 <span className="muted">{serve.command}</span>
                 <button
