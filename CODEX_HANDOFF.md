@@ -570,3 +570,25 @@ managers.test.ts: общий и два разных личных «Разраб�
   первый ход создаёт checkpoint, undo удаляет созданный файл; второй ход меняет файл, undo
   возвращает прежнее содержимое; todo_write → `/api/agents/:id/todos` и чекбокс; в UI видны
   «↶ Отменить изменения хода» и «📋 План · 1/1».
+
+## Интерактивный терминал — 2026-11-14
+
+- Runner (`deploy/qastom-runner/server.mjs`): новый `POST /stream` (NDJSON) — чанки
+  `{type:'chunk', stream:'stdout'|'stderr', data}`, затем `{type:'exit', code, timedOut, ms, bytes}`;
+  обрезка 1 МБ, таймаут как в `/run`, отмена по `res.on('close')`. Важно: `req.on('close')`
+  наступает сразу после чтения тела и убивал команду — отмену повесили только на закрытие ответа.
+- Сервер (`apps/server/src/workspace.ts`): `streamWorkspaceShell` читает NDJSON runner и отдаёт
+  события; если runner ответил 404/405 (старый образ) — фолбэк на `/run` с выводом одним чанком.
+  Роут `POST /api/workspace/terminal` (SSE, только админ/менеджер, нужен `code_sandbox=1`,
+  scope = агент или `project-<id>`). Abort клиента останавливает команду.
+- Веб (`ChatPane`): кнопка «🖥 Терминал» в composer-row, панель с `pre`, полем команды, историей
+  (стрелки, localStorage `qastom-terminal-history`), «Очистить» и «Стоп». Внимание: панель внутри
+  формы composer, поэтому строка ввода терминала — `div` с обработкой Enter, а не вложенная
+  `<form>` (вложенные формы ломают отправку).
+- Деплой: после синхронизации репо — `docker compose -p mayak -f docker-compose.qastom.yml build
+  runner && up -d runner` (слои Dockerfile кешируются, сеть не нужна); затем overlay-образ
+  приложения. Откат: `mayak-runner:before-terminal`, `mayak-app:before-terminal`.
+- Проверено: `test/workspace-stream` (4), локальный E2E (SSE-чанки, код выхода, UI «ui-ok»),
+  на проде `/stream` из контейнера runner вернул `chunk → exit code 0`, сайт 200, данные целы.
+- Ограничения: нет PTY/stdin, `Ctrl+C` не работает, вывод до 1 МБ, доступно админу/менеджеру,
+  в режиме «папка на компьютере» кнопка скрыта.
