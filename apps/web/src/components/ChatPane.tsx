@@ -117,6 +117,9 @@ export function ChatPane({
   const [terminalCommand, setTerminalCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState('');
   const [terminalRunning, setTerminalRunning] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPath, setPreviewPath] = useState('/');
+  const [previewKey, setPreviewKey] = useState(0);
   const [terminalHistory, setTerminalHistory] = useState<string[]>(() => {
     try {
       const raw = JSON.parse(
@@ -176,6 +179,12 @@ export function ChatPane({
 
   const appendTerminal = (text: string) =>
     setTerminalOutput((current) => (current + text).slice(-200_000));
+  const previewScope = projectId ? `project-${projectId}` : agentId;
+  const previewSrc = `/api/preview/${encodeURIComponent(previewScope)}/${previewPath
+    .replace(/^\/+/, '')
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/')}`;
 
   async function runTerminal() {
     const command = terminalCommand.trim();
@@ -1086,15 +1095,26 @@ export function ChatPane({
           </span>
         )}
         {!(workLocal && folder) && (
-          <button
-            type="button"
-            className={terminalOpen ? 'compare-chip on' : 'compare-chip'}
-            title="Терминал: выполнить команду в рабочей папке агента и видеть вывод"
-            aria-pressed={terminalOpen}
-            onClick={() => setTerminalOpen((value) => !value)}
-          >
-            🖥 Терминал
-          </button>
+          <>
+            <button
+              type="button"
+              className={terminalOpen ? 'compare-chip on' : 'compare-chip'}
+              title="Терминал: выполнить команду в рабочей папке агента и видеть вывод"
+              aria-pressed={terminalOpen}
+              onClick={() => setTerminalOpen((value) => !value)}
+            >
+              🖥 Терминал
+            </button>
+            <button
+              type="button"
+              className={previewOpen ? 'compare-chip on' : 'compare-chip'}
+              title="Превью: открыть index.html или собранный сайт из рабочей папки"
+              aria-pressed={previewOpen}
+              onClick={() => setPreviewOpen((value) => !value)}
+            >
+              👁 Превью
+            </button>
+          </>
         )}
         <span className="composer-spacer" />
         <button
@@ -1310,6 +1330,65 @@ export function ChatPane({
           </div>
           <div className="composer-dock">{composer}</div>
         </>
+      )}
+      {previewOpen && (
+        <div
+          className="preview-overlay"
+          role="dialog"
+          aria-label="Превью рабочей папки"
+        >
+          <div className="preview-window">
+            <header>
+              <strong>👁 Превью</strong>
+              <input
+                value={previewPath}
+                placeholder="/"
+                aria-label="Путь в рабочей папке"
+                onChange={(event) => setPreviewPath(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    setPreviewKey((value) => value + 1);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="ghost slim"
+                onClick={() => setPreviewKey((value) => value + 1)}
+              >
+                Обновить
+              </button>
+              <a
+                className="ghost slim"
+                href={previewSrc}
+                target="_blank"
+                rel="noreferrer"
+              >
+                В новой вкладке
+              </a>
+              <button
+                type="button"
+                className="icon-btn quiet tiny"
+                aria-label="Закрыть превью"
+                onClick={() => setPreviewOpen(false)}
+              >
+                <IconClose />
+              </button>
+            </header>
+            <iframe
+              key={previewKey}
+              title="Превью"
+              src={previewSrc}
+              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+            />
+            <p className="hint">
+              Превью из рабочей папки агента. Для сайта нужен index.html в корне
+              или собранный проект (например, npm run build). Скрипты превью
+              изолированы от аккаунта и не видят cookie Маяка.
+            </p>
+          </div>
+        </div>
       )}
     </section>
   );

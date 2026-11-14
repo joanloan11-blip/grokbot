@@ -93,6 +93,10 @@ xattr -dr com.apple.quarantine /Applications/Mayak.app
   «Песочница кода» и «Терминал доступен клиентам» (`code_sandbox`, `terminal_access=all|staff`).
   Если runner старый (без `/stream`),
   сервер откатывается на `/run` и отдаёт вывод одним куском.
+- **Превью статики.** `GET /api/preview/:scope/*` отдаёт файлы рабочей папки агента/проекта
+  (index.html, ассеты, собранный `dist/`) с `Content-Security-Policy: sandbox` без
+  `allow-same-origin` — скрипты превью не видят cookie и API. UI: кнопка «👁 Превью» и iframe
+  в чате. Живой dev-сервер (HMR/прокси портов) — следующий шаг.
 - **План агента.** `todo_write` пишет список дел в таблицу `todos`; в чате над вводом показывается
   панель «📋 План» с прогрессом и чекбоксами (`GET /api/agents/:id/todos`,
   `PATCH /api/todos/:id`).

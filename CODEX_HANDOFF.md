@@ -605,3 +605,22 @@ managers.test.ts: общий и два разных личных «Разраб�
   кодом 0; чекбокс в UI сохраняет `terminalAccess=all`. tsc сервера и веба, сборки.
 - Важно: клиенты получают shell в песочнице с теми же лимитами и egress-allowlist; при открытии
   доступа стоит следить за квотами и логами.
+
+## Превью статических сайтов/приложений — 2026-11-14
+
+- `GET /api/preview/:scope` и `/api/preview/:scope/*` (scope = id агента или `project-<id>`):
+  проверяют владельца/доступ, отдают файл из `workspaceRoot`, для папки — `index.html` или
+  листинг, для SPA-навигации (Accept: text/html) — `index.html`. MIME расширен (html/js/css/
+  картинки/шрифты/pdf/video/wasm и т. п.), лимит файла 50 МБ, `no-store`, `nosniff`.
+- Безопасность: каждый ответ с `Content-Security-Policy: sandbox allow-scripts allow-forms
+  allow-modals allow-popups allow-downloads allow-pointer-lock; ...` и **без** allow-same-origin.
+  Проверено в браузере: `window.origin === "null"`, `document.cookie` бросает, скрипт в превью
+  при этом выполняется — доступ к cookie/API Маяка из превью закрыт.
+- UI: кнопка «👁 Превью» рядом с терминалом, модальное окно с iframe, полем пути, «Обновить»,
+  «В новой вкладке». В режиме «папка на компьютере» кнопка скрыта.
+- Тесты: `test/preview.test.ts` (5) — index.html + CSP без allow-same-origin, MIME ассетов,
+  листинг папки, обход `../` не отдаёт секрет, чужой агент 404.
+- Проверено локально в браузере: iframe показывает «Превью работает», origin null, cookie
+  недоступен.
+- Не сделано (следующий шаг): живой dev-server preview — нужен persistent-процесс в runner,
+  прокси портов + WebSocket/HMR, очистка; оценка 1–3 дня. Для статики превью уже работает.

@@ -3713,3 +3713,57 @@ input[type="checkbox"]:checked::after {
   padding: 0 10px 8px;
   font-size: 11px;
 }
+
+/* Превью статического сайта/приложения поверх чата. */
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+}
+.preview-window {
+  width: min(1200px, 96vw);
+  height: min(820px, 90vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--bg-1);
+}
+.preview-window header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.preview-window header input {
+  flex: 1;
+  min-width: 100px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+}
+.preview-window header a {
+  text-decoration: none;
+}
+.preview-window iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+.preview-window .hint {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+}

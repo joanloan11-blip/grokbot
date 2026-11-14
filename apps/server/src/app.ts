@@ -1768,6 +1768,146 @@ export async function createApp(config: AppConfig): Promise<AppHandle> {
     return c.json({ ok: true });
   });
 
+  // Превью статических сайтов и приложений из рабочей папки.
+  // Отдаём файлы с CSP sandbox: скрипты работают в «непрозрачном» origin и не
+  // видят cookie приложения, даже если агент сгенерировал вредоносный HTML.
+  const PREVIEW_MIME: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8',
+    '.htm': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.map': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.ico': 'image/x-icon',
+    '.avif': 'image/avif',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.otf': 'font/otf',
+    '.txt': 'text/plain; charset=utf-8',
+    '.md': 'text/plain; charset=utf-8',
+    '.csv': 'text/csv; charset=utf-8',
+    '.xml': 'application/xml; charset=utf-8',
+    '.pdf': 'application/pdf',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.wasm': 'application/wasm',
+    '.webmanifest': 'application/manifest+json',
+  };
+  const previewHeaders = (type: string): Record<string, string> => ({
+    'content-type': type,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    // allow-same-origin НЕ выдаём: иначе превью получит доступ к cookie и API Маяка.
+    'content-security-policy':
+      "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock; default-src * data: blob: 'unsafe-inline' 'unsafe-eval'",
+  });
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  const previewListing = (
+    scope: string,
+    relative: string,
+    entries: { name: string; dir: boolean }[],
+  ): string => {
+    const base = `/api/preview/${encodeURIComponent(scope)}/`;
+    const dir = relative ? `${relative.replace(/\/$/, '')}/` : '';
+    const rows = entries
+      .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
+      .map(
+        (entry) =>
+          `<li><a href="${base}${encodeURI(dir + entry.name)}${entry.dir ? '/' : ''}">${entry.dir ? '📁' : '📄'} ${escapeHtml(entry.name)}</a></li>`,
+      )
+      .join('');
+    return `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Превью</title>
+<style>body{font:14px/1.5 -apple-system,Segoe UI,sans-serif;background:#111;color:#eee;padding:24px}h1{font-size:18px}ul{list-style:none;padding:0;display:grid;gap:6px}a{color:#8ab4ff;text-decoration:none}a:hover{text-decoration:underline}p{color:#888}</style>
+<h1>Рабочая папка: ${escapeHtml(relative || '/')}</h1>
+<p>Это превью файлов агента. Если здесь должен быть сайт — попросите агента создать <code>index.html</code> или собрать проект.</p>
+<ul>${rows || '<li>Папка пуста</li>'}</ul></html>`;
+  };
+  const previewHandler = async (c: Context) => {
+    const user = await actor(c);
+    const scope = c.req.param('scope');
+    if (!scope) return c.notFound();
+    if (scope.startsWith('project-')) {
+      const project = await store.getProject(scope.slice(8), user.id);
+      if (!project) return c.notFound();
+    } else {
+      const agent = await store.getAgent(scope);
+      if (!agent || !(await canUseAgent(user, agent.id))) return c.notFound();
+    }
+    const root = workspaceRoot(config.dataDir, user.id, scope);
+    let relative = '';
+    try {
+      relative = decodeURIComponent(
+        c.req.path.slice(`/api/preview/${scope}`.length),
+      ).replace(/^\/+/, '');
+    } catch {
+      return c.text('Некорректный путь', 400);
+    }
+    if (relative.includes('\0')) return c.text('Некорректный путь', 400);
+    let target: string;
+    try {
+      target = resolveInside(root, relative || '.');
+    } catch {
+      return c.text('Путь вне рабочей папки', 400);
+    }
+    const index = path.join(target, 'index.html');
+    if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
+      if (fs.existsSync(index) && fs.statSync(index).isFile())
+        return c.body(new Uint8Array(fs.readFileSync(index)), 200, {
+          ...previewHeaders(PREVIEW_MIME['.html'] as string),
+        });
+      if (fs.existsSync(index)) return c.notFound();
+      const entries = fs.readdirSync(target, { withFileTypes: true }).map(
+        (entry) => ({
+          name: entry.name,
+          dir: entry.isDirectory(),
+        }),
+      );
+      return c.html(
+        previewListing(scope, relative, entries),
+        200,
+        previewHeaders('text/html; charset=utf-8'),
+      );
+    }
+    if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+      const stat = fs.statSync(target);
+      if (stat.size > 50 * 1024 * 1024)
+        return c.text('Файл больше 50 МБ — превью не отдаёт такие файлы.', 413);
+      const type =
+        PREVIEW_MIME[path.extname(target).toLowerCase()] ??
+        'application/octet-stream';
+      return c.body(new Uint8Array(fs.readFileSync(target)), 200, {
+        ...previewHeaders(type),
+      });
+    }
+    // SPA-маршруты: если открывают не файл, а «страницу», отдаём index.html.
+    const accept = c.req.header('accept') ?? '';
+    if (accept.includes('text/html') && fs.existsSync(index)) {
+      if (fs.statSync(index).isFile())
+        return c.body(new Uint8Array(fs.readFileSync(index)), 200, {
+          ...previewHeaders(PREVIEW_MIME['.html'] as string),
+        });
+    }
+    return c.text('Файл не найден', 404);
+  };
+  app.get('/api/preview/:scope', previewHandler);
+  app.get('/api/preview/:scope/*', previewHandler);
+
   // Точки отката файлов рабочей папки для чата.
   const conversationScope = async (
     user: UserRecord,
